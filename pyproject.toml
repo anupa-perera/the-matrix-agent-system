@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "the-matrix-agent-system"
+version = "0.1.0"
+description = "A local-first Matrix-inspired agent operating layer."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "Anupa Perera" }
+]
+dependencies = [
+  "pydantic>=2.8",
+  "typer>=0.12"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6"
+]
+
+[project.scripts]
+the-matrix = "thematrix.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["main/src/thematrix"]
+
+[tool.pytest.ini_options]
+testpaths = ["main/tests"]
+pythonpath = ["main/src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+

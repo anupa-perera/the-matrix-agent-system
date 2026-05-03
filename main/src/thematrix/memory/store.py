@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import sqlite3
+from datetime import UTC, datetime
+from pathlib import Path
+
+from thematrix.schemas import AgentSpec, MatrixRunResult, ProviderProfile
+
+
+class RuntimeStore:
+    """SQLite-backed runtime index for exact lookup and audit metadata."""
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+
+    def connect(self) -> sqlite3.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def initialize(self) -> None:
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS agents (
+                    agent_id TEXT PRIMARY KEY,
+                    agent_type TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    risk_level TEXT NOT NULL,
+                    spec_json TEXT NOT NULL,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    last_used_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agents_type_purpose
+                ON agents(agent_type, purpose);
+
+                CREATE TABLE IF NOT EXISTS prompt_blocks (
+                    block_ref TEXT PRIMARY KEY,
+                    block_type TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS providers (
+                    provider_id TEXT PRIMARY KEY,
+                    profile_json TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    selected_model TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS runs (
+                    run_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    request TEXT NOT NULL,
+                    response TEXT NOT NULL,
+                    result_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS security_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT,
+                    created_at TEXT NOT NULL,
+                    risk_level TEXT NOT NULL,
+                    approved INTEGER NOT NULL,
+                    issues_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS preferences (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+
+    def upsert_agent(self, spec: AgentSpec) -> None:
+        payload = spec.model_dump_json()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agents(agent_id, agent_type, purpose, risk_level, spec_json, last_used_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    agent_type = excluded.agent_type,
+                    purpose = excluded.purpose,
+                    risk_level = excluded.risk_level,
+                    spec_json = excluded.spec_json,
+                    last_used_at = excluded.last_used_at
+                """,
+                (
+                    spec.agent_id,
+                    spec.agent_type,
+                    spec.purpose,
+                    spec.risk_level.value,
+                    payload,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def find_reusable_agent(self, agent_type: str, purpose: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT agent_id FROM agents
+                WHERE agent_type = ? AND purpose = ?
+                ORDER BY success_count DESC, last_used_at DESC
+                LIMIT 1
+                """,
+                (agent_type, purpose),
+            ).fetchone()
+        return str(row["agent_id"]) if row else None
+
+    def record_prompt_block(self, block_ref: str, block_type: str, content: str) -> None:
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO prompt_blocks(block_ref, block_type, content_hash, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(block_ref) DO UPDATE SET
+                    block_type = excluded.block_type,
+                    content_hash = excluded.content_hash,
+                    updated_at = excluded.updated_at
+                """,
+                (block_ref, block_type, digest, datetime.now(UTC).isoformat()),
+            )
+
+    def upsert_provider(self, profile: ProviderProfile) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO providers(provider_id, profile_json)
+                VALUES (?, ?)
+                ON CONFLICT(provider_id) DO UPDATE SET profile_json = excluded.profile_json
+                """,
+                (profile.provider_id, profile.model_dump_json()),
+            )
+
+    def record_run(self, result: MatrixRunResult) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO runs(run_id, created_at, request, response, result_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    result.run_id,
+                    result.created_at.isoformat(),
+                    result.request,
+                    result.response,
+                    result.model_dump_json(),
+                ),
+            )
+            for report in [result.preflight_report, result.output_report]:
+                if report is None:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO security_events(run_id, created_at, risk_level, approved, issues_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        result.run_id,
+                        datetime.now(UTC).isoformat(),
+                        report.risk_level.value,
+                        int(report.approved),
+                        json.dumps(report.issues),
+                    ),
+                )
+
+    def set_preference(self, key: str, value: object) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO preferences(key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (key, json.dumps(value), datetime.now(UTC).isoformat()),
+            )
+

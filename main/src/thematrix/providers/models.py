@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+from thematrix.schemas import AuthMode, ProviderKind, ProviderProfile
+
+
+def provider_catalog() -> list[ProviderProfile]:
+    return [
+        ProviderProfile(
+            provider_id="openrouter",
+            display_name="OpenRouter",
+            kind=ProviderKind.CLOUD,
+            auth_modes=[AuthMode.API_KEY, AuthMode.OAUTH],
+            supports_model_selection=True,
+            supports_provider_routing=True,
+            supports_structured_output=True,
+            data_boundary="cloud: requests pass through OpenRouter to the selected model provider",
+            setup_hint="Choose OpenRouter if you want one account for many cloud models.",
+        ),
+        ProviderProfile(
+            provider_id="openai",
+            display_name="OpenAI",
+            kind=ProviderKind.CLOUD,
+            auth_modes=[AuthMode.API_KEY],
+            supports_model_selection=True,
+            supports_tools=True,
+            supports_structured_output=True,
+            supports_prompt_cache=True,
+            data_boundary="cloud: requests are sent to OpenAI",
+            setup_hint="Use an OpenAI API key.",
+        ),
+        ProviderProfile(
+            provider_id="anthropic",
+            display_name="Anthropic",
+            kind=ProviderKind.CLOUD,
+            auth_modes=[AuthMode.API_KEY],
+            supports_model_selection=True,
+            supports_structured_output=True,
+            data_boundary="cloud: requests are sent to Anthropic",
+            setup_hint="Use an Anthropic API key.",
+        ),
+        ProviderProfile(
+            provider_id="gemini",
+            display_name="Gemini",
+            kind=ProviderKind.CLOUD,
+            auth_modes=[AuthMode.API_KEY, AuthMode.OAUTH],
+            supports_model_selection=True,
+            supports_structured_output=True,
+            data_boundary="cloud: requests are sent to Google Gemini",
+            setup_hint="Use a Gemini API key or OAuth where supported.",
+        ),
+        ProviderProfile(
+            provider_id="mistral",
+            display_name="Mistral",
+            kind=ProviderKind.CLOUD,
+            auth_modes=[AuthMode.API_KEY],
+            supports_model_selection=True,
+            data_boundary="cloud: requests are sent to Mistral",
+            setup_hint="Use a Mistral API key.",
+        ),
+        ProviderProfile(
+            provider_id="ollama",
+            display_name="Ollama",
+            kind=ProviderKind.LOCAL,
+            auth_modes=[AuthMode.NONE],
+            supports_model_selection=True,
+            data_boundary="local: requests stay on this PC if Ollama is bound to localhost",
+            setup_hint="Install Ollama separately and choose a local model.",
+        ),
+        ProviderProfile(
+            provider_id="lmstudio",
+            display_name="LM Studio",
+            kind=ProviderKind.LOCAL,
+            auth_modes=[AuthMode.NONE],
+            supports_model_selection=True,
+            data_boundary="local: requests stay on this PC if LM Studio is bound to localhost",
+            setup_hint="Run the LM Studio local server and choose a downloaded model.",
+        ),
+        ProviderProfile(
+            provider_id="custom-openai-compatible",
+            display_name="Custom OpenAI-compatible endpoint",
+            kind=ProviderKind.CLOUD,
+            auth_modes=[AuthMode.API_KEY, AuthMode.LOCAL_TOKEN, AuthMode.NONE],
+            supports_model_selection=True,
+            data_boundary="custom: depends on the endpoint configured by the user",
+            setup_hint="Use this for compatible local or cloud model servers.",
+        ),
+    ]
+
