@@ -171,3 +171,4 @@ settings allow file changes. Paths outside the workspace and secret-looking path
 - `the-matrix memory prompt-blocks` shows prompt-cache hashes.
 - `the-matrix memory security` shows recent Neo events.
 - `the-matrix memory model-calls` shows model-call metadata without prompt or response text.
+- `the-matrix doctor` shows local setup health without exposing secrets.

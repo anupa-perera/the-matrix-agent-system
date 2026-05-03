@@ -91,6 +91,45 @@ def setup() -> None:
 
 
 @app.command()
+def doctor() -> None:
+    """Show local setup health without exposing secrets."""
+    paths = MatrixPaths()
+    _, store = bootstrap(paths)
+    keymaker = Keymaker()
+    provider_config = store.get_default_provider_config()
+
+    typer.echo("The Matrix doctor")
+    typer.echo(f"Home:  {_status(paths.home.exists())} {paths.home}")
+    typer.echo(f"Vault: {_status(paths.vault.exists())} {paths.vault}")
+    typer.echo(f"DB:    {_status(paths.runtime_db.exists())} {paths.runtime_db}")
+    typer.echo(f"Prompts: {_status((paths.prompts_dir / 'oracle_assess.md').exists())} installed")
+    typer.echo(f"Secrets backend: {keymaker.backend_name} writable={keymaker.can_write}")
+
+    onboarding_complete = store.get_preference("onboarding_complete") is True
+    typer.echo(f"Onboarding: {_status(onboarding_complete)}")
+
+    if provider_config is None:
+        typer.echo("Provider: missing - run `the-matrix setup` or `the-matrix providers configure`")
+    else:
+        profile = store.get_provider_profile(provider_config.provider_id)
+        secret_status = "not required"
+        if provider_config.auth_mode != AuthMode.NONE:
+            secret_status = "configured" if provider_config.secret_ref else "missing"
+        typer.echo(
+            "Provider: "
+            f"{_status(provider_config.enabled)} "
+            f"{profile.display_name if profile else provider_config.provider_id}"
+        )
+        typer.echo(f"Model: {provider_config.selected_model}")
+        typer.echo(f"Auth: {provider_config.auth_mode.value} secret={secret_status}")
+
+    prompt_blocks = store.list_prompt_blocks(limit=5)
+    agents = store.list_agent_records(limit=5)
+    typer.echo(f"Prompt blocks indexed: {len(prompt_blocks)}")
+    typer.echo(f"Reusable agents indexed: {len(agents)}")
+
+
+@app.command()
 def ask(
     request: Annotated[str, typer.Argument(help="User request to route through The Matrix.")],
     privacy: Annotated[
@@ -584,6 +623,10 @@ def _resolve_file_change_consent() -> FileChangeConsent:
     if allow:
         return FileChangeConsent.ALLOW_ALWAYS
     return FileChangeConsent.ASK_EACH_TIME
+
+
+def _status(ok: bool) -> str:
+    return "ok" if ok else "missing"
 
 
 def _approve_shell_command(command: str, reason: str, purpose: str) -> bool:
