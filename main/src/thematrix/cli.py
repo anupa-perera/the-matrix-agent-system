@@ -18,6 +18,7 @@ from thematrix.schemas import (
     AgentSpec,
     AuthMode,
     FileChangeConsent,
+    MatrixRunResult,
     ModelRequest,
     OnboardingProfile,
     PrivacyMode,
@@ -528,6 +529,39 @@ def model_calls(
         )
 
 
+@memory_app.command("runs")
+def memory_runs(
+    run_id: Annotated[str | None, typer.Argument(help="Optional run id to inspect.")] = None,
+    limit: Annotated[int, typer.Option(help="Maximum number of runs to show.")] = 20,
+) -> None:
+    """Show run metadata without opening raw JSON."""
+    _, store = bootstrap(MatrixPaths())
+    if run_id:
+        result = store.get_run(run_id)
+        if result is None:
+            typer.echo(f"No run found for id: {run_id}")
+            raise typer.Exit(code=1)
+        _show_run_metadata(result)
+        return
+
+    records = store.list_run_records(limit=limit)
+    if not records:
+        typer.echo("No runs are recorded yet.")
+        return
+    for record in records:
+        result = store.get_run(record["run_id"])
+        task_count = result.metadata.get("mission_task_count", "unknown") if result else "unknown"
+        completed = (
+            result.metadata.get("mission_completed_count", "unknown") if result else "unknown"
+        )
+        runtime = result.metadata.get("runtime", "unknown") if result else "unknown"
+        typer.echo(
+            f"{record['run_id']} runtime={runtime} tasks={completed}/{task_count} "
+            f"created={record['created_at']}"
+        )
+        typer.echo(f"  request: {record['request'][:160]}")
+
+
 @memory_app.command("tasks")
 def mission_tasks(
     run_id: Annotated[str | None, typer.Option(help="Optional run id to filter tasks.")] = None,
@@ -555,6 +589,45 @@ def _agent_reuse_label(spec: AgentSpec) -> str:
     if spec.reuse_candidate_id:
         return f"reused:{spec.reuse_candidate_id}"
     return "spawned"
+
+
+def _show_run_metadata(result: MatrixRunResult) -> None:
+    metadata = result.metadata
+    typer.echo(f"Run:      {result.run_id}")
+    typer.echo(f"Created:  {result.created_at.isoformat()}")
+    typer.echo(f"Runtime:  {metadata.get('runtime', 'unknown')}")
+    typer.echo(f"Request:  {result.request}")
+    typer.echo(f"Response: {result.response[:240]}")
+    typer.echo(
+        "Mission:  "
+        f"strategy={metadata.get('mission_strategy', 'unknown')} "
+        f"tasks={metadata.get('mission_completed_count', 'unknown')}/"
+        f"{metadata.get('mission_task_count', 'unknown')}"
+    )
+    typer.echo(
+        "Sources:  "
+        f"oracle={metadata.get('oracle_assessment_source', 'unknown')} "
+        f"architect_design={metadata.get('architect_design_source', 'unknown')} "
+        f"architect_plan={metadata.get('architect_plan_source', 'unknown')}"
+    )
+    typer.echo(
+        "Execution:"
+        f" status={metadata.get('agent_execution_status', 'unknown')} "
+        f"tool_results={metadata.get('tool_result_count', 'unknown')} "
+        f"error={metadata.get('agent_execution_error') or 'none'}"
+    )
+    decisions = metadata.get("architect_decisions") or []
+    if not decisions:
+        typer.echo("Architect decisions: none recorded")
+        return
+    typer.echo("Architect decisions:")
+    for decision in decisions:
+        reused = "reused" if decision.get("reused") else "spawned"
+        typer.echo(
+            f"  {decision.get('sequence')}. {reused} "
+            f"{decision.get('agent_id')} [{decision.get('agent_type')}]"
+        )
+        typer.echo(f"     {decision.get('decision') or 'No decision note recorded.'}")
 
 
 def _run_onboarding_wizard(paths: MatrixPaths, vault: MemoryVault, store: RuntimeStore) -> None:

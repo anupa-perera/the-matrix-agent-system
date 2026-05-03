@@ -177,6 +177,7 @@ settings allow file changes. Paths outside the workspace and secret-looking path
 - `the-matrix memory prompt-blocks` shows prompt-cache hashes.
 - `the-matrix memory security` shows recent Neo events.
 - `the-matrix memory model-calls` shows model-call metadata without prompt or response text.
+- `the-matrix memory runs [run-id]` shows run metadata and Architect decisions.
 - `the-matrix memory tasks` shows recent sequential mission tasks.
 - `the-matrix missions list` lists mission ledgers.
 - `the-matrix missions show <run-id>` shows one mission and its task statuses.
