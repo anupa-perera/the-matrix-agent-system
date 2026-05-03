@@ -77,3 +77,33 @@ def test_vault_records_mission_plan(tmp_path) -> None:
     workflow_path = tmp_path / "vault" / "wiki" / "workflows" / "mission-1.md"
     assert workflow_path.exists()
     assert "Task Ledger" in workflow_path.read_text(encoding="utf-8")
+
+
+def test_vault_records_mission_task_reuse_status(tmp_path) -> None:
+    vault = MemoryVault(tmp_path / "vault")
+    vault.initialize()
+    spec = AgentSpec(
+        agent_id="builder-test-agent",
+        agent_type="builder",
+        purpose="Build safely.",
+        reuse_candidate_id="builder-baseline",
+    )
+    plan = MissionPlan(
+        mission_id="mission-reuse",
+        tasks=[
+            MissionTask(
+                sequence=1,
+                title="Build",
+                description="Build safely.",
+                agent_spec=spec,
+                status=TaskStatus.PENDING,
+            )
+        ],
+    )
+
+    vault.record_mission_plan(plan)
+
+    workflow = (
+        tmp_path / "vault" / "wiki" / "workflows" / "mission-reuse.md"
+    ).read_text(encoding="utf-8")
+    assert "- Reuse: reused from builder-baseline" in workflow

@@ -220,6 +220,7 @@ class MemoryVault:
             f"- Status: {task.status.value}",
             f"- Agent: [[../agents/{task.agent_spec.agent_id}|{task.agent_spec.agent_id}]]",
             f"- Type: {task.agent_spec.agent_type}",
+            f"- Reuse: {self._agent_reuse_label(task.agent_spec)}",
             f"- Tools: {', '.join(task.agent_spec.tools_allowed) or 'none'}",
             f"- Tool results: {task.tool_result_count}",
             f"- Error: {task.error or 'none'}",
@@ -231,3 +232,8 @@ class MemoryVault:
             task.result_summary or "Not completed yet.",
             "",
         ]
+
+    def _agent_reuse_label(self, spec: AgentSpec) -> str:
+        if spec.reuse_candidate_id:
+            return f"reused from {spec.reuse_candidate_id}"
+        return "spawned"

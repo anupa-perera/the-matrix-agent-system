@@ -15,6 +15,7 @@ from thematrix.prompts import PromptLibrary
 from thematrix.providers import ModelGatewayError, default_model_gateway, provider_catalog
 from thematrix.runtime import AgentRunner, Nebuchadnezzar
 from thematrix.schemas import (
+    AgentSpec,
     AuthMode,
     FileChangeConsent,
     ModelRequest,
@@ -172,9 +173,10 @@ def list_missions(
     for record in records:
         tasks = store.list_mission_tasks(run_id=record["run_id"], limit=100)
         completed = sum(1 for task in tasks if task.status.value == "completed")
+        reused = sum(1 for task in tasks if task.agent_spec.reuse_candidate_id)
         typer.echo(
             f"{record['run_id']} tasks={completed}/{len(tasks)} "
-            f"created={record['created_at']}"
+            f"reused={reused} created={record['created_at']}"
         )
         typer.echo(f"  request: {record['request'][:160]}")
 
@@ -201,6 +203,7 @@ def show_mission(
             f"{task.sequence}. {task.title} [{task.status.value}] "
             f"agent={task.agent_spec.agent_id}"
         )
+        typer.echo(f"  reuse: {_agent_reuse_label(task.agent_spec)}")
         if task.result_summary:
             typer.echo(f"  result: {task.result_summary[:180]}")
 
@@ -539,8 +542,15 @@ def mission_tasks(
             f"{task.sequence}. {task.title} [{task.status.value}] "
             f"agent={task.agent_spec.agent_id}"
         )
+        typer.echo(f"  reuse: {_agent_reuse_label(task.agent_spec)}")
         if task.result_summary:
             typer.echo(f"  result: {task.result_summary[:160]}")
+
+
+def _agent_reuse_label(spec: AgentSpec) -> str:
+    if spec.reuse_candidate_id:
+        return f"reused:{spec.reuse_candidate_id}"
+    return "spawned"
 
 
 def _run_onboarding_wizard(paths: MatrixPaths, vault: MemoryVault, store: RuntimeStore) -> None:
