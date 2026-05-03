@@ -433,6 +433,26 @@ def model_calls(
         )
 
 
+@memory_app.command("tasks")
+def mission_tasks(
+    run_id: Annotated[str | None, typer.Option(help="Optional run id to filter tasks.")] = None,
+    limit: Annotated[int, typer.Option(help="Maximum number of tasks to show.")] = 20,
+) -> None:
+    """Show recent sequential mission tasks."""
+    _, store = bootstrap(MatrixPaths())
+    records = store.list_mission_tasks(run_id=run_id, limit=limit)
+    if not records:
+        typer.echo("No mission tasks are recorded yet.")
+        return
+    for task in records:
+        typer.echo(
+            f"{task.sequence}. {task.title} [{task.status.value}] "
+            f"agent={task.agent_spec.agent_id}"
+        )
+        if task.result_summary:
+            typer.echo(f"  result: {task.result_summary[:160]}")
+
+
 def _run_onboarding_wizard(paths: MatrixPaths, vault: MemoryVault, store: RuntimeStore) -> None:
     typer.echo("Welcome to The Matrix.")
     typer.echo("This setup collects the minimum needed to run agents safely.")

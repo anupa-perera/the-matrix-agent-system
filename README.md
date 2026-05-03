@@ -140,6 +140,10 @@ After execution, the runtime updates reusable agent success/failure counters in 
 planning without a configured provider does not count as success, because the spawned agent did not
 actually complete the request.
 
+Multi-agent cooperation starts sequentially: Architect creates an ordered mission plan, each task
+gets its own agent spec, and Nebuchadnezzar runs one task at a time while passing previous task
+results forward. SQLite stores the task ledger and Obsidian gets a readable workflow page.
+
 ## Neo Security Reviews
 
 Neo reviews the final `AgentSpec` before execution and the final response before user delivery.
@@ -171,4 +175,5 @@ settings allow file changes. Paths outside the workspace and secret-looking path
 - `the-matrix memory prompt-blocks` shows prompt-cache hashes.
 - `the-matrix memory security` shows recent Neo events.
 - `the-matrix memory model-calls` shows model-call metadata without prompt or response text.
+- `the-matrix memory tasks` shows recent sequential mission tasks.
 - `the-matrix doctor` shows local setup health without exposing secrets.

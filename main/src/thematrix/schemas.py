@@ -78,6 +78,35 @@ class AgentSpec(BaseModel):
     prompt_block_refs: list[str] = Field(default_factory=list)
 
 
+class TaskStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class MissionTask(BaseModel):
+    task_id: str = Field(default_factory=lambda: str(uuid4()))
+    sequence: int
+    title: str
+    description: str
+    agent_spec: AgentSpec
+    status: TaskStatus = TaskStatus.PENDING
+    result_summary: str = ""
+    tool_result_count: int = 0
+    error: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class MissionPlan(BaseModel):
+    mission_id: str = Field(default_factory=lambda: str(uuid4()))
+    strategy: str = "sequential"
+    tasks: list[MissionTask] = Field(default_factory=list)
+
+
 class OracleHumanLayer(BaseModel):
     voice: str
     temperament: str

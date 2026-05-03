@@ -12,6 +12,8 @@ from thematrix.prompts import PromptLibrary
 from thematrix.prompts.json_tools import extract_json_object
 from thematrix.schemas import (
     AgentSpec,
+    MissionPlan,
+    MissionTask,
     ModelRequest,
     ModelResponse,
     OracleBrief,
@@ -99,6 +101,29 @@ class Architect:
         )
         return spec
 
+    def plan_mission(
+        self,
+        brief: OracleBrief,
+        privacy_mode: PrivacyMode = PrivacyMode.ASK_EACH_TIME,
+        provider_config: ProviderConfig | None = None,
+    ) -> MissionPlan:
+        tasks: list[MissionTask] = []
+        for sequence, task_brief in enumerate(self._task_briefs_for(brief), start=1):
+            spec = self.design_agent(
+                task_brief,
+                privacy_mode=privacy_mode,
+                provider_config=provider_config,
+            )
+            tasks.append(
+                MissionTask(
+                    sequence=sequence,
+                    title=self._task_title(task_brief.intent),
+                    description=task_brief.intent,
+                    agent_spec=spec,
+                )
+            )
+        return MissionPlan(tasks=tasks)
+
     def _draft_agent(
         self,
         brief: OracleBrief,
@@ -159,14 +184,59 @@ class Architect:
             reusable=True,
         )
 
+    def _task_briefs_for(self, brief: OracleBrief) -> list[OracleBrief]:
+        intents = self._task_intents_for(brief.intent)
+        return [
+            brief.model_copy(
+                update={
+                    "intent": intent,
+                    "user_interaction_required": brief.user_interaction_required
+                    or index == len(intents),
+                }
+            )
+            for index, intent in enumerate(intents, start=1)
+        ]
+
+    def _task_intents_for(self, intent: str) -> list[str]:
+        lowered = intent.lower()
+        tasks: list[str] = []
+        if any(term in lowered for term in ["research", "compare", "investigate", "analyze"]):
+            tasks.append(f"Research and summarize context for: {intent}")
+        if any(term in lowered for term in ["build", "implement", "fix", "code", "repo"]):
+            tasks.append(f"Plan and implement the requested local software work: {intent}")
+        if any(term in lowered for term in ["secure", "security", "audit", "vulnerability"]):
+            tasks.append(f"Review the request and plan for security risks: {intent}")
+        elif any(term in lowered for term in ["build", "implement", "fix", "code", "repo"]):
+            tasks.append(f"Review the completed work for safety and quality risks: {intent}")
+        if not tasks:
+            tasks.append(intent)
+        return self._dedupe_tasks(tasks)[:4]
+
+    def _dedupe_tasks(self, tasks: list[str]) -> list[str]:
+        deduped: list[str] = []
+        for task in tasks:
+            cleaned = " ".join(task.split())
+            if cleaned and cleaned not in deduped:
+                deduped.append(cleaned)
+        return deduped
+
+    def _task_title(self, intent: str) -> str:
+        title = " ".join(intent.split())
+        if len(title) <= 72:
+            return title
+        return f"{title[:69].rstrip()}..."
+
     def _classify_agent_type(self, intent: str) -> str:
         lowered = intent.lower()
-        if any(term in lowered for term in ["code", "build", "implement", "fix", "repo"]):
-            return "builder"
         if any(term in lowered for term in ["research", "compare", "find", "analyze"]):
             return "researcher"
-        if any(term in lowered for term in ["secure", "vulnerability", "threat", "audit"]):
+        if any(
+            term in lowered
+            for term in ["secure", "security", "vulnerability", "threat", "audit", "safety", "risk"]
+        ):
             return "sentinel"
+        if any(term in lowered for term in ["code", "build", "implement", "fix", "repo"]):
+            return "builder"
         return "operator"
 
     def _purpose_for(self, agent_type: str, intent: str) -> str:

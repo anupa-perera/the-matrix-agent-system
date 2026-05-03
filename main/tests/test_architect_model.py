@@ -97,3 +97,21 @@ def test_architect_reuses_existing_agent_for_same_purpose(tmp_path: Path) -> Non
 
     assert first.agent_id == second.agent_id
     assert second.reuse_candidate_id == first.agent_id
+
+
+def test_architect_plans_build_then_sentinel_review(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    brief = OracleBrief(
+        intent="Build a coding helper agent",
+        ethical_status="safe",
+        user_interaction_required=True,
+        human_need="Guide the user clearly.",
+    )
+
+    plan = Architect(store).plan_mission(brief)
+
+    assert plan.strategy == "sequential"
+    assert [task.agent_spec.agent_type for task in plan.tasks] == ["builder", "sentinel"]
+    assert plan.tasks[0].sequence == 1
+    assert plan.tasks[1].sequence == 2

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from thematrix.schemas import AgentSpec, MatrixRunResult, SecurityReport
+from thematrix.schemas import AgentSpec, MatrixRunResult, MissionPlan, MissionTask, SecurityReport
 
 
 class MemoryVault:
@@ -113,6 +113,22 @@ class MemoryVault:
             encoding="utf-8",
         )
 
+    def record_mission_plan(self, plan: MissionPlan) -> None:
+        mission_path = self.root / "wiki" / "workflows" / f"{plan.mission_id}.md"
+        mission_path.parent.mkdir(parents=True, exist_ok=True)
+        sections = [
+            f"# Mission {plan.mission_id}",
+            "",
+            f"- Strategy: {plan.strategy}",
+            f"- Tasks: {len(plan.tasks)}",
+            "",
+            "## Task Ledger",
+            "",
+        ]
+        for task in sorted(plan.tasks, key=lambda item: item.sequence):
+            sections.extend(self._mission_task_lines(task))
+        mission_path.write_text("\n".join(sections), encoding="utf-8")
+
     def record_security_review(
         self,
         run_id: str,
@@ -146,28 +162,33 @@ class MemoryVault:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         sections = [f"# Tool Outputs: {run_id}\n"]
         for index, result in enumerate(results, start=1):
+            payload = result.model_dump()
+            command_or_path = payload.get("command") or payload.get("path", "unknown")
+            exit_code = payload.get("exit_code", "none")
+            stdout = payload.get("stdout") or payload.get("content", "")
+            stderr = payload.get("stderr", "")
             sections.append(
                 "\n".join(
                     [
                         f"## Tool {index}",
                         "",
-                        f"- Command: `{result.command}`",
-                        f"- Purpose: {result.purpose or 'not provided'}",
-                        f"- Decision: {result.decision.value}",
-                        f"- Executed: {result.executed}",
-                        f"- Exit code: {result.exit_code if result.exit_code is not None else 'none'}",
-                        f"- Reason: {result.reason}",
+                        f"- Target: `{command_or_path}`",
+                        f"- Purpose: {payload.get('purpose') or 'not provided'}",
+                        f"- Decision: {payload.get('decision')}",
+                        f"- Executed: {payload.get('executed')}",
+                        f"- Exit code: {exit_code if exit_code is not None else 'none'}",
+                        f"- Reason: {payload.get('reason')}",
                         "",
-                        "### Stdout",
+                        "### Output",
                         "",
                         "```text",
-                        result.stdout,
+                        stdout,
                         "```",
                         "",
                         "### Stderr",
                         "",
                         "```text",
-                        result.stderr,
+                        stderr,
                         "```",
                         "",
                     ]
@@ -191,3 +212,22 @@ class MemoryVault:
         if not values:
             return "- None"
         return "\n".join(f"- {value}" for value in values)
+
+    def _mission_task_lines(self, task: MissionTask) -> list[str]:
+        return [
+            f"### {task.sequence}. {task.title}",
+            "",
+            f"- Status: {task.status.value}",
+            f"- Agent: [[../agents/{task.agent_spec.agent_id}|{task.agent_spec.agent_id}]]",
+            f"- Type: {task.agent_spec.agent_type}",
+            f"- Tools: {', '.join(task.agent_spec.tools_allowed) or 'none'}",
+            f"- Tool results: {task.tool_result_count}",
+            f"- Error: {task.error or 'none'}",
+            "",
+            task.description,
+            "",
+            "Result:",
+            "",
+            task.result_summary or "Not completed yet.",
+            "",
+        ]

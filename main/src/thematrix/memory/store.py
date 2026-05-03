@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from thematrix.schemas import AgentSpec, MatrixRunResult, ProviderConfig, ProviderProfile
+from thematrix.schemas import (
+    AgentSpec,
+    MatrixRunResult,
+    MissionTask,
+    ProviderConfig,
+    ProviderProfile,
+)
 
 
 class RuntimeStore:
@@ -85,6 +91,20 @@ class RuntimeStore:
                     response TEXT NOT NULL,
                     result_json TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS mission_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    task_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_mission_tasks_run_sequence
+                ON mission_tasks(run_id, sequence);
 
                 CREATE TABLE IF NOT EXISTS security_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,6 +203,62 @@ class RuntimeStore:
                 """,
                 (datetime.now(UTC).isoformat(), agent_id),
             )
+
+    def record_mission_task(self, run_id: str, task: MissionTask) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO mission_tasks(
+                    task_id,
+                    run_id,
+                    sequence,
+                    title,
+                    status,
+                    agent_id,
+                    task_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    sequence = excluded.sequence,
+                    title = excluded.title,
+                    status = excluded.status,
+                    agent_id = excluded.agent_id,
+                    task_json = excluded.task_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    task.task_id,
+                    run_id,
+                    task.sequence,
+                    task.title,
+                    task.status.value,
+                    task.agent_spec.agent_id,
+                    task.model_dump_json(),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def list_mission_tasks(self, run_id: str | None = None, limit: int = 20) -> list[MissionTask]:
+        if run_id is None:
+            query = """
+                SELECT task_json FROM mission_tasks
+                ORDER BY updated_at DESC, sequence ASC
+                LIMIT ?
+            """
+            params: tuple[object, ...] = (limit,)
+        else:
+            query = """
+                SELECT task_json FROM mission_tasks
+                WHERE run_id = ?
+                ORDER BY sequence ASC
+                LIMIT ?
+            """
+            params = (run_id, limit)
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [MissionTask.model_validate_json(row["task_json"]) for row in rows]
 
     def record_prompt_block(self, block_ref: str, block_type: str, content: str) -> None:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()

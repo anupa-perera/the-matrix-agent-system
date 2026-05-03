@@ -56,15 +56,21 @@ def test_runtime_executes_spawned_agent_when_provider_is_configured(tmp_path) ->
 
     assert result.metadata["agent_execution_status"] == "executed"
     assert result.metadata["agent_execution_error"] is None
-    assert "Spawned agent response" in result.response
+    assert result.metadata["mission_task_count"] == 2
+    assert result.metadata["mission_completed_count"] == 2
+    assert "Final sequential result" in result.response
     assert "Here is the spawned agent answer." in result.response
     assert gateway.requests
     assert gateway.configs[0] is not None
     assert gateway.configs[0].provider_id == "ollama"
     assert "# Agent Blueprint" in gateway.requests[0].messages[0].content
     records = store.list_agent_records()
-    assert records[0]["success_count"] == 1
-    assert records[0]["failure_count"] == 0
+    assert sum(record["success_count"] for record in records) == 2
+    assert sum(record["failure_count"] for record in records) == 0
+    tasks = store.list_mission_tasks(result.run_id)
+    assert len(tasks) == 2
+    assert [task.status.value for task in tasks] == ["completed", "completed"]
+    assert [task.agent_spec.agent_type for task in tasks] == ["builder", "sentinel"]
 
 
 def test_agent_runner_executes_allowed_shell_tool_and_returns_final_answer(tmp_path) -> None:

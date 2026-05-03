@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from thematrix.memory import RuntimeStore
-from thematrix.schemas import AgentSpec, MatrixRunResult, OracleBrief, RiskLevel, SecurityReport
+from thematrix.schemas import (
+    AgentSpec,
+    MatrixRunResult,
+    MissionTask,
+    OracleBrief,
+    RiskLevel,
+    SecurityReport,
+    TaskStatus,
+)
 
 
 def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_events(tmp_path) -> None:
@@ -19,6 +27,15 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
 
     store.upsert_agent(spec)
     store.record_agent_outcome("builder-test-agent", success=True)
+    task = MissionTask(
+        sequence=1,
+        title="Build helper",
+        description="Build a helper",
+        agent_spec=spec,
+        status=TaskStatus.COMPLETED,
+        result_summary="done",
+    )
+    store.record_mission_task("run-1", task)
     store.record_prompt_block("agent-blueprint-builder-test-agent", "agent_blueprint", "prompt")
     store.record_model_call(
         provider_id="openrouter",
@@ -49,6 +66,7 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     prompt_blocks = store.list_prompt_blocks()
     model_calls = store.list_model_calls()
     security_events = store.list_security_events()
+    mission_tasks = store.list_mission_tasks("run-1")
 
     assert agents[0]["agent_id"] == "builder-test-agent"
     assert agents[0]["success_count"] == 1
@@ -60,3 +78,5 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     assert model_calls[0]["request_chars"] == 4
     assert security_events[0]["approved"] == 1
     assert security_events[0]["issues"] == []
+    assert mission_tasks[0].task_id == task.task_id
+    assert mission_tasks[0].status == TaskStatus.COMPLETED
