@@ -161,6 +161,20 @@ class RuntimeStore:
             ).fetchone()
         return str(row["agent_id"]) if row else None
 
+    def list_reusable_agents(self, agent_type: str, limit: int = 12) -> list[AgentSpec]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT spec_json FROM agents
+                WHERE agent_type = ?
+                ORDER BY success_count DESC, failure_count ASC, last_used_at DESC
+                LIMIT ?
+                """,
+                (agent_type, limit),
+            ).fetchall()
+        specs = [AgentSpec.model_validate_json(row["spec_json"]) for row in rows]
+        return [spec for spec in specs if spec.reusable]
+
     def list_agent_records(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
@@ -213,6 +227,17 @@ class RuntimeStore:
         if row is None:
             return None
         return AgentSpec.model_validate_json(row["spec_json"])
+
+    def touch_agent(self, agent_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agents
+                SET last_used_at = ?
+                WHERE agent_id = ?
+                """,
+                (datetime.now(UTC).isoformat(), agent_id),
+            )
 
     def record_agent_outcome(self, agent_id: str, success: bool) -> None:
         column = "success_count" if success else "failure_count"

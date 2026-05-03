@@ -70,40 +70,62 @@ class Architect:
             draft.purpose,
             fallback=self._purpose_for(agent_type, brief.intent),
         )
-        candidate = self.store.find_reusable_agent(agent_type=agent_type, purpose=purpose)
         risk = self._max_risk(self._risk_for(brief, agent_type), draft.risk_level)
-        agent_id = candidate or self._agent_id(agent_type, purpose)
+        tools_allowed = self._tools_for(agent_type, risk, draft.tools_allowed)
+        reuse_candidate = (
+            self._select_reusable_agent(
+                agent_type=agent_type,
+                purpose=purpose,
+                risk=risk,
+                tools_allowed=tools_allowed,
+            )
+            if draft.reusable
+            else None
+        )
+        agent_id = (
+            reuse_candidate.agent_id
+            if reuse_candidate
+            else self._agent_id(agent_type, purpose, tools_allowed, risk)
+        )
         prompt_ref = self._prompt_block_ref(agent_id)
+        capabilities = self._capabilities_for(agent_type, draft.capabilities)
+        memory_scope = self._memory_scope_for(draft.memory_scope)
+        constraints = self._merge_text_lists(brief.constraints, draft.constraints)
+        interaction_points = self._interaction_points_for(
+            draft.interaction_points,
+            brief.user_interaction_required,
+        )
+        if reuse_candidate is not None:
+            purpose = reuse_candidate.purpose
+            capabilities = self._merge_text_lists(reuse_candidate.capabilities, capabilities)[:8]
+            memory_scope = self._merge_text_lists(reuse_candidate.memory_scope, memory_scope)[:8]
+            constraints = self._merge_text_lists(reuse_candidate.constraints, constraints)
+            interaction_points = self._merge_text_lists(
+                reuse_candidate.interaction_points,
+                interaction_points,
+            )[:8]
+            risk = self._max_risk(risk, reuse_candidate.risk_level)
+            tools_allowed = reuse_candidate.tools_allowed
 
         spec = AgentSpec(
             agent_id=agent_id,
             agent_type=agent_type,
             purpose=purpose,
-            capabilities=self._capabilities_for(agent_type, draft.capabilities),
-            tools_allowed=self._tools_for(agent_type, risk, draft.tools_allowed),
-            memory_scope=self._memory_scope_for(draft.memory_scope),
-            constraints=self._merge_text_lists(brief.constraints, draft.constraints),
+            capabilities=capabilities,
+            tools_allowed=tools_allowed,
+            memory_scope=memory_scope,
+            constraints=constraints,
             expected_user_interaction=brief.user_interaction_required,
-            interaction_points=self._interaction_points_for(
-                draft.interaction_points,
-                brief.user_interaction_required,
-            ),
+            interaction_points=interaction_points,
             provider_id=provider_config.provider_id if provider_config else "unconfigured",
             model_id=provider_config.selected_model if provider_config else "unconfigured",
             privacy_mode=privacy_mode,
             risk_level=risk,
             reusable=draft.reusable,
-            reuse_candidate_id=candidate,
+            reuse_candidate_id=reuse_candidate.agent_id if reuse_candidate else None,
             prompt_block_refs=[prompt_ref],
         )
-        blueprint = self._render_agent_blueprint(spec, brief)
-        self.prompt_library.write_agent_blueprint(spec.agent_id, blueprint)
-        self.store.upsert_agent(spec)
-        self.store.record_prompt_block(
-            block_ref=prompt_ref,
-            block_type="agent_blueprint",
-            content=blueprint,
-        )
+        self._record_agent_design(spec, brief, reuse_candidate is not None)
         return spec
 
     def plan_mission(
@@ -417,11 +439,120 @@ class Architect:
         order = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
         return left if order[left] >= order[right] else right
 
-    def _agent_id(self, agent_type: str, purpose: str) -> str:
+    def _select_reusable_agent(
+        self,
+        agent_type: str,
+        purpose: str,
+        risk: RiskLevel,
+        tools_allowed: list[str],
+    ) -> AgentSpec | None:
+        exact = self.store.find_reusable_agent(agent_type=agent_type, purpose=purpose)
+        candidates = self.store.list_reusable_agents(agent_type=agent_type, limit=12)
+        if exact is not None:
+            exact_spec = next(
+                (candidate for candidate in candidates if candidate.agent_id == exact),
+                self.store.get_agent(exact),
+            )
+            if exact_spec and self._can_reuse_agent(exact_spec, risk, tools_allowed):
+                return exact_spec
+        scored = [
+            (self._purpose_similarity(purpose, candidate.purpose), candidate)
+            for candidate in candidates
+            if self._can_reuse_agent(candidate, risk, tools_allowed)
+        ]
+        if not scored:
+            return None
+        score, candidate = max(scored, key=lambda item: item[0])
+        if score < 0.5:
+            return None
+        return candidate
+
+    def _can_reuse_agent(
+        self,
+        candidate: AgentSpec,
+        risk: RiskLevel,
+        tools_allowed: list[str],
+    ) -> bool:
+        if not candidate.reusable:
+            return False
+        if self._risk_rank(candidate.risk_level) > self._risk_rank(risk):
+            return False
+        return set(candidate.tools_allowed).issubset(set(tools_allowed))
+
+    def _purpose_similarity(self, left: str, right: str) -> float:
+        left_tokens = self._purpose_tokens(left)
+        right_tokens = self._purpose_tokens(right)
+        if not left_tokens or not right_tokens:
+            return 0.0
+        if left_tokens == right_tokens:
+            return 1.0
+        overlap = left_tokens & right_tokens
+        if not overlap:
+            return 0.0
+        jaccard = len(overlap) / len(left_tokens | right_tokens)
+        containment = len(overlap) / min(len(left_tokens), len(right_tokens))
+        return max(jaccard, containment * 0.7)
+
+    def _purpose_tokens(self, purpose: str) -> set[str]:
+        stop_words = {
+            "a",
+            "an",
+            "and",
+            "for",
+            "of",
+            "the",
+            "to",
+            "user",
+            "users",
+        }
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", purpose.lower())
+            if token not in stop_words and len(token) > 2
+        }
+
+    def _risk_rank(self, risk: RiskLevel) -> int:
+        return {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}[risk]
+
+    def _record_agent_design(
+        self,
+        spec: AgentSpec,
+        brief: OracleBrief,
+        reused: bool,
+    ) -> None:
+        prompt_ref = self._prompt_block_ref(spec.agent_id)
+        if reused and self._agent_blueprint_exists(spec.agent_id):
+            self.store.touch_agent(spec.agent_id)
+            return
+
+        blueprint = self._render_agent_blueprint(spec, brief)
+        self.prompt_library.write_agent_blueprint(spec.agent_id, blueprint)
+        self.store.upsert_agent(spec)
+        self.store.record_prompt_block(
+            block_ref=prompt_ref,
+            block_type="agent_blueprint",
+            content=blueprint,
+        )
+
+    def _agent_blueprint_exists(self, agent_id: str) -> bool:
+        try:
+            self.prompt_library.read_agent_blueprint(agent_id)
+        except FileNotFoundError:
+            return False
+        return True
+
+    def _agent_id(
+        self,
+        agent_type: str,
+        purpose: str,
+        tools_allowed: list[str],
+        risk: RiskLevel,
+    ) -> str:
         slug = re.sub(r"[^a-z0-9]+", "-", purpose.lower()).strip("-")[:48]
         if not slug:
             slug = "general"
-        digest = hashlib.sha256(f"{agent_type}:{purpose}".encode("utf-8")).hexdigest()[:10]
+        fingerprint = f"{agent_type}:{purpose}:{risk.value}:{','.join(sorted(tools_allowed))}"
+        digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:10]
         return f"{agent_type}-{slug}-{digest}"
 
     def _prompt_block_ref(self, agent_id: str) -> str:

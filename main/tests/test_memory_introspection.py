@@ -70,6 +70,8 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     )
 
     agents = store.list_agent_records()
+    reusable_agents = store.list_reusable_agents("builder")
+    store.touch_agent("builder-test-agent")
     runs = store.list_run_records()
     stored_run = store.get_run("run-1")
     prompt_blocks = store.list_prompt_blocks()
@@ -81,6 +83,7 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     assert agents[0]["success_count"] == 1
     assert agents[0]["failure_count"] == 0
     assert store.get_agent("builder-test-agent") == spec
+    assert reusable_agents == [spec]
     assert runs[0]["run_id"] == "run-1"
     assert stored_run is not None
     assert stored_run.response == "updated"

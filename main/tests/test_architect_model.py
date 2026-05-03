@@ -100,6 +100,102 @@ def test_architect_reuses_existing_agent_for_same_purpose(tmp_path: Path) -> Non
     assert second.reuse_candidate_id == first.agent_id
 
 
+def test_architect_reuses_similar_agent_without_rewriting_blueprint(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    first_architect = Architect(store, prompt_library=prompt_library)
+    first_brief = OracleBrief(
+        intent="Build a coding helper agent",
+        ethical_status="safe",
+        user_interaction_required=True,
+        human_need="Guide the user clearly.",
+    )
+    first = first_architect.design_agent(first_brief)
+    first_blueprint = prompt_library.read_agent_blueprint(first.agent_id)
+    gateway = FakeGateway(
+        """
+        {
+          "agent_type": "builder",
+          "purpose": "Implement requested local software changes.",
+          "capabilities": ["inspect_project", "edit_files", "run_checks"],
+          "tools_allowed": ["file_read", "file_write", "shell_guarded"],
+          "memory_scope": ["wiki/agents/", "wiki/workflows/"],
+          "constraints": ["Keep changes scoped."],
+          "interaction_points": ["before_file_writes"],
+          "risk_level": "medium",
+          "reusable": true
+        }
+        """
+    )
+    second_brief = OracleBrief(
+        intent="Implement a small repo change",
+        ethical_status="safe",
+        user_interaction_required=True,
+        human_need="Keep it clear.",
+    )
+
+    second = Architect(
+        store,
+        model_gateway=gateway,
+        prompt_library=prompt_library,
+    ).design_agent(second_brief)
+
+    assert second.agent_id == first.agent_id
+    assert second.reuse_candidate_id == first.agent_id
+    assert second.purpose == first.purpose
+    assert second.tools_allowed == first.tools_allowed
+    assert prompt_library.read_agent_blueprint(first.agent_id) == first_blueprint
+
+
+def test_architect_does_not_reuse_when_candidate_has_more_tools(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    first = Architect(store, prompt_library=prompt_library).design_agent(
+        OracleBrief(
+            intent="Build a coding helper agent",
+            ethical_status="safe",
+            user_interaction_required=True,
+            human_need="Guide the user clearly.",
+        )
+    )
+    gateway = FakeGateway(
+        """
+        {
+          "agent_type": "builder",
+          "purpose": "Plan and implement scoped local software changes.",
+          "capabilities": ["inspect_project"],
+          "tools_allowed": ["file_read"],
+          "memory_scope": ["wiki/agents/"],
+          "constraints": [],
+          "interaction_points": ["before_file_writes"],
+          "risk_level": "medium",
+          "reusable": true
+        }
+        """
+    )
+
+    limited = Architect(
+        store,
+        model_gateway=gateway,
+        prompt_library=prompt_library,
+    ).design_agent(
+        OracleBrief(
+            intent="Inspect code without changing files",
+            ethical_status="safe",
+            user_interaction_required=False,
+            human_need="Be concise.",
+        )
+    )
+
+    assert limited.agent_id != first.agent_id
+    assert limited.reuse_candidate_id is None
+    assert limited.tools_allowed == ["file_read"]
+
+
 def test_architect_plans_build_then_sentinel_review(tmp_path: Path) -> None:
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     store.initialize()
