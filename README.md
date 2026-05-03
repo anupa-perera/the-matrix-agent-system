@@ -135,3 +135,10 @@ tool filtering, prompt hash tracking, and reuse lookup.
 Agent blueprint prompt text is written to markdown under the Matrix prompt directory. SQLite keeps
 the prompt block hash and reusable agent index, while Obsidian gets a user-visible agent page under
 `wiki/agents/`.
+
+## Neo Security Reviews
+
+Neo reviews the final `AgentSpec` before execution and the final response before user delivery.
+It checks local-only privacy boundaries, unknown tools, unsafe memory scopes, missing prompt-cache
+references, missing user checkpoints for file/shell actions, prompt-injection-like language, and
+credential-like output. Each review is written to Obsidian under `raw/neo_reviews/`.

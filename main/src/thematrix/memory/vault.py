@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from thematrix.schemas import AgentSpec, MatrixRunResult
+from thematrix.schemas import AgentSpec, MatrixRunResult, SecurityReport
 
 
 class MemoryVault:
@@ -107,6 +107,28 @@ class MemoryVault:
                 f"{self._markdown_list(spec.constraints)}\n\n"
                 "## Prompt Blocks\n\n"
                 f"{self._markdown_list(spec.prompt_block_refs)}\n"
+            ),
+            encoding="utf-8",
+        )
+
+    def record_security_review(
+        self,
+        run_id: str,
+        stage: str,
+        report: SecurityReport,
+    ) -> None:
+        safe_stage = "".join(char for char in stage if char.isalnum() or char in {"-", "_"})
+        review_path = self.root / "raw" / "neo_reviews" / f"{run_id}-{safe_stage}.md"
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        review_path.write_text(
+            (
+                f"# Neo Review: {run_id} {safe_stage}\n\n"
+                f"- Approved: {report.approved}\n"
+                f"- Risk: {report.risk_level.value}\n\n"
+                "## Issues\n\n"
+                f"{self._markdown_list(report.issues)}\n\n"
+                "## Required Changes\n\n"
+                f"{self._markdown_list(report.required_changes)}\n"
             ),
             encoding="utf-8",
         )

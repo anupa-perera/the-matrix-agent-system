@@ -82,5 +82,9 @@ class Nebuchadnezzar:
         self.store.record_run(result)
         if result.agent_spec is not None:
             self.vault.record_agent_spec(result.agent_spec)
+        if result.preflight_report is not None:
+            self.vault.record_security_review(result.run_id, "preflight", result.preflight_report)
+        if result.output_report is not None:
+            self.vault.record_security_review(result.run_id, "output", result.output_report)
         self.vault.record_run(result)
         return result

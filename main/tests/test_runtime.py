@@ -34,4 +34,8 @@ def test_runtime_records_run(tmp_path) -> None:
     assert (
         tmp_path / "vault" / "wiki" / "agents" / f"{result.agent_spec.agent_id}.md"
     ).exists()
+    assert (
+        tmp_path / "vault" / "raw" / "neo_reviews" / f"{result.run_id}-preflight.md"
+    ).exists()
+    assert (tmp_path / "vault" / "raw" / "neo_reviews" / f"{result.run_id}-output.md").exists()
     assert (tmp_path / "vault" / "raw" / "runs" / f"{result.run_id}.json").exists()
