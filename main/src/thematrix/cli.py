@@ -24,7 +24,7 @@ from thematrix.schemas import (
     ProviderProfile,
 )
 from thematrix.security import Keymaker, SecretStoreError
-from thematrix.tools import ShellExecutor
+from thematrix.tools import FileExecutor, ShellExecutor
 
 app = typer.Typer(help="The Matrix Agent System CLI.")
 providers_app = typer.Typer(help="Manage model providers.")
@@ -102,6 +102,7 @@ def ask(
     paths = MatrixPaths()
     vault, store = bootstrap(paths)
     selected_privacy = privacy or _default_privacy_mode(store)
+    provider_config = store.get_default_provider_config()
     prompt_library = PromptLibrary(paths.prompts_dir)
     gateway = default_model_gateway(store)
     oracle = Oracle(
@@ -125,12 +126,21 @@ def ask(
                 approval_callback=_approve_shell_command,
                 cwd=Path.cwd(),
             ),
+            file_executor=FileExecutor(
+                root=Path.cwd(),
+                approval_callback=_approve_file_write,
+                file_change_consent=(
+                    provider_config.file_change_consent
+                    if provider_config
+                    else FileChangeConsent.ASK_EACH_TIME
+                ),
+            ),
         ),
     )
     result = runtime.run(
         request,
         privacy_mode=selected_privacy,
-        provider_config=store.get_default_provider_config(),
+        provider_config=provider_config,
     )
     typer.echo(oracle.finalize(result))
     typer.echo(f"Run logged: {result.run_id}")
@@ -582,6 +592,14 @@ def _approve_shell_command(command: str, reason: str, purpose: str) -> bool:
     typer.echo(f"Reason:  {reason}")
     typer.echo(f"Command: {command}")
     return typer.confirm("Run this command?", default=False)
+
+
+def _approve_file_write(path: str, reason: str, purpose: str) -> bool:
+    typer.echo("A spawned agent requested a file write that needs approval.")
+    typer.echo(f"Purpose: {purpose or 'not provided'}")
+    typer.echo(f"Reason:  {reason}")
+    typer.echo(f"Path:    {path}")
+    return typer.confirm("Write this file?", default=False)
 
 
 if __name__ == "__main__":

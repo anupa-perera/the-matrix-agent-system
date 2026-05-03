@@ -15,7 +15,14 @@ from thematrix.schemas import (
     OracleBrief,
     ProviderConfig,
 )
-from thematrix.tools import ShellCommandResult, ShellDecision, ShellExecutor
+from thematrix.tools import (
+    FileDecision,
+    FileExecutor,
+    FileToolResult,
+    ShellCommandResult,
+    ShellDecision,
+    ShellExecutor,
+)
 
 
 class RunnerModelGateway(Protocol):
@@ -32,13 +39,15 @@ class AgentExecutionResult:
     response: str
     provider_id: str
     model_id: str
-    tool_results: list[ShellCommandResult] | None = None
+    tool_results: list[ShellCommandResult | FileToolResult] | None = None
     error: str | None = None
 
 
 class AgentToolRequest(BaseModel):
-    kind: Literal["shell"] = "shell"
-    command: str
+    kind: Literal["shell", "file_read", "file_write"] = "shell"
+    command: str = ""
+    path: str = ""
+    content: str = ""
     purpose: str = ""
 
 
@@ -55,10 +64,12 @@ class AgentRunner:
         model_gateway: RunnerModelGateway,
         prompt_library: PromptLibrary,
         shell_executor: ShellExecutor | None = None,
+        file_executor: FileExecutor | None = None,
     ):
         self.model_gateway = model_gateway
         self.prompt_library = prompt_library
         self.shell_executor = shell_executor
+        self.file_executor = file_executor
 
     def run(
         self,
@@ -153,6 +164,11 @@ class AgentRunner:
             "If you need a shell command, return exactly one JSON object in this shape:\n"
             '{"response":"why the command is useful","tool_requests":'
             '[{"kind":"shell","command":"git status -sb","purpose":"Check state"}]}\n\n'
+            "For safe file reads use:\n"
+            '{"response":"why the file is needed","tool_requests":'
+            '[{"kind":"file_read","path":"README.md","purpose":"Read project docs"}]}\n\n'
+            "For file writes use `file_write` with `path`, `content`, and `purpose`. "
+            "File writes may require user approval.\n\n"
             "Only request commands that fit the blueprint. Do not request commands for secrets. "
             "If no tool is needed, answer normally."
         )
@@ -167,33 +183,87 @@ class AgentRunner:
         self,
         spec: AgentSpec,
         requests: list[AgentToolRequest],
-    ) -> list[ShellCommandResult]:
-        results: list[ShellCommandResult] = []
+    ) -> list[ShellCommandResult | FileToolResult]:
+        results: list[ShellCommandResult | FileToolResult] = []
         for request in requests:
-            if request.kind != "shell":
-                continue
-            if "shell_guarded" not in spec.tools_allowed:
-                results.append(
-                    ShellCommandResult(
-                        command=request.command,
-                        purpose=request.purpose,
-                        decision=ShellDecision.BLOCK,
-                        reason="This agent spec does not allow shell_guarded.",
-                    )
-                )
-                continue
-            if self.shell_executor is None:
-                results.append(
-                    ShellCommandResult(
-                        command=request.command,
-                        purpose=request.purpose,
-                        decision=ShellDecision.APPROVAL_REQUIRED,
-                        reason="Shell execution is not attached in this runtime.",
-                    )
-                )
-                continue
-            results.append(self.shell_executor.run(request.command, purpose=request.purpose))
+            if request.kind == "shell":
+                results.append(self._run_shell_request(spec, request))
+            if request.kind == "file_read":
+                results.append(self._run_file_read_request(spec, request))
+            if request.kind == "file_write":
+                results.append(self._run_file_write_request(spec, request))
         return results
+
+    def _run_shell_request(
+        self,
+        spec: AgentSpec,
+        request: AgentToolRequest,
+    ) -> ShellCommandResult:
+        if "shell_guarded" not in spec.tools_allowed:
+            return ShellCommandResult(
+                command=request.command,
+                purpose=request.purpose,
+                decision=ShellDecision.BLOCK,
+                reason="This agent spec does not allow shell_guarded.",
+            )
+        if self.shell_executor is None:
+            return ShellCommandResult(
+                command=request.command,
+                purpose=request.purpose,
+                decision=ShellDecision.APPROVAL_REQUIRED,
+                reason="Shell execution is not attached in this runtime.",
+            )
+        return self.shell_executor.run(request.command, purpose=request.purpose)
+
+    def _run_file_read_request(
+        self,
+        spec: AgentSpec,
+        request: AgentToolRequest,
+    ) -> FileToolResult:
+        if "file_read" not in spec.tools_allowed:
+            return FileToolResult(
+                operation="read",
+                path=request.path,
+                purpose=request.purpose,
+                decision=FileDecision.BLOCK,
+                reason="This agent spec does not allow file_read.",
+            )
+        if self.file_executor is None:
+            return FileToolResult(
+                operation="read",
+                path=request.path,
+                purpose=request.purpose,
+                decision=FileDecision.APPROVAL_REQUIRED,
+                reason="File execution is not attached in this runtime.",
+            )
+        return self.file_executor.read(request.path, purpose=request.purpose)
+
+    def _run_file_write_request(
+        self,
+        spec: AgentSpec,
+        request: AgentToolRequest,
+    ) -> FileToolResult:
+        if "file_write" not in spec.tools_allowed:
+            return FileToolResult(
+                operation="write",
+                path=request.path,
+                purpose=request.purpose,
+                decision=FileDecision.BLOCK,
+                reason="This agent spec does not allow file_write.",
+            )
+        if self.file_executor is None:
+            return FileToolResult(
+                operation="write",
+                path=request.path,
+                purpose=request.purpose,
+                decision=FileDecision.APPROVAL_REQUIRED,
+                reason="File execution is not attached in this runtime.",
+            )
+        return self.file_executor.write(
+            request.path,
+            request.content,
+            purpose=request.purpose,
+        )
 
     def _tool_followup_prompt(
         self,
@@ -201,7 +271,7 @@ class AgentRunner:
         brief: OracleBrief,
         user_request: str,
         plan: AgentToolPlan,
-        tool_results: list[ShellCommandResult],
+        tool_results: list[ShellCommandResult | FileToolResult],
     ) -> str:
         result_json = json.dumps(
             [result.model_dump() for result in tool_results],

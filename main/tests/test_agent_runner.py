@@ -7,7 +7,7 @@ from thematrix.oracle import Oracle
 from thematrix.prompts import PromptLibrary
 from thematrix.runtime import AgentRunner, Nebuchadnezzar
 from thematrix.schemas import AuthMode, ModelRequest, ModelResponse, PrivacyMode, ProviderConfig
-from thematrix.tools import ShellExecutor
+from thematrix.tools import FileExecutor, ShellExecutor
 
 
 class FakeGateway:
@@ -111,6 +111,55 @@ def test_agent_runner_executes_allowed_shell_tool_and_returns_final_answer(tmp_p
     assert execution.tool_results[0].executed
     assert execution.tool_results[0].command == "python --version"
     assert len(gateway.requests) == 2
+    assert "Tool results" in gateway.requests[1].messages[0].content
+
+
+def test_agent_runner_executes_allowed_file_read_tool(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    (tmp_path / "notes.md").write_text("local note", encoding="utf-8")
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent"),
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+    gateway = FakeGateway(
+        [
+            """
+            {
+              "response": "I need to read the local note.",
+              "tool_requests": [
+                {
+                  "kind": "file_read",
+                  "path": "notes.md",
+                  "purpose": "Read the local note."
+                }
+              ]
+            }
+            """,
+            "I read the local note.",
+        ]
+    )
+
+    execution = AgentRunner(
+        gateway,
+        prompt_library,
+        file_executor=FileExecutor(tmp_path),
+    ).run(
+        spec,
+        Oracle().assess("Build a planning agent"),
+        "Build a planning agent",
+    )
+
+    assert execution.executed
+    assert execution.tool_results is not None
+    assert execution.tool_results[0].executed
+    assert "local note" in execution.tool_results[0].model_dump_json()
     assert "Tool results" in gateway.requests[1].messages[0].content
 
 

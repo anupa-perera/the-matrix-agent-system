@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from thematrix.schemas import AgentSpec, MatrixRunResult, SecurityReport
-from thematrix.tools import ShellCommandResult
 
 
 class MemoryVault:
@@ -137,7 +138,7 @@ class MemoryVault:
     def record_tool_outputs(
         self,
         run_id: str,
-        results: list[ShellCommandResult],
+        results: list[BaseModel],
     ) -> None:
         if not results:
             return

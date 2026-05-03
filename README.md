@@ -156,6 +156,10 @@ automatically. Commands that can change the machine, install packages, make netw
 code require explicit CLI approval. Dangerous patterns are blocked before approval. Tool outputs
 are written to Obsidian under `raw/tool_outputs/`.
 
+Spawned agents can also request guarded file reads and writes. Safe reads inside the current
+workspace are allowed automatically. File writes require approval unless onboarding/provider
+settings allow file changes. Paths outside the workspace and secret-looking paths are blocked.
+
 ## Inspection Commands
 
 - `the-matrix agents list` shows reusable agents tracked by Architect.
