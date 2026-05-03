@@ -28,8 +28,10 @@ from thematrix.security import Keymaker, SecretStoreError
 app = typer.Typer(help="The Matrix Agent System CLI.")
 providers_app = typer.Typer(help="Manage model providers.")
 memory_app = typer.Typer(help="Inspect memory locations.")
+agents_app = typer.Typer(help="Inspect reusable agent specs.")
 app.add_typer(providers_app, name="providers")
 app.add_typer(memory_app, name="memory")
+app.add_typer(agents_app, name="agents")
 
 
 def bootstrap(paths: MatrixPaths) -> tuple[MemoryVault, RuntimeStore]:
@@ -123,6 +125,55 @@ def ask(
     )
     typer.echo(oracle.finalize(result))
     typer.echo(f"Run logged: {result.run_id}")
+
+
+@agents_app.command("list")
+def list_agents(
+    limit: Annotated[int, typer.Option(help="Maximum number of agents to show.")] = 20,
+) -> None:
+    """Show reusable agents tracked by Architect."""
+    _, store = bootstrap(MatrixPaths())
+    records = store.list_agent_records(limit=limit)
+    if not records:
+        typer.echo("No reusable agents are recorded yet.")
+        return
+    for record in records:
+        typer.echo(
+            f"{record['agent_id']} [{record['agent_type']}/{record['risk_level']}] "
+            f"{record['purpose']}"
+        )
+        typer.echo(
+            f"  last_used={record['last_used_at']} "
+            f"success={record['success_count']} failure={record['failure_count']}"
+        )
+
+
+@agents_app.command("show")
+def show_agent(
+    agent_id: Annotated[str, typer.Argument(help="Agent id to inspect.")],
+) -> None:
+    """Show one reusable agent spec without reading prompt text."""
+    _, store = bootstrap(MatrixPaths())
+    spec = store.get_agent(agent_id)
+    if spec is None:
+        typer.echo(f"No agent found for id: {agent_id}")
+        raise typer.Exit(code=1)
+    typer.echo(f"Agent:   {spec.agent_id}")
+    typer.echo(f"Type:    {spec.agent_type}")
+    typer.echo(f"Purpose: {spec.purpose}")
+    typer.echo(f"Risk:    {spec.risk_level.value}")
+    typer.echo(f"Reuse:   {spec.reusable}")
+    typer.echo(f"Provider:{spec.provider_id}")
+    typer.echo(f"Model:   {spec.model_id}")
+    typer.echo("Tools:")
+    for tool in spec.tools_allowed:
+        typer.echo(f"  - {tool}")
+    typer.echo("Memory:")
+    for scope in spec.memory_scope:
+        typer.echo(f"  - {scope}")
+    typer.echo("Prompt blocks:")
+    for block_ref in spec.prompt_block_refs:
+        typer.echo(f"  - {block_ref}")
 
 
 @providers_app.command("list")
@@ -268,6 +319,60 @@ def test_provider(
 def memory_path() -> None:
     """Print the default Obsidian vault path."""
     typer.echo(MatrixPaths().vault)
+
+
+@memory_app.command("prompt-blocks")
+def prompt_blocks(
+    limit: Annotated[int, typer.Option(help="Maximum number of prompt blocks to show.")] = 20,
+) -> None:
+    """Show prompt-cache metadata without printing prompt text."""
+    _, store = bootstrap(MatrixPaths())
+    records = store.list_prompt_blocks(limit=limit)
+    if not records:
+        typer.echo("No prompt blocks are recorded yet.")
+        return
+    for record in records:
+        typer.echo(
+            f"{record['block_ref']} [{record['block_type']}] "
+            f"hash={record['content_hash'][:12]} updated={record['updated_at']}"
+        )
+
+
+@memory_app.command("security")
+def security_events(
+    limit: Annotated[int, typer.Option(help="Maximum number of security events to show.")] = 20,
+) -> None:
+    """Show recent Neo security events."""
+    _, store = bootstrap(MatrixPaths())
+    records = store.list_security_events(limit=limit)
+    if not records:
+        typer.echo("No security events are recorded yet.")
+        return
+    for record in records:
+        issues = "; ".join(record["issues"]) if record["issues"] else "none"
+        typer.echo(
+            f"{record['id']} run={record['run_id']} approved={bool(record['approved'])} "
+            f"risk={record['risk_level']} issues={issues}"
+        )
+
+
+@memory_app.command("model-calls")
+def model_calls(
+    limit: Annotated[int, typer.Option(help="Maximum number of model calls to show.")] = 20,
+) -> None:
+    """Show model-call metadata without prompt or response text."""
+    _, store = bootstrap(MatrixPaths())
+    records = store.list_model_calls(limit=limit)
+    if not records:
+        typer.echo("No model calls are recorded yet.")
+        return
+    for record in records:
+        status = "ok" if record["ok"] else f"error:{record['error_type']}"
+        typer.echo(
+            f"{record['id']} {record['created_at']} {record['provider_id']}/{record['model']} "
+            f"{status} latency_ms={record['latency_ms']} "
+            f"chars={record['request_chars']}->{record['response_chars']}"
+        )
 
 
 def _run_onboarding_wizard(paths: MatrixPaths, vault: MemoryVault, store: RuntimeStore) -> None:

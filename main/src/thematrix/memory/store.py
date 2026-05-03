@@ -5,6 +5,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from thematrix.schemas import AgentSpec, MatrixRunResult, ProviderConfig, ProviderProfile
 
@@ -140,6 +141,36 @@ class RuntimeStore:
             ).fetchone()
         return str(row["agent_id"]) if row else None
 
+    def list_agent_records(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    agent_id,
+                    agent_type,
+                    purpose,
+                    risk_level,
+                    success_count,
+                    failure_count,
+                    last_used_at
+                FROM agents
+                ORDER BY last_used_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_agent(self, agent_id: str) -> AgentSpec | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT spec_json FROM agents WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return AgentSpec.model_validate_json(row["spec_json"])
+
     def record_prompt_block(self, block_ref: str, block_type: str, content: str) -> None:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self.connect() as conn:
@@ -154,6 +185,19 @@ class RuntimeStore:
                 """,
                 (block_ref, block_type, digest, datetime.now(UTC).isoformat()),
             )
+
+    def list_prompt_blocks(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT block_ref, block_type, content_hash, updated_at
+                FROM prompt_blocks
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def upsert_provider(self, profile: ProviderProfile) -> None:
         with self.connect() as conn:
@@ -317,6 +361,47 @@ class RuntimeStore:
                     error_type,
                 ),
             )
+
+    def list_model_calls(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    created_at,
+                    provider_id,
+                    model,
+                    ok,
+                    latency_ms,
+                    request_chars,
+                    response_chars,
+                    error_type
+                FROM model_calls
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_security_events(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, run_id, created_at, risk_level, approved, issues_json
+                FROM security_events
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict(row)
+            record["issues"] = json.loads(row["issues_json"])
+            del record["issues_json"]
+            records.append(record)
+        return records
 
     def set_preference(self, key: str, value: object) -> None:
         with self.connect() as conn:

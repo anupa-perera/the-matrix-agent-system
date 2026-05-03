@@ -142,3 +142,11 @@ Neo reviews the final `AgentSpec` before execution and the final response before
 It checks local-only privacy boundaries, unknown tools, unsafe memory scopes, missing prompt-cache
 references, missing user checkpoints for file/shell actions, prompt-injection-like language, and
 credential-like output. Each review is written to Obsidian under `raw/neo_reviews/`.
+
+## Inspection Commands
+
+- `the-matrix agents list` shows reusable agents tracked by Architect.
+- `the-matrix agents show <agent-id>` shows one agent spec without printing prompt text.
+- `the-matrix memory prompt-blocks` shows prompt-cache hashes.
+- `the-matrix memory security` shows recent Neo events.
+- `the-matrix memory model-calls` shows model-call metadata without prompt or response text.
