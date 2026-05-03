@@ -143,6 +143,13 @@ It checks local-only privacy boundaries, unknown tools, unsafe memory scopes, mi
 references, missing user checkpoints for file/shell actions, prompt-injection-like language, and
 credential-like output. Each review is written to Obsidian under `raw/neo_reviews/`.
 
+## Agent Execution
+
+When a provider is configured and Neo approves the spec, the runtime spawns the selected agent by
+calling the configured model with the agent blueprint markdown and the current Oracle brief. If no
+provider is configured, the run stays in safe planning mode and tells the user to configure a
+provider before execution.
+
 ## Inspection Commands
 
 - `the-matrix agents list` shows reusable agents tracked by Architect.

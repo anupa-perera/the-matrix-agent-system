@@ -47,6 +47,13 @@ class PromptLibrary:
         target.write_text(content, encoding="utf-8")
         return target
 
+    def read_agent_blueprint(self, agent_id: str) -> str:
+        if self.prompt_dir is None:
+            raise FileNotFoundError("No prompt directory is configured.")
+        safe_id = self._safe_stem(agent_id)
+        target = self.prompt_dir / "agents" / f"{safe_id}.md"
+        return target.read_text(encoding="utf-8")
+
     def _safe_name(self, name: str) -> str:
         if "/" in name or "\\" in name or ".." in name:
             raise ValueError("Prompt names must be simple filenames.")

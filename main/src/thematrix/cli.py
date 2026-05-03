@@ -13,7 +13,7 @@ from thematrix.oracle import Oracle
 from thematrix.onboarding import OnboardingService
 from thematrix.prompts import PromptLibrary
 from thematrix.providers import ModelGatewayError, default_model_gateway, provider_catalog
-from thematrix.runtime import Nebuchadnezzar
+from thematrix.runtime import AgentRunner, Nebuchadnezzar
 from thematrix.schemas import (
     AuthMode,
     FileChangeConsent,
@@ -117,6 +117,7 @@ def ask(
         neo=Neo(),
         vault=vault,
         store=store,
+        agent_runner=AgentRunner(gateway, prompt_library),
     )
     result = runtime.run(
         request,

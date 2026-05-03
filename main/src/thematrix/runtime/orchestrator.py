@@ -4,6 +4,7 @@ from thematrix.architect import Architect
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.neo import Neo
 from thematrix.oracle import Oracle
+from thematrix.runtime.agent_runner import AgentRunner
 from thematrix.schemas import MatrixRunResult, PrivacyMode, ProviderConfig
 
 
@@ -17,12 +18,14 @@ class Nebuchadnezzar:
         neo: Neo,
         vault: MemoryVault,
         store: RuntimeStore,
+        agent_runner: AgentRunner | None = None,
     ):
         self.oracle = oracle
         self.architect = architect
         self.neo = neo
         self.vault = vault
         self.store = store
+        self.agent_runner = agent_runner
 
     def run(
         self,
@@ -38,6 +41,8 @@ class Nebuchadnezzar:
         )
         human_layer = self.oracle.shape_human_layer(brief, spec)
         preflight = self.neo.review_agent_spec(spec)
+        execution_status = "skipped"
+        execution_error = None
 
         if preflight.approved:
             selection = "reused" if spec.reuse_candidate_id else "created"
@@ -51,8 +56,27 @@ class Nebuchadnezzar:
                 f"Architect {selection} `{spec.agent_id}` as a `{spec.agent_type}` agent. "
                 f"{provider_text} "
                 f"Oracle shaped it as a {human_layer.temperament}. "
-                "Neo approved the preflight review. Runtime execution will be added next."
+                "Neo approved the preflight review."
             )
+            if self.agent_runner is not None and spec.provider_id != "unconfigured":
+                execution = self.agent_runner.run(
+                    spec,
+                    brief,
+                    user_request,
+                    provider_config=provider_config,
+                )
+                execution_status = "executed" if execution.executed else "error"
+                execution_error = execution.error
+                if execution.executed:
+                    response = f"{response}\n\nSpawned agent response:\n\n{execution.response}"
+                else:
+                    response = f"{response} {execution.response}"
+            else:
+                response = (
+                    f"{response} Configure a provider to execute spawned agents."
+                    if spec.provider_id == "unconfigured"
+                    else f"{response} Runtime execution is not attached in this context."
+                )
         else:
             response = "Neo blocked the agent before execution."
 
@@ -77,6 +101,8 @@ class Nebuchadnezzar:
                     "last_design_source",
                     "unknown",
                 ),
+                "agent_execution_status": execution_status,
+                "agent_execution_error": execution_error,
             },
         )
         self.store.record_run(result)
