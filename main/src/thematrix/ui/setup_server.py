@@ -377,7 +377,7 @@ def render_setup_form(
       <div id="provider_card" class="provider-card"></div>
       <div class="row">
         <label>Model
-          <input id="model" name="model" list="models" placeholder="Use the recommended model" required>
+          <input id="model" name="model" list="models" placeholder="Enter a model id" required>
           <datalist id="models">{model_options}</datalist>
           <span id="model_hint" class="hint"></span>
         </label>
@@ -466,7 +466,7 @@ def render_setup_form(
           : provider.setup_hint;
         providerCard.querySelector(".data-boundary").textContent = provider.data_boundary;
         modelHint.textContent = models.length
-          ? `Recommended: ${{models.join(", ")}}`
+          ? `Examples: ${{models.join(", ")}}`
           : "Enter the model id expected by this endpoint.";
         baseUrlHint.textContent = provider.default_base_url
           ? `Default: ${{provider.default_base_url}}`
@@ -510,7 +510,7 @@ def _provider_note(profile: ProviderProfile, detection: ProviderDetection | None
         f"<p>{escape(profile.setup_hint)}</p>"
         f"{detection_html}"
         f"<p>Auth: <code>{escape(auth)}</code></p>"
-        f"<p>Suggested models: <code>{escape(models)}</code></p>"
+        f"<p>Model examples: <code>{escape(models)}</code></p>"
         f"<p>{escape(profile.data_boundary)}</p>"
         "</div>"
     )
