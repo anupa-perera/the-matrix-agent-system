@@ -115,3 +115,12 @@ The first gateway supports:
 `the-matrix providers test` sends a small readiness prompt through the configured provider and
 records only metadata such as provider, model, status, and character counts. It does not write
 prompt text or secret values to Obsidian or SQLite.
+
+## Model-Backed Oracle
+
+Oracle can use the configured `ModelGateway` to produce a structured `OracleBrief` from a
+markdown prompt. If no provider is configured, credentials are missing, or the model returns
+invalid JSON, Oracle falls back to deterministic local rules.
+
+The Oracle prompt is installed into the Matrix home prompt directory during bootstrap, so users
+can inspect and later customize it while SQLite keeps only prompt hash metadata.

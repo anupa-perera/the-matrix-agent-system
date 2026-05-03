@@ -40,9 +40,15 @@ class Nebuchadnezzar:
         preflight = self.neo.review_agent_spec(spec)
 
         if preflight.approved:
+            if spec.provider_id == "unconfigured":
+                provider_text = "No model provider is configured yet."
+            else:
+                provider_text = (
+                    f"Provider `{spec.provider_id}` with model `{spec.model_id}` is configured."
+                )
             response = (
                 f"Architect selected `{spec.agent_id}` as a `{spec.agent_type}` agent. "
-                f"Provider `{spec.provider_id}` with model `{spec.model_id}` is configured. "
+                f"{provider_text} "
                 f"Oracle shaped it as a {human_layer.temperament}. "
                 "Neo approved the preflight review. Runtime execution will be added next."
             )
@@ -58,7 +64,14 @@ class Nebuchadnezzar:
             preflight_report=preflight,
             output_report=output_report,
             response=response,
-            metadata={"runtime": "nebuchadnezzar"},
+            metadata={
+                "runtime": "nebuchadnezzar",
+                "oracle_assessment_source": getattr(
+                    self.oracle,
+                    "last_assessment_source",
+                    "unknown",
+                ),
+            },
         )
         self.store.record_run(result)
         self.vault.record_run(result)

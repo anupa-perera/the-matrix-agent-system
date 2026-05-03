@@ -11,6 +11,7 @@ from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.neo import Neo
 from thematrix.oracle import Oracle
 from thematrix.onboarding import OnboardingService
+from thematrix.prompts import PromptLibrary
 from thematrix.providers import ModelGatewayError, default_model_gateway, provider_catalog
 from thematrix.runtime import Nebuchadnezzar
 from thematrix.schemas import (
@@ -35,8 +36,15 @@ def bootstrap(paths: MatrixPaths) -> tuple[MemoryVault, RuntimeStore]:
     ensure_runtime_dirs(paths)
     vault = MemoryVault(paths.vault)
     store = RuntimeStore(paths.runtime_db)
+    prompt_library = PromptLibrary(paths.prompts_dir)
     vault.initialize()
     store.initialize()
+    prompt_library.install_defaults()
+    store.record_prompt_block(
+        block_ref="oracle-assess-v1",
+        block_type="role_prompt",
+        content=prompt_library.read("oracle_assess"),
+    )
     for provider in provider_catalog():
         store.upsert_provider(provider)
     return vault, store
@@ -86,8 +94,12 @@ def ask(
     paths = MatrixPaths()
     vault, store = bootstrap(paths)
     selected_privacy = privacy or _default_privacy_mode(store)
+    oracle = Oracle(
+        model_gateway=default_model_gateway(store),
+        prompt_library=PromptLibrary(paths.prompts_dir),
+    )
     runtime = Nebuchadnezzar(
-        oracle=Oracle(),
+        oracle=oracle,
         architect=Architect(store),
         neo=Neo(),
         vault=vault,
@@ -98,7 +110,7 @@ def ask(
         privacy_mode=selected_privacy,
         provider_config=store.get_default_provider_config(),
     )
-    typer.echo(Oracle().finalize(result))
+    typer.echo(oracle.finalize(result))
     typer.echo(f"Run logged: {result.run_id}")
 
 

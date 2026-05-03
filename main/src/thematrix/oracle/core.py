@@ -1,19 +1,66 @@
 from __future__ import annotations
 
+from typing import Protocol
+
+from pydantic import ValidationError
+
+from thematrix.prompts import PromptLibrary
+from thematrix.prompts.json_tools import extract_json_object
 from thematrix.schemas import (
     AgentSpec,
     EthicalStatus,
     MatrixRunResult,
+    ModelRequest,
+    ModelResponse,
     OracleBrief,
     OracleHumanLayer,
     RiskLevel,
 )
 
 
+class OracleModelGateway(Protocol):
+    def generate(self, request: ModelRequest) -> ModelResponse: ...
+
+
 class Oracle:
     """Human-centered intent, ethics, and communication layer."""
 
+    def __init__(
+        self,
+        model_gateway: OracleModelGateway | None = None,
+        prompt_library: PromptLibrary | None = None,
+    ):
+        self.model_gateway = model_gateway
+        self.prompt_library = prompt_library or PromptLibrary()
+        self.last_assessment_source = "heuristic"
+
     def assess(self, user_request: str) -> OracleBrief:
+        if self.model_gateway is not None:
+            try:
+                brief = self._assess_with_model(user_request)
+                self.last_assessment_source = "model"
+                return brief
+            except Exception:
+                self.last_assessment_source = "heuristic_fallback"
+                return self._assess_with_heuristics(user_request)
+        self.last_assessment_source = "heuristic"
+        return self._assess_with_heuristics(user_request)
+
+    def _assess_with_model(self, user_request: str) -> OracleBrief:
+        prompt = self.prompt_library.read("oracle_assess").replace(
+            "{{ user_request }}",
+            user_request.strip(),
+        )
+        response = self.model_gateway.generate(
+            ModelRequest.from_prompt(prompt).model_copy(update={"temperature": 0.0})
+        )
+        parsed = extract_json_object(response.text)
+        try:
+            return OracleBrief.model_validate(parsed)
+        except ValidationError:
+            raise
+
+    def _assess_with_heuristics(self, user_request: str) -> OracleBrief:
         request = user_request.strip()
         lowered = request.lower()
 
@@ -83,4 +130,3 @@ class Oracle:
             issues = "; ".join(result.preflight_report.issues)
             return f"Neo blocked this agent before execution: {issues}"
         return result.response
-
