@@ -28,7 +28,7 @@ from thematrix.schemas import (
 )
 from thematrix.security import Keymaker, SecretStoreError
 from thematrix.tools import FileExecutor, ShellExecutor
-from thematrix.ui import write_dashboard
+from thematrix.ui import serve_setup_ui, write_dashboard
 
 app = typer.Typer(help="The Matrix Agent System CLI.")
 providers_app = typer.Typer(help="Manage model providers.")
@@ -99,6 +99,37 @@ def setup() -> None:
     paths = MatrixPaths()
     vault, store = bootstrap(paths)
     _run_onboarding_wizard(paths, vault, store)
+
+
+@app.command("setup-ui")
+def setup_ui(
+    port: Annotated[
+        int,
+        typer.Option(help="Localhost port. Use 0 to choose an available port."),
+    ] = 0,
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open/--no-open", help="Open the setup page in the browser."),
+    ] = True,
+) -> None:
+    """Run local-only browser onboarding."""
+    paths = MatrixPaths()
+    vault, store = bootstrap(paths)
+    typer.echo("Starting local-only setup UI on 127.0.0.1.")
+    typer.echo("A random URL token is required for every request.")
+    try:
+        url = serve_setup_ui(
+            paths,
+            vault,
+            store,
+            port=port,
+            open_browser=open_browser,
+            url_callback=lambda value: typer.echo(f"Setup UI: {value}"),
+        )
+    except KeyboardInterrupt:
+        typer.echo("Setup UI stopped.")
+        return
+    typer.echo(f"Setup UI closed: {url}")
 
 
 @app.command()

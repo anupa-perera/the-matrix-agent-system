@@ -60,6 +60,7 @@ CLI command:       the-matrix
 uv tool install the-matrix-agent-system
 the-matrix init
 the-matrix setup
+the-matrix setup-ui
 the-matrix providers list
 the-matrix providers test
 the-matrix ask "Create a reusable research agent"
@@ -102,6 +103,11 @@ or privacy-mode conflicts.
 
 `the-matrix init` offers the onboarding wizard on first run. Use `--no-onboarding` for scripts
 or tests that only need the filesystem initialized.
+
+`the-matrix setup-ui` starts a tiny local-only onboarding server on `127.0.0.1` with a random
+URL token. It lets users choose a provider, model, privacy mode, and file-change consent from the
+browser while Python still owns all writes to SQLite and Keymaker. OAuth choices are shown as
+provider capability, but browser OAuth setup is not wired in this version.
 
 ## Model Gateway
 
@@ -176,6 +182,7 @@ settings allow file changes. Paths outside the workspace and secret-looking path
 
 - `the-matrix agents list` shows reusable agents tracked by Architect.
 - `the-matrix agents show <agent-id>` shows one agent spec without printing prompt text.
+- `the-matrix setup-ui` opens local-only browser onboarding.
 - `the-matrix memory prompt-blocks` shows prompt-cache hashes.
 - `the-matrix memory summary` shows a compact terminal dashboard.
 - `the-matrix memory security` shows recent Neo events.
