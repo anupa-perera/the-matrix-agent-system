@@ -20,6 +20,9 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     provider_profile = (
         store.get_provider_profile(provider_config.provider_id) if provider_config else None
     )
+    provider_verification = (
+        store.get_provider_verification(provider_config.provider_id) if provider_config else None
+    )
     agents = store.list_agent_records(limit=6)
     runs = store.list_run_records(limit=6)
     prompt_blocks = store.list_prompt_blocks(limit=6)
@@ -132,7 +135,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       {metric_panel("Agents", counts["agents"])}
       {metric_panel("Prompt Blocks", counts["prompt_blocks"])}
       {metric_panel("Security Events", counts["security_events"])}
-      {provider_panel(provider_config, provider_profile)}
+      {provider_panel(provider_config, provider_profile, provider_verification)}
       {runs_panel(runs, store)}
       {agents_panel(agents)}
       {security_panel(security_events)}
@@ -159,7 +162,7 @@ def metric_panel(title: str, value: int) -> str:
 """
 
 
-def provider_panel(provider_config, provider_profile) -> str:
+def provider_panel(provider_config, provider_profile, provider_verification) -> str:
     if provider_config is None:
         return """
       <section class="panel span-4">
@@ -172,12 +175,22 @@ def provider_panel(provider_config, provider_profile) -> str:
         secret = "not required"
     else:
         secret = "configured" if provider_config.secret_ref else "missing"
+    if provider_verification is None:
+        verification_text = "not checked"
+        verification_class = "warn"
+    else:
+        verification_text = (
+            f"{'ok' if provider_verification.get('ok') else 'failed'} "
+            f"at {provider_verification.get('checked_at')}"
+        )
+        verification_class = "ok" if provider_verification.get("ok") else "risk"
     return f"""
       <section class="panel span-4">
-        <div class="row"><h2>Provider</h2><span class="tag ok">configured</span></div>
+        <div class="row"><h2>Provider</h2><span class="tag {verification_class}">configured</span></div>
         <p><strong>{escape(display)}</strong></p>
         <p class="muted">Model: <code>{escape(provider_config.selected_model)}</code></p>
         <p class="muted">Auth: {escape(provider_config.auth_mode.value)} ({secret})</p>
+        <p class="muted">Verification: {escape(verification_text)}</p>
       </section>
 """
 

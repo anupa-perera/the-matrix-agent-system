@@ -62,9 +62,11 @@ the-matrix init
 the-matrix setup
 the-matrix setup-ui
 the-matrix providers list
+the-matrix providers detect
 the-matrix providers test
 the-matrix ask "Create a reusable research agent"
 the-matrix memory summary
+the-matrix memory synthesize
 the-matrix ui
 ```
 
@@ -184,11 +186,13 @@ settings allow file changes. Paths outside the workspace and secret-looking path
 - `the-matrix agents list` shows reusable agents tracked by Architect.
 - `the-matrix agents show <agent-id>` shows one agent spec without printing prompt text.
 - `the-matrix setup-ui` opens local-only browser onboarding.
+- `the-matrix providers detect` checks local Ollama and LM Studio endpoints.
 - `the-matrix memory prompt-blocks` shows prompt-cache hashes.
 - `the-matrix memory summary` shows a compact terminal dashboard.
 - `the-matrix memory security` shows recent Neo events.
 - `the-matrix memory model-calls` shows model-call metadata without prompt or response text.
 - `the-matrix memory runs [run-id]` shows run metadata and Architect decisions.
+- `the-matrix memory synthesize` writes a deterministic wiki summary from recent runs.
 - `the-matrix memory tasks` shows recent sequential mission tasks.
 - `the-matrix ui` writes a static local HTML dashboard under the Matrix home folder.
 - `the-matrix missions list` lists mission ledgers.

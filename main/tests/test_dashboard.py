@@ -1,5 +1,5 @@
 from thematrix.memory import RuntimeStore
-from thematrix.schemas import MatrixRunResult, OracleBrief
+from thematrix.schemas import AuthMode, MatrixRunResult, OracleBrief, ProviderConfig
 from thematrix.ui.dashboard import render_dashboard_html
 from thematrix.config import MatrixPaths
 
@@ -8,6 +8,14 @@ def test_dashboard_renders_local_memory_summary(tmp_path) -> None:
     paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
     store = RuntimeStore(paths.runtime_db)
     store.initialize()
+    store.configure_provider(
+        ProviderConfig(
+            provider_id="ollama",
+            selected_model="llama3.2",
+            auth_mode=AuthMode.NONE,
+        )
+    )
+    store.record_provider_verification("ollama", ok=True, message="ready", model="llama3.2")
     store.record_run(
         MatrixRunResult(
             run_id="run-1",
@@ -31,4 +39,5 @@ def test_dashboard_renders_local_memory_summary(tmp_path) -> None:
 
     assert "The Matrix Dashboard" in html
     assert "Build a helper" in html
+    assert "Verification: ok" in html
     assert str(paths.vault) in html

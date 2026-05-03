@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
 from secrets import token_urlsafe
-from threading import Thread
+from threading import Thread, Timer
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 import webbrowser
@@ -26,6 +26,9 @@ from thematrix.schemas import (
 )
 from thematrix.security import Keymaker, SecretStoreError
 
+MAX_SETUP_BODY_BYTES = 64 * 1024
+DEFAULT_SETUP_TIMEOUT_SECONDS = 15 * 60
+
 
 @dataclass
 class SetupUiResult:
@@ -43,6 +46,7 @@ def serve_setup_ui(
     open_browser: bool = True,
     keymaker_factory: Callable[[], Keymaker] = Keymaker,
     url_callback: Callable[[str], None] | None = None,
+    timeout_seconds: int = DEFAULT_SETUP_TIMEOUT_SECONDS,
 ) -> str:
     token = token_urlsafe(24)
     server = _SetupServer(
@@ -55,9 +59,13 @@ def serve_setup_ui(
         url_callback(url)
     if open_browser:
         webbrowser.open(url)
+    timer = Timer(timeout_seconds, server.shutdown)
+    timer.daemon = True
+    timer.start()
     try:
         server.serve_forever()
     finally:
+        timer.cancel()
         server.server_close()
     return url
 
@@ -136,6 +144,12 @@ def apply_setup_form(
     tested = form.get("test_provider") == "on"
     if tested:
         health = default_model_gateway(store).health_check(provider_config)
+        store.record_provider_verification(
+            provider_id=provider_id,
+            ok=health.ok,
+            message=health.message,
+            model=selected_model,
+        )
         if not health.ok:
             return SetupUiResult(
                 ok=True,
@@ -184,7 +198,20 @@ def _handler_factory(
             if parsed.path != "/save":
                 self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not found", "Unknown route."))
                 return
-            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    _message_page("Bad request", "Content-Length must be a number."),
+                )
+                return
+            if length > MAX_SETUP_BODY_BYTES:
+                self._send_html(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    _message_page("Too large", "Setup form payload is too large."),
+                )
+                return
             raw = self.rfile.read(length).decode("utf-8")
             form = {key: values[-1] for key, values in parse_qs(raw).items()}
             result = apply_setup_form(form, paths, vault, store, keymaker_factory())

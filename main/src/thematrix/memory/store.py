@@ -445,6 +445,28 @@ class RuntimeStore:
             ).fetchall()
         return [self._provider_config_from_row(row) for row in rows]
 
+    def record_provider_verification(
+        self,
+        provider_id: str,
+        ok: bool,
+        message: str,
+        model: str | None = None,
+    ) -> None:
+        self.set_preference(
+            f"provider_verification:{provider_id}",
+            {
+                "provider_id": provider_id,
+                "ok": ok,
+                "message": message,
+                "model": model,
+                "checked_at": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    def get_provider_verification(self, provider_id: str) -> dict[str, Any] | None:
+        value = self.get_preference(f"provider_verification:{provider_id}")
+        return value if isinstance(value, dict) else None
+
     def record_run(self, result: MatrixRunResult) -> None:
         with self.connect() as conn:
             conn.execute(

@@ -109,3 +109,16 @@ def test_vault_records_mission_task_reuse_status(tmp_path) -> None:
     ).read_text(encoding="utf-8")
     assert "- Reuse: reused from builder-baseline" in workflow
     assert "- Architect decision: Reused `builder-test-agent`" in workflow
+
+
+def test_vault_records_synthesis_note(tmp_path) -> None:
+    vault = MemoryVault(tmp_path / "vault")
+    vault.initialize()
+
+    path = vault.record_synthesis("Run Summary", "# Summary\n")
+
+    assert path.exists()
+    assert path.name == "run-summary.md"
+    assert "Memory synthesized" in (tmp_path / "vault" / "log.md").read_text(
+        encoding="utf-8"
+    )

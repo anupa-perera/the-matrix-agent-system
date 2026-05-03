@@ -129,6 +129,22 @@ class MemoryVault:
             sections.extend(self._mission_task_lines(task))
         mission_path.write_text("\n".join(sections), encoding="utf-8")
 
+    def record_synthesis(self, title: str, content: str) -> Path:
+        safe_title = "".join(
+            char.lower() if char.isalnum() else "-"
+            for char in title.strip()
+        ).strip("-")
+        if not safe_title:
+            safe_title = "summary"
+        target = self.root / "wiki" / "decisions" / f"{safe_title[:80]}.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        self.append_log(
+            title="Memory synthesized",
+            body=f"Wrote synthesized memory note: wiki/decisions/{target.name}",
+        )
+        return target
+
     def record_security_review(
         self,
         run_id: str,

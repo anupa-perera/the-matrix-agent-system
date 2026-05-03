@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 import webbrowser
@@ -13,7 +14,12 @@ from thematrix.neo import Neo
 from thematrix.oracle import Oracle
 from thematrix.onboarding import OnboardingService
 from thematrix.prompts import PromptLibrary
-from thematrix.providers import ModelGatewayError, default_model_gateway, provider_catalog
+from thematrix.providers import (
+    ModelGatewayError,
+    default_model_gateway,
+    detect_local_providers,
+    provider_catalog,
+)
 from thematrix.runtime import AgentRunner, Nebuchadnezzar
 from thematrix.schemas import (
     AgentSpec,
@@ -164,6 +170,14 @@ def doctor() -> None:
         )
         typer.echo(f"Model: {provider_config.selected_model}")
         typer.echo(f"Auth: {provider_config.auth_mode.value} secret={secret_status}")
+        verification = store.get_provider_verification(provider_config.provider_id)
+        if verification is None:
+            typer.echo("Verification: not checked")
+        else:
+            typer.echo(
+                f"Verification: {_status(bool(verification['ok']))} "
+                f"{verification['checked_at']} {verification['message']}"
+            )
 
     prompt_blocks = store.list_prompt_blocks(limit=5)
     agents = store.list_agent_records(limit=5)
@@ -467,6 +481,24 @@ def current_provider() -> None:
     typer.echo(f"Secrets:  {secret_status}")
     typer.echo(f"Default:  {config.is_default}")
     typer.echo(f"Files:    {config.file_change_consent.value}")
+    verification = store.get_provider_verification(config.provider_id)
+    if verification is None:
+        typer.echo("Verified: not checked")
+    else:
+        typer.echo(f"Verified: {bool(verification['ok'])} at {verification['checked_at']}")
+        typer.echo(f"Message:  {verification['message']}")
+
+
+@providers_app.command("detect")
+def detect_providers() -> None:
+    """Detect local model providers on this PC."""
+    detections = detect_local_providers()
+    for detection in detections:
+        status = "reachable" if detection.reachable else "not reachable"
+        typer.echo(f"{detection.provider_id}: {status} at {detection.base_url}")
+        typer.echo(f"  {detection.message}")
+        if detection.models:
+            typer.echo(f"  models: {', '.join(detection.models[:8])}")
 
 
 @providers_app.command("test")
@@ -492,6 +524,12 @@ def test_provider(
     try:
         response = gateway.generate(ModelRequest.from_prompt(prompt), config=config)
     except ModelGatewayError as exc:
+        store.record_provider_verification(
+            provider_id=config.provider_id,
+            ok=False,
+            message=str(exc),
+            model=config.selected_model,
+        )
         vault.append_log(
             title="Provider test failed",
             body=(
@@ -516,6 +554,12 @@ def test_provider(
     typer.echo(f"Provider: {response.provider_id}")
     typer.echo(f"Model:    {response.model}")
     typer.echo(f"Ready:    {response.text}")
+    store.record_provider_verification(
+        provider_id=config.provider_id,
+        ok=True,
+        message=response.text,
+        model=response.model,
+    )
 
 
 @memory_app.command("path")
@@ -645,6 +689,65 @@ def memory_runs(
             f"created={record['created_at']}"
         )
         typer.echo(f"  request: {record['request'][:160]}")
+
+
+@memory_app.command("synthesize")
+def memory_synthesize(
+    limit: Annotated[int, typer.Option(help="Maximum number of recent runs to synthesize.")] = 10,
+) -> None:
+    """Write a deterministic Obsidian summary from recent runs."""
+    paths = MatrixPaths()
+    vault, store = bootstrap(paths)
+    records = store.list_run_records(limit=limit)
+    if not records:
+        typer.echo("No runs are recorded yet.")
+        return
+    now = datetime.now(UTC)
+    title = f"run-summary-{now.strftime('%Y%m%d-%H%M%S')}"
+    lines = [
+        f"# Run Summary {now.isoformat(timespec='seconds')}",
+        "",
+        "## Recent Runs",
+        "",
+    ]
+    for record in records:
+        result = store.get_run(record["run_id"])
+        metadata = result.metadata if result else {}
+        lines.extend(
+            [
+                f"### {record['run_id']}",
+                "",
+                f"- Request: {record['request']}",
+                f"- Runtime: {metadata.get('runtime', 'unknown')}",
+                f"- Tasks: {metadata.get('mission_completed_count', 'unknown')}/"
+                f"{metadata.get('mission_task_count', 'unknown')}",
+                f"- Execution: {metadata.get('agent_execution_status', 'unknown')}",
+                "",
+            ]
+        )
+        decisions = metadata.get("architect_decisions") or []
+        if decisions:
+            lines.append("Architect decisions:")
+            lines.append("")
+            for decision in decisions:
+                reused = "reused" if decision.get("reused") else "spawned"
+                lines.append(
+                    f"- {decision.get('sequence')}. {reused} "
+                    f"{decision.get('agent_id')}: {decision.get('decision')}"
+                )
+            lines.append("")
+    lines.extend(
+        [
+            "## Candidate Wiki Updates",
+            "",
+            "- Review repeated requests for reusable workflow notes.",
+            "- Review repeated blocked or failed tasks for risk notes.",
+            "- Promote stable agent lessons into `wiki/agents/` when they recur.",
+            "",
+        ]
+    )
+    path = vault.record_synthesis(title, "\n".join(lines))
+    typer.echo(f"Synthesized memory note: {path}")
 
 
 @memory_app.command("tasks")

@@ -45,6 +45,12 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
         response_chars=5,
         latency_ms=12,
     )
+    store.record_provider_verification(
+        provider_id="openrouter",
+        ok=True,
+        message="ready",
+        model="openai/gpt-5-mini",
+    )
     run = MatrixRunResult(
         run_id="run-1",
         request="Build a helper",
@@ -74,6 +80,7 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     store.touch_agent("builder-test-agent")
     runs = store.list_run_records()
     stored_run = store.get_run("run-1")
+    verification = store.get_provider_verification("openrouter")
     prompt_blocks = store.list_prompt_blocks()
     model_calls = store.list_model_calls()
     security_events = store.list_security_events()
@@ -87,6 +94,8 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     assert runs[0]["run_id"] == "run-1"
     assert stored_run is not None
     assert stored_run.response == "updated"
+    assert verification is not None
+    assert verification["ok"] is True
     assert prompt_blocks[0]["block_ref"] == "agent-blueprint-builder-test-agent"
     assert len(prompt_blocks[0]["content_hash"]) == 64
     assert model_calls[0]["provider_id"] == "openrouter"
