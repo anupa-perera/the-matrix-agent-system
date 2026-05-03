@@ -106,23 +106,79 @@ class Nebuchadnezzar:
                 ),
             },
         )
-        self.store.record_run(result)
+        self._persist_plan_result(plan, result, execution_tool_results)
+        return result
+
+    def continue_mission(
+        self,
+        run_id: str,
+        privacy_mode: PrivacyMode,
+        provider_config: ProviderConfig | None = None,
+    ) -> MatrixRunResult:
+        previous = self.store.get_run(run_id)
+        if previous is None:
+            raise ValueError(f"No mission found for run id: {run_id}")
+        tasks = self.store.list_mission_tasks(run_id=run_id, limit=100)
+        if not tasks:
+            raise ValueError(f"No mission tasks found for run id: {run_id}")
+
+        plan = MissionPlan(mission_id=run_id, tasks=tasks)
+        previous_statuses = {task.task_id: task.status for task in plan.tasks}
         for task in plan.tasks:
-            self.store.record_mission_task(result.run_id, task)
-            if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}:
-                self.store.record_agent_outcome(
-                    task.agent_spec.agent_id,
-                    success=task.status == TaskStatus.COMPLETED,
-                )
-        for task in plan.tasks:
-            self.vault.record_agent_spec(task.agent_spec)
-        self.vault.record_mission_plan(plan)
-        self.vault.record_tool_outputs(result.run_id, execution_tool_results)
-        if result.preflight_report is not None:
-            self.vault.record_security_review(result.run_id, "preflight", result.preflight_report)
-        if result.output_report is not None:
-            self.vault.record_security_review(result.run_id, "output", result.output_report)
-        self.vault.record_run(result)
+            if task.status != TaskStatus.COMPLETED:
+                self._prepare_task_for_continue(task, privacy_mode, provider_config)
+        spec = plan.tasks[0].agent_spec
+        human_layer = self.oracle.shape_human_layer(previous.oracle_brief, spec)
+        task_run = self._run_sequential_plan(
+            plan,
+            previous.oracle_brief,
+            previous.request,
+            provider_config=provider_config,
+            resume=True,
+        )
+        preflight = task_run["preflight_report"] or previous.preflight_report
+        execution_status = task_run["execution_status"]
+        execution_error = task_run["execution_error"]
+        execution_tool_results = task_run["tool_results"]
+        response = self._render_response(plan, human_layer, provider_config)
+        output_report = self.neo.review_output(response)
+        agent_outcome_success = self._agent_outcome_success(
+            preflight_approved=preflight.approved if preflight else False,
+            output_approved=output_report.approved,
+            execution_status=execution_status,
+        )
+        result = MatrixRunResult(
+            run_id=run_id,
+            created_at=previous.created_at,
+            request=previous.request,
+            oracle_brief=previous.oracle_brief,
+            agent_spec=spec,
+            human_layer=human_layer,
+            preflight_report=preflight,
+            output_report=output_report,
+            response=response,
+            metadata={
+                **previous.metadata,
+                "runtime": "nebuchadnezzar",
+                "resumed": True,
+                "agent_execution_status": execution_status,
+                "agent_execution_error": execution_error,
+                "tool_result_count": len(execution_tool_results),
+                "agent_outcome_recorded": agent_outcome_success is not None,
+                "agent_outcome_success": agent_outcome_success,
+                "mission_strategy": plan.strategy,
+                "mission_task_count": len(plan.tasks),
+                "mission_completed_count": sum(
+                    1 for task in plan.tasks if task.status == TaskStatus.COMPLETED
+                ),
+            },
+        )
+        self._persist_plan_result(
+            plan,
+            result,
+            execution_tool_results,
+            previous_statuses=previous_statuses,
+        )
         return result
 
     def _run_sequential_plan(
@@ -131,13 +187,28 @@ class Nebuchadnezzar:
         brief,
         user_request: str,
         provider_config: ProviderConfig | None,
+        resume: bool = False,
     ) -> dict[str, object]:
         first_preflight = None
         execution_status = "skipped"
         execution_error = None
         tool_results = []
-        previous_results: list[str] = []
+        previous_results = [
+            f"{task.title}: {task.result_summary}"
+            for task in sorted(plan.tasks, key=lambda item: item.sequence)
+            if task.status == TaskStatus.COMPLETED and task.result_summary
+        ]
         for task in plan.tasks:
+            if resume and task.status == TaskStatus.COMPLETED:
+                continue
+            if resume and task.status not in {
+                TaskStatus.PENDING,
+                TaskStatus.RUNNING,
+                TaskStatus.SKIPPED,
+                TaskStatus.FAILED,
+                TaskStatus.BLOCKED,
+            }:
+                continue
             task.status = TaskStatus.RUNNING
             task.updated_at = datetime.now(UTC)
             preflight = self.neo.review_agent_spec(task.agent_spec)
@@ -182,6 +253,60 @@ class Nebuchadnezzar:
             "execution_error": execution_error,
             "tool_results": tool_results,
         }
+
+    def _prepare_task_for_continue(
+        self,
+        task: MissionTask,
+        privacy_mode: PrivacyMode,
+        provider_config: ProviderConfig | None,
+    ) -> None:
+        task.agent_spec.privacy_mode = privacy_mode
+        if provider_config is None:
+            task.agent_spec.provider_id = "unconfigured"
+            task.agent_spec.model_id = "unconfigured"
+        else:
+            task.agent_spec.provider_id = provider_config.provider_id
+            task.agent_spec.model_id = provider_config.selected_model
+
+    def _persist_plan_result(
+        self,
+        plan: MissionPlan,
+        result: MatrixRunResult,
+        execution_tool_results: list[object],
+        previous_statuses: dict[str, TaskStatus] | None = None,
+    ) -> None:
+        self.store.record_run(result)
+        for task in plan.tasks:
+            self.store.record_mission_task(result.run_id, task)
+            if self._should_record_task_outcome(task, previous_statuses):
+                self.store.record_agent_outcome(
+                    task.agent_spec.agent_id,
+                    success=task.status == TaskStatus.COMPLETED,
+                )
+        for task in plan.tasks:
+            self.vault.record_agent_spec(task.agent_spec)
+        self.vault.record_mission_plan(plan)
+        self.vault.record_tool_outputs(result.run_id, execution_tool_results)
+        if result.preflight_report is not None:
+            self.vault.record_security_review(result.run_id, "preflight", result.preflight_report)
+        if result.output_report is not None:
+            self.vault.record_security_review(result.run_id, "output", result.output_report)
+        self.vault.record_run(result)
+
+    def _should_record_task_outcome(
+        self,
+        task: MissionTask,
+        previous_statuses: dict[str, TaskStatus] | None,
+    ) -> bool:
+        terminal = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED}
+        if task.status not in terminal:
+            return False
+        if previous_statuses is None:
+            return True
+        previous = previous_statuses.get(task.task_id)
+        if previous == TaskStatus.COMPLETED and task.status == TaskStatus.COMPLETED:
+            return False
+        return True
 
     def _task_request(
         self,

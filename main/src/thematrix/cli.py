@@ -30,9 +30,11 @@ app = typer.Typer(help="The Matrix Agent System CLI.")
 providers_app = typer.Typer(help="Manage model providers.")
 memory_app = typer.Typer(help="Inspect memory locations.")
 agents_app = typer.Typer(help="Inspect reusable agent specs.")
+missions_app = typer.Typer(help="Inspect and continue mission ledgers.")
 app.add_typer(providers_app, name="providers")
 app.add_typer(memory_app, name="memory")
 app.add_typer(agents_app, name="agents")
+app.add_typer(missions_app, name="missions")
 
 
 def bootstrap(paths: MatrixPaths) -> tuple[MemoryVault, RuntimeStore]:
@@ -147,6 +149,95 @@ def ask(
     vault, store = bootstrap(paths)
     selected_privacy = privacy or _default_privacy_mode(store)
     provider_config = store.get_default_provider_config()
+    oracle, runtime = _build_runtime(paths, vault, store, provider_config)
+    result = runtime.run(
+        request,
+        privacy_mode=selected_privacy,
+        provider_config=provider_config,
+    )
+    typer.echo(oracle.finalize(result))
+    typer.echo(f"Run logged: {result.run_id}")
+
+
+@missions_app.command("list")
+def list_missions(
+    limit: Annotated[int, typer.Option(help="Maximum number of missions to show.")] = 20,
+) -> None:
+    """List recent mission ledgers."""
+    _, store = bootstrap(MatrixPaths())
+    records = store.list_run_records(limit=limit)
+    if not records:
+        typer.echo("No missions are recorded yet.")
+        return
+    for record in records:
+        tasks = store.list_mission_tasks(run_id=record["run_id"], limit=100)
+        completed = sum(1 for task in tasks if task.status.value == "completed")
+        typer.echo(
+            f"{record['run_id']} tasks={completed}/{len(tasks)} "
+            f"created={record['created_at']}"
+        )
+        typer.echo(f"  request: {record['request'][:160]}")
+
+
+@missions_app.command("show")
+def show_mission(
+    run_id: Annotated[str, typer.Argument(help="Mission run id.")],
+) -> None:
+    """Show one mission ledger."""
+    _, store = bootstrap(MatrixPaths())
+    result = store.get_run(run_id)
+    if result is None:
+        typer.echo(f"No mission found for run id: {run_id}")
+        raise typer.Exit(code=1)
+    typer.echo(f"Mission: {run_id}")
+    typer.echo(f"Request: {result.request}")
+    typer.echo(f"Response: {result.response[:240]}")
+    tasks = store.list_mission_tasks(run_id=run_id, limit=100)
+    if not tasks:
+        typer.echo("No tasks are recorded for this mission.")
+        return
+    for task in tasks:
+        typer.echo(
+            f"{task.sequence}. {task.title} [{task.status.value}] "
+            f"agent={task.agent_spec.agent_id}"
+        )
+        if task.result_summary:
+            typer.echo(f"  result: {task.result_summary[:180]}")
+
+
+@missions_app.command("continue")
+def continue_mission(
+    run_id: Annotated[str, typer.Argument(help="Mission run id to continue.")],
+    privacy: Annotated[
+        PrivacyMode | None,
+        typer.Option(help="Privacy mode for this continuation."),
+    ] = None,
+) -> None:
+    """Continue a previous mission from unfinished tasks."""
+    paths = MatrixPaths()
+    vault, store = bootstrap(paths)
+    selected_privacy = privacy or _default_privacy_mode(store)
+    provider_config = store.get_default_provider_config()
+    oracle, runtime = _build_runtime(paths, vault, store, provider_config)
+    try:
+        result = runtime.continue_mission(
+            run_id,
+            privacy_mode=selected_privacy,
+            provider_config=provider_config,
+        )
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+    typer.echo(oracle.finalize(result))
+    typer.echo(f"Mission updated: {result.run_id}")
+
+
+def _build_runtime(
+    paths: MatrixPaths,
+    vault: MemoryVault,
+    store: RuntimeStore,
+    provider_config: ProviderConfig | None,
+) -> tuple[Oracle, Nebuchadnezzar]:
     prompt_library = PromptLibrary(paths.prompts_dir)
     gateway = default_model_gateway(store)
     oracle = Oracle(
@@ -181,13 +272,7 @@ def ask(
             ),
         ),
     )
-    result = runtime.run(
-        request,
-        privacy_mode=selected_privacy,
-        provider_config=provider_config,
-    )
-    typer.echo(oracle.finalize(result))
-    typer.echo(f"Run logged: {result.run_id}")
+    return oracle, runtime
 
 
 @agents_app.command("list")

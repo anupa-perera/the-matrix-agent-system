@@ -181,6 +181,29 @@ class RuntimeStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_run_records(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT run_id, created_at, request, response
+                FROM runs
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_run(self, run_id: str) -> MatrixRunResult | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT result_json FROM runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return MatrixRunResult.model_validate_json(row["result_json"])
+
     def get_agent(self, agent_id: str) -> AgentSpec | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -388,6 +411,11 @@ class RuntimeStore:
                 """
                 INSERT INTO runs(run_id, created_at, request, response, result_json)
                 VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    request = excluded.request,
+                    response = excluded.response,
+                    result_json = excluded.result_json
                 """,
                 (
                     result.run_id,

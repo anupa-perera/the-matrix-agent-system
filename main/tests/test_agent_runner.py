@@ -73,6 +73,57 @@ def test_runtime_executes_spawned_agent_when_provider_is_configured(tmp_path) ->
     assert [task.agent_spec.agent_type for task in tasks] == ["builder", "sentinel"]
 
 
+def test_runtime_continues_skipped_mission_with_current_provider(tmp_path) -> None:
+    vault = MemoryVault(tmp_path / "vault")
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    vault.initialize()
+    store.initialize()
+    prompt_library.install_defaults()
+    first_runtime = Nebuchadnezzar(
+        oracle=Oracle(),
+        architect=Architect(store, prompt_library=prompt_library),
+        neo=Neo(),
+        vault=vault,
+        store=store,
+    )
+    initial = first_runtime.run(
+        "Build a planning agent",
+        privacy_mode=PrivacyMode.ASK_EACH_TIME,
+    )
+    assert [task.status.value for task in store.list_mission_tasks(initial.run_id)] == [
+        "skipped",
+        "skipped",
+    ]
+    gateway = FakeGateway("continued task completed")
+    continued_runtime = Nebuchadnezzar(
+        oracle=Oracle(),
+        architect=Architect(store, prompt_library=prompt_library),
+        neo=Neo(),
+        vault=vault,
+        store=store,
+        agent_runner=AgentRunner(gateway, prompt_library),
+    )
+
+    continued = continued_runtime.continue_mission(
+        initial.run_id,
+        privacy_mode=PrivacyMode.ASK_EACH_TIME,
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+
+    assert continued.run_id == initial.run_id
+    assert continued.metadata["resumed"] is True
+    assert continued.metadata["mission_completed_count"] == 2
+    tasks = store.list_mission_tasks(initial.run_id)
+    assert [task.status.value for task in tasks] == ["completed", "completed"]
+    assert all(task.agent_spec.provider_id == "ollama" for task in tasks)
+    assert len(gateway.requests) == 2
+
+
 def test_agent_runner_executes_allowed_shell_tool_and_returns_final_answer(tmp_path) -> None:
     prompt_library = PromptLibrary(tmp_path / "prompts")
     prompt_library.install_defaults()

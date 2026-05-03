@@ -45,24 +45,33 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
         response_chars=5,
         latency_ms=12,
     )
+    run = MatrixRunResult(
+        run_id="run-1",
+        request="Build a helper",
+        response="done",
+        oracle_brief=OracleBrief(
+            intent="Build a helper",
+            ethical_status="safe",
+            user_interaction_required=True,
+            human_need="Be clear.",
+        ),
+        preflight_report=SecurityReport(
+            approved=True,
+            risk_level=RiskLevel.MEDIUM,
+        ),
+    )
+    store.record_run(run)
     store.record_run(
-        MatrixRunResult(
-            request="Build a helper",
-            response="done",
-            oracle_brief=OracleBrief(
-                intent="Build a helper",
-                ethical_status="safe",
-                user_interaction_required=True,
-                human_need="Be clear.",
-            ),
-            preflight_report=SecurityReport(
-                approved=True,
-                risk_level=RiskLevel.MEDIUM,
-            ),
+        run.model_copy(
+            update={
+                "response": "updated",
+            }
         )
     )
 
     agents = store.list_agent_records()
+    runs = store.list_run_records()
+    stored_run = store.get_run("run-1")
     prompt_blocks = store.list_prompt_blocks()
     model_calls = store.list_model_calls()
     security_events = store.list_security_events()
@@ -72,6 +81,9 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     assert agents[0]["success_count"] == 1
     assert agents[0]["failure_count"] == 0
     assert store.get_agent("builder-test-agent") == spec
+    assert runs[0]["run_id"] == "run-1"
+    assert stored_run is not None
+    assert stored_run.response == "updated"
     assert prompt_blocks[0]["block_ref"] == "agent-blueprint-builder-test-agent"
     assert len(prompt_blocks[0]["content_hash"]) == 64
     assert model_calls[0]["provider_id"] == "openrouter"
