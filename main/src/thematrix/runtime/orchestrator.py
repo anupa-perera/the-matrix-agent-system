@@ -4,7 +4,7 @@ from thematrix.architect import Architect
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.neo import Neo
 from thematrix.oracle import Oracle
-from thematrix.schemas import MatrixRunResult, PrivacyMode
+from thematrix.schemas import MatrixRunResult, PrivacyMode, ProviderConfig
 
 
 class Nebuchadnezzar:
@@ -24,15 +24,25 @@ class Nebuchadnezzar:
         self.vault = vault
         self.store = store
 
-    def run(self, user_request: str, privacy_mode: PrivacyMode) -> MatrixRunResult:
+    def run(
+        self,
+        user_request: str,
+        privacy_mode: PrivacyMode,
+        provider_config: ProviderConfig | None = None,
+    ) -> MatrixRunResult:
         brief = self.oracle.assess(user_request)
-        spec = self.architect.design_agent(brief, privacy_mode=privacy_mode)
+        spec = self.architect.design_agent(
+            brief,
+            privacy_mode=privacy_mode,
+            provider_config=provider_config,
+        )
         human_layer = self.oracle.shape_human_layer(brief, spec)
         preflight = self.neo.review_agent_spec(spec)
 
         if preflight.approved:
             response = (
                 f"Architect selected `{spec.agent_id}` as a `{spec.agent_type}` agent. "
+                f"Provider `{spec.provider_id}` with model `{spec.model_id}` is configured. "
                 f"Oracle shaped it as a {human_layer.temperament}. "
                 "Neo approved the preflight review. Runtime execution will be added next."
             )
@@ -53,4 +63,3 @@ class Nebuchadnezzar:
         self.store.record_run(result)
         self.vault.record_run(result)
         return result
-

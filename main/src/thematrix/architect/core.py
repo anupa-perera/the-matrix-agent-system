@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 
 from thematrix.memory.store import RuntimeStore
-from thematrix.schemas import AgentSpec, OracleBrief, PrivacyMode, RiskLevel
+from thematrix.schemas import AgentSpec, OracleBrief, PrivacyMode, ProviderConfig, RiskLevel
 
 
 class Architect:
@@ -16,6 +16,7 @@ class Architect:
         self,
         brief: OracleBrief,
         privacy_mode: PrivacyMode = PrivacyMode.ASK_EACH_TIME,
+        provider_config: ProviderConfig | None = None,
     ) -> AgentSpec:
         agent_type = self._classify_agent_type(brief.intent)
         purpose = self._purpose_for(agent_type, brief.intent)
@@ -38,6 +39,8 @@ class Architect:
             constraints=brief.constraints,
             expected_user_interaction=brief.user_interaction_required,
             interaction_points=["before_sensitive_actions", "before_cloud_sensitive_use"],
+            provider_id=provider_config.provider_id if provider_config else "unconfigured",
+            model_id=provider_config.selected_model if provider_config else "unconfigured",
             privacy_mode=privacy_mode,
             risk_level=risk,
             reusable=True,
@@ -100,4 +103,3 @@ class Architect:
     def _prompt_block_ref(self, agent_type: str, purpose: str) -> str:
         digest = hashlib.sha256(f"{agent_type}:{purpose}".encode("utf-8")).hexdigest()[:12]
         return f"agent-blueprint-{agent_type}-{digest}"
-

@@ -17,6 +17,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+secrets = [
+  "keyring>=25.0"
+]
 dev = [
   "pytest>=8.0",
   "ruff>=0.6"
@@ -35,4 +38,3 @@ pythonpath = ["main/src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-

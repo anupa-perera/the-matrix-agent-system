@@ -54,16 +54,47 @@ Python module:     thematrix
 CLI command:       the-matrix
 ```
 
-## Local Development
+## Usage
 
-```powershell
-cd F:\sideProjects\the-matrix-agent-system
-py -3.13 -m venv .venv
-.\.venv\Scripts\python -m pip install -e ".[dev]"
-.\.venv\Scripts\the-matrix init
-.\.venv\Scripts\the-matrix providers list
-.\.venv\Scripts\the-matrix ask "Create a reusable research agent"
+```text
+uv tool install "the-matrix-agent-system[secrets]"
+the-matrix init
+the-matrix providers list
+the-matrix providers configure
+the-matrix ask "Create a reusable research agent"
 ```
 
-If `uv` is installed later, the project metadata is compatible with it.
+For development, install the project in editable mode and run:
 
+```text
+python -m ruff check .
+python -m pytest
+```
+
+## Provider Setup
+
+Providers are user-selected. The framework does not force a default provider.
+
+```powershell
+the-matrix providers configure
+the-matrix providers current
+```
+
+Secrets are handled by **Keymaker**. Keymaker never stores raw secrets in Obsidian, SQLite,
+or logs. The default secure backend is optional:
+
+```powershell
+pip install "the-matrix-agent-system[secrets]"
+```
+
+If no writable OS secret backend is available, Keymaker can read provider keys from environment
+variables such as:
+
+```text
+THE_MATRIX_OPENROUTER_API_KEY
+THE_MATRIX_OPENAI_API_KEY
+```
+
+Normal questions do not trigger cloud-use prompts after a provider is configured. Consent is
+reserved for meaningful actions such as file changes, shell commands, sensitive memory writes,
+or privacy-mode conflicts.

@@ -6,7 +6,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from thematrix.schemas import AgentSpec, MatrixRunResult, ProviderProfile
+from thematrix.schemas import AgentSpec, MatrixRunResult, ProviderConfig, ProviderProfile
 
 
 class RuntimeStore:
@@ -51,6 +51,17 @@ class RuntimeStore:
                     profile_json TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 0,
                     selected_model TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS provider_settings (
+                    provider_id TEXT PRIMARY KEY,
+                    selected_model TEXT NOT NULL,
+                    auth_mode TEXT NOT NULL,
+                    secret_ref TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    is_default INTEGER NOT NULL DEFAULT 1,
+                    file_change_consent TEXT NOT NULL,
+                    configured_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS runs (
@@ -141,6 +152,86 @@ class RuntimeStore:
                 (profile.provider_id, profile.model_dump_json()),
             )
 
+    def list_provider_profiles(self) -> list[ProviderProfile]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT profile_json FROM providers ORDER BY provider_id"
+            ).fetchall()
+        return [ProviderProfile.model_validate_json(row["profile_json"]) for row in rows]
+
+    def get_provider_profile(self, provider_id: str) -> ProviderProfile | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT profile_json FROM providers WHERE provider_id = ?",
+                (provider_id,),
+            ).fetchone()
+        return ProviderProfile.model_validate_json(row["profile_json"]) if row else None
+
+    def configure_provider(self, config: ProviderConfig) -> None:
+        with self.connect() as conn:
+            if config.is_default:
+                conn.execute("UPDATE provider_settings SET is_default = 0")
+            conn.execute(
+                """
+                INSERT INTO provider_settings(
+                    provider_id,
+                    selected_model,
+                    auth_mode,
+                    secret_ref,
+                    enabled,
+                    is_default,
+                    file_change_consent,
+                    configured_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_id) DO UPDATE SET
+                    selected_model = excluded.selected_model,
+                    auth_mode = excluded.auth_mode,
+                    secret_ref = excluded.secret_ref,
+                    enabled = excluded.enabled,
+                    is_default = excluded.is_default,
+                    file_change_consent = excluded.file_change_consent,
+                    configured_at = excluded.configured_at
+                """,
+                (
+                    config.provider_id,
+                    config.selected_model,
+                    config.auth_mode.value,
+                    config.secret_ref,
+                    int(config.enabled),
+                    int(config.is_default),
+                    config.file_change_consent.value,
+                    config.configured_at.isoformat(),
+                ),
+            )
+
+    def get_provider_config(self, provider_id: str) -> ProviderConfig | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM provider_settings WHERE provider_id = ?",
+                (provider_id,),
+            ).fetchone()
+        return self._provider_config_from_row(row) if row else None
+
+    def get_default_provider_config(self) -> ProviderConfig | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM provider_settings
+                WHERE enabled = 1 AND is_default = 1
+                ORDER BY configured_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return self._provider_config_from_row(row) if row else None
+
+    def list_provider_configs(self) -> list[ProviderConfig]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM provider_settings ORDER BY is_default DESC, provider_id"
+            ).fetchall()
+        return [self._provider_config_from_row(row) for row in rows]
+
     def record_run(self, result: MatrixRunResult) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -186,3 +277,14 @@ class RuntimeStore:
                 (key, json.dumps(value), datetime.now(UTC).isoformat()),
             )
 
+    def _provider_config_from_row(self, row: sqlite3.Row) -> ProviderConfig:
+        return ProviderConfig(
+            provider_id=row["provider_id"],
+            selected_model=row["selected_model"],
+            auth_mode=row["auth_mode"],
+            secret_ref=row["secret_ref"],
+            enabled=bool(row["enabled"]),
+            is_default=bool(row["is_default"]),
+            file_change_consent=row["file_change_consent"],
+            configured_at=datetime.fromisoformat(row["configured_at"]),
+        )

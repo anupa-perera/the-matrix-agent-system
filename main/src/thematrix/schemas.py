@@ -27,6 +27,11 @@ class PrivacyMode(StrEnum):
     LOCAL_ONLY = "local_only"
 
 
+class FileChangeConsent(StrEnum):
+    ASK_EACH_TIME = "ask_each_time"
+    ALLOW_ALWAYS = "allow_always"
+
+
 class ProviderKind(StrEnum):
     LOCAL = "local"
     CLOUD = "cloud"
@@ -90,6 +95,7 @@ class ProviderProfile(BaseModel):
     display_name: str
     kind: ProviderKind
     auth_modes: list[AuthMode]
+    suggested_models: list[str] = Field(default_factory=list)
     supports_model_selection: bool = True
     supports_tools: bool = False
     supports_structured_output: bool = False
@@ -97,6 +103,17 @@ class ProviderProfile(BaseModel):
     supports_provider_routing: bool = False
     data_boundary: str
     setup_hint: str
+
+
+class ProviderConfig(BaseModel):
+    provider_id: str
+    selected_model: str
+    auth_mode: AuthMode
+    secret_ref: str | None = None
+    enabled: bool = True
+    is_default: bool = True
+    file_change_consent: FileChangeConsent = FileChangeConsent.ASK_EACH_TIME
+    configured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class MatrixRunResult(BaseModel):
@@ -110,4 +127,3 @@ class MatrixRunResult(BaseModel):
     output_report: SecurityReport | None = None
     response: str
     metadata: dict[str, Any] = Field(default_factory=dict)
-
