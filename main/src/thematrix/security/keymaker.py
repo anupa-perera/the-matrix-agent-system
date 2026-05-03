@@ -38,8 +38,8 @@ class KeyringSecretStore:
             import keyring  # type: ignore[import-not-found]
         except ImportError as exc:
             raise SecretStoreError(
-                "The optional keyring package is not installed. "
-                "Install the package with the secrets extra to store API keys securely."
+                "The keyring package is not installed. "
+                "Install the project dependencies to store API keys securely."
             ) from exc
         self._keyring = keyring
 
@@ -147,4 +147,3 @@ def _strip_ref_prefix(secret_ref: str, expected_prefix: str) -> str:
     if not secret_ref.startswith(prefix):
         raise SecretStoreError(f"Secret reference must start with {prefix!r}.")
     return secret_ref[len(prefix) :]
-

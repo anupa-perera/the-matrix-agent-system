@@ -57,10 +57,10 @@ CLI command:       the-matrix
 ## Usage
 
 ```text
-uv tool install "the-matrix-agent-system[secrets]"
+uv tool install the-matrix-agent-system
 the-matrix init
+the-matrix setup
 the-matrix providers list
-the-matrix providers configure
 the-matrix ask "Create a reusable research agent"
 ```
 
@@ -76,16 +76,13 @@ python -m pytest
 Providers are user-selected. The framework does not force a default provider.
 
 ```powershell
+the-matrix setup
 the-matrix providers configure
 the-matrix providers current
 ```
 
 Secrets are handled by **Keymaker**. Keymaker never stores raw secrets in Obsidian, SQLite,
-or logs. The default secure backend is optional:
-
-```powershell
-pip install "the-matrix-agent-system[secrets]"
-```
+or logs. The default secure backend uses the operating system credential store through `keyring`.
 
 If no writable OS secret backend is available, Keymaker can read provider keys from environment
 variables such as:
@@ -98,3 +95,6 @@ THE_MATRIX_OPENAI_API_KEY
 Normal questions do not trigger cloud-use prompts after a provider is configured. Consent is
 reserved for meaningful actions such as file changes, shell commands, sensitive memory writes,
 or privacy-mode conflicts.
+
+`the-matrix init` offers the onboarding wizard on first run. Use `--no-onboarding` for scripts
+or tests that only need the filesystem initialized.

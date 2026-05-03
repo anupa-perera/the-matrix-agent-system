@@ -10,9 +10,17 @@ from thematrix.config import MatrixPaths, ensure_runtime_dirs
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.neo import Neo
 from thematrix.oracle import Oracle
+from thematrix.onboarding import OnboardingService
 from thematrix.providers import provider_catalog
 from thematrix.runtime import Nebuchadnezzar
-from thematrix.schemas import AuthMode, FileChangeConsent, PrivacyMode, ProviderConfig, ProviderProfile
+from thematrix.schemas import (
+    AuthMode,
+    FileChangeConsent,
+    OnboardingProfile,
+    PrivacyMode,
+    ProviderConfig,
+    ProviderProfile,
+)
 from thematrix.security import Keymaker, SecretStoreError
 
 app = typer.Typer(help="The Matrix Agent System CLI.")
@@ -37,30 +45,46 @@ def bootstrap(paths: MatrixPaths) -> tuple[MemoryVault, RuntimeStore]:
 def init(
     home: Annotated[Path | None, typer.Option(help="Override Matrix home path.")] = None,
     vault: Annotated[Path | None, typer.Option(help="Override Obsidian vault path.")] = None,
+    onboarding: Annotated[
+        bool,
+        typer.Option("--onboarding/--no-onboarding", help="Offer the first-run setup wizard."),
+    ] = True,
 ) -> None:
     """Create the global Matrix home and Obsidian vault."""
     paths = MatrixPaths(
         home=home or MatrixPaths().home,
         vault=vault or MatrixPaths().vault,
     )
-    bootstrap(paths)
+    memory_vault, store = bootstrap(paths)
     typer.echo("The Matrix is initialized.")
     typer.echo(f"Home:  {paths.home}")
     typer.echo(f"Vault: {paths.vault}")
     typer.echo(f"DB:    {paths.runtime_db}")
+    if onboarding and not store.get_preference("onboarding_complete"):
+        if typer.confirm("Run the first-run onboarding wizard now?", default=True):
+            _run_onboarding_wizard(paths, memory_vault, store)
+
+
+@app.command()
+def setup() -> None:
+    """Run the first-run onboarding wizard."""
+    paths = MatrixPaths()
+    vault, store = bootstrap(paths)
+    _run_onboarding_wizard(paths, vault, store)
 
 
 @app.command()
 def ask(
     request: Annotated[str, typer.Argument(help="User request to route through The Matrix.")],
     privacy: Annotated[
-        PrivacyMode,
+        PrivacyMode | None,
         typer.Option(help="Privacy mode for this request."),
-    ] = PrivacyMode.ASK_EACH_TIME,
+    ] = None,
 ) -> None:
     """Run a request through Oracle, Architect, Neo, and the runtime."""
     paths = MatrixPaths()
     vault, store = bootstrap(paths)
+    selected_privacy = privacy or _default_privacy_mode(store)
     runtime = Nebuchadnezzar(
         oracle=Oracle(),
         architect=Architect(store),
@@ -70,7 +94,7 @@ def ask(
     )
     result = runtime.run(
         request,
-        privacy_mode=privacy,
+        privacy_mode=selected_privacy,
         provider_config=store.get_default_provider_config(),
     )
     typer.echo(Oracle().finalize(result))
@@ -148,10 +172,13 @@ def current_provider() -> None:
 
     profile = store.get_provider_profile(config.provider_id)
     display_name = profile.display_name if profile else config.provider_id
+    secret_status = "not required"
+    if config.auth_mode != AuthMode.NONE:
+        secret_status = "configured" if config.secret_ref else "missing"
     typer.echo(f"Provider: {display_name}")
     typer.echo(f"Model:    {config.selected_model}")
     typer.echo(f"Auth:     {config.auth_mode.value}")
-    typer.echo(f"Secrets:  {'configured' if config.secret_ref else 'not required'}")
+    typer.echo(f"Secrets:  {secret_status}")
     typer.echo(f"Default:  {config.is_default}")
     typer.echo(f"Files:    {config.file_change_consent.value}")
 
@@ -162,8 +189,48 @@ def memory_path() -> None:
     typer.echo(MatrixPaths().vault)
 
 
+def _run_onboarding_wizard(paths: MatrixPaths, vault: MemoryVault, store: RuntimeStore) -> None:
+    typer.echo("Welcome to The Matrix.")
+    typer.echo("This setup collects the minimum needed to run agents safely.")
+    typer.echo(f"Home:  {paths.home}")
+    typer.echo(f"Vault: {paths.vault}")
+
+    profile = _resolve_provider_choice(store, None)
+    selected_model = _resolve_model_choice(profile, None)
+    auth_mode = _resolve_auth_choice(profile)
+    secret_ref = _resolve_secret_ref(profile, auth_mode, allow_skip=True)
+    privacy_mode = _resolve_privacy_mode()
+    file_consent = _resolve_file_change_consent()
+    guarded_shell_enabled = typer.confirm(
+        "Enable guarded shell access for agents when Neo approves it?",
+        default=True,
+    )
+
+    provider_config = ProviderConfig(
+        provider_id=profile.provider_id,
+        selected_model=selected_model,
+        auth_mode=auth_mode,
+        secret_ref=secret_ref,
+        is_default=True,
+        file_change_consent=file_consent,
+    )
+    onboarding_profile = OnboardingProfile(
+        default_provider_id=profile.provider_id,
+        default_model=selected_model,
+        auth_mode=auth_mode,
+        privacy_mode=privacy_mode,
+        file_change_consent=file_consent,
+        guarded_shell_enabled=guarded_shell_enabled,
+        vault_path=str(paths.vault),
+        secret_configured=secret_ref is not None,
+    )
+    OnboardingService(store, vault).complete(onboarding_profile, provider_config)
+    typer.echo("Onboarding is complete.")
+    typer.echo("Your choices were saved. Secret values were not written to logs or memory.")
+
+
 def _resolve_provider_choice(store: RuntimeStore, provider_id: str | None) -> ProviderProfile:
-    profiles = store.list_provider_profiles()
+    profiles = provider_catalog()
     if provider_id:
         profile = store.get_provider_profile(provider_id)
         if profile is None:
@@ -175,7 +242,7 @@ def _resolve_provider_choice(store: RuntimeStore, provider_id: str | None) -> Pr
     for index, profile in enumerate(profiles, start=1):
         typer.echo(f"{index}. {profile.display_name} ({profile.provider_id}) - {profile.kind.value}")
 
-    choice = typer.prompt("Provider", default="1")
+    choice = typer.prompt("Provider")
     if choice.isdigit():
         selected_index = int(choice)
         if 1 <= selected_index <= len(profiles):
@@ -228,7 +295,11 @@ def _resolve_auth_choice(profile: ProviderProfile) -> AuthMode:
     raise typer.BadParameter("Auth mode choice was not recognized.")
 
 
-def _resolve_secret_ref(profile: ProviderProfile, auth_mode: AuthMode) -> str | None:
+def _resolve_secret_ref(
+    profile: ProviderProfile,
+    auth_mode: AuthMode,
+    allow_skip: bool = False,
+) -> str | None:
     if auth_mode == AuthMode.NONE:
         return None
 
@@ -250,10 +321,43 @@ def _resolve_secret_ref(profile: ProviderProfile, auth_mode: AuthMode) -> str | 
         return env_ref
 
     env_name = Keymaker.env_var_name(profile.provider_id)
+    if allow_skip:
+        typer.echo(
+            "No writable OS secret backend or environment variable was found. "
+            f"You can set {env_name} later or reinstall with keyring support."
+        )
+        if typer.confirm("Continue setup without storing this credential?", default=True):
+            return None
     raise typer.BadParameter(
         "No writable OS secret backend is available. "
-        f"Install the secrets extra or set {env_name} in your environment."
+        f"Install keyring support or set {env_name} in your environment."
     )
+
+
+def _resolve_privacy_mode() -> PrivacyMode:
+    modes = list(PrivacyMode)
+    typer.echo("Choose default privacy mode:")
+    for index, mode in enumerate(modes, start=1):
+        typer.echo(f"{index}. {mode.value}")
+    choice = typer.prompt("Privacy mode", default=PrivacyMode.ASK_EACH_TIME.value)
+    if choice.isdigit():
+        selected_index = int(choice)
+        if 1 <= selected_index <= len(modes):
+            return modes[selected_index - 1]
+    for mode in modes:
+        if choice == mode.value:
+            return mode
+    raise typer.BadParameter("Privacy mode choice was not recognized.")
+
+
+def _default_privacy_mode(store: RuntimeStore) -> PrivacyMode:
+    value = store.get_preference("default_privacy_mode")
+    if isinstance(value, str):
+        try:
+            return PrivacyMode(value)
+        except ValueError:
+            return PrivacyMode.ASK_EACH_TIME
+    return PrivacyMode.ASK_EACH_TIME
 
 
 def _resolve_file_change_consent() -> FileChangeConsent:

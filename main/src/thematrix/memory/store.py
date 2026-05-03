@@ -277,6 +277,16 @@ class RuntimeStore:
                 (key, json.dumps(value), datetime.now(UTC).isoformat()),
             )
 
+    def get_preference(self, key: str) -> object | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value_json FROM preferences WHERE key = ?",
+                (key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["value_json"])
+
     def _provider_config_from_row(self, row: sqlite3.Row) -> ProviderConfig:
         return ProviderConfig(
             provider_id=row["provider_id"],

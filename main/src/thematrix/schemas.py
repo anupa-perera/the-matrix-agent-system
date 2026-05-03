@@ -116,6 +116,18 @@ class ProviderConfig(BaseModel):
     configured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class OnboardingProfile(BaseModel):
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    default_provider_id: str
+    default_model: str
+    auth_mode: AuthMode
+    privacy_mode: PrivacyMode = PrivacyMode.ASK_EACH_TIME
+    file_change_consent: FileChangeConsent = FileChangeConsent.ASK_EACH_TIME
+    guarded_shell_enabled: bool = True
+    vault_path: str
+    secret_configured: bool = False
+
+
 class MatrixRunResult(BaseModel):
     run_id: str = Field(default_factory=lambda: str(uuid4()))
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

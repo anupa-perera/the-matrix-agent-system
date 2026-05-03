@@ -12,14 +12,12 @@ authors = [
   { name = "Anupa Perera" }
 ]
 dependencies = [
+  "keyring>=25.0",
   "pydantic>=2.8",
   "typer>=0.12"
 ]
 
 [project.optional-dependencies]
-secrets = [
-  "keyring>=25.0"
-]
 dev = [
   "pytest>=8.0",
   "ruff>=0.6"
