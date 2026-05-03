@@ -204,6 +204,8 @@ def show_mission(
             f"agent={task.agent_spec.agent_id}"
         )
         typer.echo(f"  reuse: {_agent_reuse_label(task.agent_spec)}")
+        if task.architect_decision:
+            typer.echo(f"  architect: {task.architect_decision}")
         if task.result_summary:
             typer.echo(f"  result: {task.result_summary[:180]}")
 
@@ -543,6 +545,8 @@ def mission_tasks(
             f"agent={task.agent_spec.agent_id}"
         )
         typer.echo(f"  reuse: {_agent_reuse_label(task.agent_spec)}")
+        if task.architect_decision:
+            typer.echo(f"  architect: {task.architect_decision}")
         if task.result_summary:
             typer.echo(f"  result: {task.result_summary[:160]}")
 

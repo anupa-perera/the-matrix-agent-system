@@ -104,6 +104,7 @@ class Nebuchadnezzar:
                 "mission_completed_count": sum(
                     1 for task in plan.tasks if task.status == TaskStatus.COMPLETED
                 ),
+                "architect_decisions": self._architect_decision_metadata(plan),
             },
         )
         self._persist_plan_result(plan, result, execution_tool_results)
@@ -171,6 +172,7 @@ class Nebuchadnezzar:
                 "mission_completed_count": sum(
                     1 for task in plan.tasks if task.status == TaskStatus.COMPLETED
                 ),
+                "architect_decisions": self._architect_decision_metadata(plan),
             },
         )
         self._persist_plan_result(
@@ -320,6 +322,20 @@ class Nebuchadnezzar:
             f"Current sequential task:\n{task.description}\n\n"
             f"Previous task results:\n{context}"
         )
+
+    def _architect_decision_metadata(self, plan: MissionPlan) -> list[dict[str, object]]:
+        return [
+            {
+                "sequence": task.sequence,
+                "title": task.title,
+                "agent_id": task.agent_spec.agent_id,
+                "agent_type": task.agent_spec.agent_type,
+                "reused": bool(task.agent_spec.reuse_candidate_id),
+                "reuse_candidate_id": task.agent_spec.reuse_candidate_id,
+                "decision": task.architect_decision,
+            }
+            for task in sorted(plan.tasks, key=lambda item: item.sequence)
+        ]
 
     def _render_response(
         self,

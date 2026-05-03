@@ -212,6 +212,27 @@ def test_architect_plans_build_then_sentinel_review(tmp_path: Path) -> None:
     assert [task.agent_spec.agent_type for task in plan.tasks] == ["builder", "sentinel"]
     assert plan.tasks[0].sequence == 1
     assert plan.tasks[1].sequence == 2
+    assert "Spawned" in plan.tasks[0].architect_decision
+    assert plan.tasks[0].agent_spec.agent_id in plan.tasks[0].architect_decision
+
+
+def test_architect_records_reuse_decision_on_mission_task(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    architect = Architect(store)
+    brief = OracleBrief(
+        intent="Build a coding helper agent",
+        ethical_status="safe",
+        user_interaction_required=True,
+        human_need="Guide the user clearly.",
+    )
+    first = architect.plan_mission(brief)
+
+    second = architect.plan_mission(brief)
+
+    assert second.tasks[0].agent_spec.agent_id == first.tasks[0].agent_spec.agent_id
+    assert "Reused" in second.tasks[0].architect_decision
+    assert "risk/tool bounds" in second.tasks[0].architect_decision
 
 
 def test_architect_uses_model_for_sequential_plan_then_sanitizes_specs(tmp_path: Path) -> None:

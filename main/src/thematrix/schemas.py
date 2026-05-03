@@ -93,6 +93,7 @@ class MissionTask(BaseModel):
     title: str
     description: str
     agent_spec: AgentSpec
+    architect_decision: str = ""
     status: TaskStatus = TaskStatus.PENDING
     result_summary: str = ""
     tool_result_count: int = 0

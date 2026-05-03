@@ -35,6 +35,8 @@ def test_runtime_records_run(tmp_path) -> None:
     assert result.metadata["mission_strategy"] == "sequential"
     assert result.metadata["mission_task_count"] == 2
     assert result.metadata["mission_completed_count"] == 0
+    assert result.metadata["architect_decisions"][0]["reused"] is False
+    assert "Spawned" in result.metadata["architect_decisions"][0]["decision"]
     assert "No model provider is configured yet." in result.response
     assert "Configure a provider to execute spawned agents." in result.response
     assert "Architect planned 2 sequential task(s)" in result.response
@@ -47,6 +49,7 @@ def test_runtime_records_run(tmp_path) -> None:
     assert len(tasks) == 2
     assert [task.status.value for task in tasks] == ["skipped", "skipped"]
     assert [task.agent_spec.agent_type for task in tasks] == ["builder", "sentinel"]
+    assert all(task.architect_decision for task in tasks)
     assert (
         tmp_path / "vault" / "raw" / "neo_reviews" / f"{result.run_id}-preflight.md"
     ).exists()

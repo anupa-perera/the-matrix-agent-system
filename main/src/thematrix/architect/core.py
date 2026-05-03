@@ -148,6 +148,7 @@ class Architect:
                     title=self._task_title(task_brief.intent),
                     description=task_brief.intent,
                     agent_spec=spec,
+                    architect_decision=self._architect_decision_for(spec),
                 )
             )
         return MissionPlan(tasks=tasks)
@@ -300,6 +301,17 @@ class Architect:
         if len(title) <= 72:
             return title
         return f"{title[:69].rstrip()}..."
+
+    def _architect_decision_for(self, spec: AgentSpec) -> str:
+        if spec.reuse_candidate_id:
+            return (
+                f"Reused `{spec.agent_id}` because an existing {spec.agent_type} baseline "
+                "matched the task purpose and stayed within the approved risk/tool bounds."
+            )
+        return (
+            f"Spawned `{spec.agent_id}` because no compatible reusable {spec.agent_type} "
+            "baseline matched this task."
+        )
 
     def _classify_agent_type(self, intent: str) -> str:
         lowered = intent.lower()

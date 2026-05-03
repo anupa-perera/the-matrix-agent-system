@@ -221,6 +221,7 @@ class MemoryVault:
             f"- Agent: [[../agents/{task.agent_spec.agent_id}|{task.agent_spec.agent_id}]]",
             f"- Type: {task.agent_spec.agent_type}",
             f"- Reuse: {self._agent_reuse_label(task.agent_spec)}",
+            f"- Architect decision: {task.architect_decision or 'not recorded'}",
             f"- Tools: {', '.join(task.agent_spec.tools_allowed) or 'none'}",
             f"- Tool results: {task.tool_result_count}",
             f"- Error: {task.error or 'none'}",

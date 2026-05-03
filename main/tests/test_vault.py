@@ -96,6 +96,7 @@ def test_vault_records_mission_task_reuse_status(tmp_path) -> None:
                 title="Build",
                 description="Build safely.",
                 agent_spec=spec,
+                architect_decision="Reused `builder-test-agent` for a compatible task.",
                 status=TaskStatus.PENDING,
             )
         ],
@@ -107,3 +108,4 @@ def test_vault_records_mission_task_reuse_status(tmp_path) -> None:
         tmp_path / "vault" / "wiki" / "workflows" / "mission-reuse.md"
     ).read_text(encoding="utf-8")
     assert "- Reuse: reused from builder-baseline" in workflow
+    assert "- Architect decision: Reused `builder-test-agent`" in workflow
