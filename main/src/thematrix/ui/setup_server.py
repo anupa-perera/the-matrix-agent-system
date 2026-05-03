@@ -5,6 +5,7 @@ from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
+import json
 from secrets import token_urlsafe
 from threading import Thread
 from typing import Callable
@@ -232,6 +233,7 @@ def render_setup_form(token: str, error: str | None = None) -> str:
         f'<option value="{mode.value}">{mode.value}</option>' for mode in AuthMode
     )
     provider_notes = "".join(_provider_note(profile) for profile in providers)
+    provider_json = _provider_setup_json(providers)
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
     return f"""<!doctype html>
 <html lang="en">
@@ -269,6 +271,20 @@ def render_setup_form(token: str, error: str | None = None) -> str:
       font: inherit;
       background: white;
     }}
+    .hint {{
+      color: #65706b;
+      font-size: 13px;
+      font-weight: 400;
+    }}
+    .provider-card {{
+      border: 1px solid #dce1db;
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfa;
+      margin: 12px 0;
+    }}
+    .provider-card strong {{ display: block; margin-bottom: 4px; }}
+    .hidden {{ display: none; }}
     .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
     .check {{ display: flex; gap: 8px; align-items: center; font-weight: 500; }}
     .check input {{ width: auto; }}
@@ -307,22 +323,27 @@ def render_setup_form(token: str, error: str | None = None) -> str:
     {error_html}
     <form method="post" action="/save?token={escape(token)}">
       <label>Provider
-        <select name="provider_id" required>{provider_options}</select>
+        <select id="provider_id" name="provider_id" required>{provider_options}</select>
       </label>
+      <div id="provider_card" class="provider-card"></div>
       <div class="row">
         <label>Model
-          <input name="model" list="models" placeholder="openai/gpt-5-mini" required>
+          <input id="model" name="model" list="models" placeholder="openai/gpt-5-mini" required>
           <datalist id="models">{model_options}</datalist>
+          <span id="model_hint" class="hint"></span>
         </label>
         <label>Auth mode
-          <select name="auth_mode">{auth_options}</select>
+          <select id="auth_mode" name="auth_mode">{auth_options}</select>
+          <span id="auth_hint" class="hint"></span>
         </label>
       </div>
-      <label>API key or local token
-        <input name="api_key" type="password" autocomplete="off" placeholder="Only stored through Keymaker">
+      <label id="api_key_row">API key or local token
+        <input id="api_key" name="api_key" type="password" autocomplete="off" placeholder="Only stored through Keymaker">
+        <span id="api_key_hint" class="hint"></span>
       </label>
       <label>Base URL
-        <input name="base_url" placeholder="Use provider default unless you need a custom endpoint">
+        <input id="base_url" name="base_url" placeholder="Use provider default unless you need a custom endpoint">
+        <span id="base_url_hint" class="hint"></span>
       </label>
       <div class="row">
         <label>Privacy mode
@@ -345,6 +366,76 @@ def render_setup_form(token: str, error: str | None = None) -> str:
     </form>
     <h2>Provider Notes</h2>
     <div class="notes">{provider_notes}</div>
+    <script id="provider-data" type="application/json">{provider_json}</script>
+    <script>
+      const providers = JSON.parse(document.getElementById("provider-data").textContent);
+      const byId = Object.fromEntries(providers.map((provider) => [provider.provider_id, provider]));
+      const providerSelect = document.getElementById("provider_id");
+      const modelInput = document.getElementById("model");
+      const authSelect = document.getElementById("auth_mode");
+      const apiKeyRow = document.getElementById("api_key_row");
+      const apiKeyInput = document.getElementById("api_key");
+      const baseUrlInput = document.getElementById("base_url");
+      const providerCard = document.getElementById("provider_card");
+      const modelHint = document.getElementById("model_hint");
+      const authHint = document.getElementById("auth_hint");
+      const apiKeyHint = document.getElementById("api_key_hint");
+      const baseUrlHint = document.getElementById("base_url_hint");
+
+      function preferredAuth(provider) {{
+        if (provider.auth_modes.includes("api_key")) return "api_key";
+        if (provider.auth_modes.includes("none")) return "none";
+        if (provider.auth_modes.includes("local_token")) return "local_token";
+        return provider.auth_modes[0] || "none";
+      }}
+
+      function syncProvider() {{
+        const provider = byId[providerSelect.value];
+        if (!provider) return;
+        modelInput.value = provider.suggested_models[0] || "default";
+        baseUrlInput.value = provider.default_base_url || "";
+        authSelect.innerHTML = "";
+        for (const mode of provider.auth_modes) {{
+          const option = document.createElement("option");
+          option.value = mode;
+          option.textContent = mode;
+          authSelect.appendChild(option);
+        }}
+        authSelect.value = preferredAuth(provider);
+        providerCard.innerHTML = `
+          <strong></strong>
+          <p class="setup-hint"></p>
+          <p><span class="hint data-boundary"></span></p>
+        `;
+        providerCard.querySelector("strong").textContent = `${{provider.display_name}} (${{provider.kind}})`;
+        providerCard.querySelector(".setup-hint").textContent = provider.setup_hint;
+        providerCard.querySelector(".data-boundary").textContent = provider.data_boundary;
+        modelHint.textContent = provider.suggested_models.length
+          ? `Recommended: ${{provider.suggested_models.join(", ")}}`
+          : "Enter the model id expected by this endpoint.";
+        baseUrlHint.textContent = provider.default_base_url
+          ? `Default: ${{provider.default_base_url}}`
+          : "Required for custom endpoints.";
+        syncAuth();
+      }}
+
+      function syncAuth() {{
+        const mode = authSelect.value;
+        const needsSecret = mode === "api_key" || mode === "local_token";
+        apiKeyRow.classList.toggle("hidden", !needsSecret);
+        apiKeyInput.required = needsSecret;
+        apiKeyHint.textContent = needsSecret
+          ? "Stored only through Keymaker. Not written to SQLite, Obsidian, logs, or the dashboard."
+          : "No secret is needed for this provider mode.";
+        authHint.textContent = mode === "oauth"
+          ? "OAuth is listed as provider capability, but setup is not wired in this version."
+          : "The Python backend validates this choice before saving.";
+      }}
+
+      providerSelect.addEventListener("change", syncProvider);
+      authSelect.addEventListener("change", syncAuth);
+      syncProvider();
+    </script>
   </main>
 </body>
 </html>
@@ -362,6 +453,28 @@ def _provider_note(profile: ProviderProfile) -> str:
         f"<p>Suggested models: <code>{escape(models)}</code></p>"
         f"<p>{escape(profile.data_boundary)}</p>"
         "</div>"
+    )
+
+
+def _provider_setup_json(profiles: list[ProviderProfile]) -> str:
+    payload = [
+        {
+            "provider_id": profile.provider_id,
+            "display_name": profile.display_name,
+            "kind": profile.kind.value,
+            "auth_modes": [mode.value for mode in profile.auth_modes],
+            "suggested_models": profile.suggested_models,
+            "default_base_url": profile.default_base_url,
+            "setup_hint": profile.setup_hint,
+            "data_boundary": profile.data_boundary,
+        }
+        for profile in profiles
+    ]
+    return (
+        json.dumps(payload)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
     )
 
 

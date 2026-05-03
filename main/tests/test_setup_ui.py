@@ -1,3 +1,5 @@
+import json
+import re
 from threading import Event, Thread
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlparse
@@ -74,6 +76,26 @@ def test_setup_ui_form_contains_session_token() -> None:
 
     assert "/save?token=token-123" in html
     assert "The Matrix Setup" in html
+    assert "syncProvider()" in html
+
+
+def test_setup_ui_form_embeds_provider_defaults() -> None:
+    html = render_setup_form("token-123")
+    match = re.search(
+        r'<script id="provider-data" type="application/json">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    providers = json.loads(match.group(1))
+    ollama = next(provider for provider in providers if provider["provider_id"] == "ollama")
+    openrouter = next(
+        provider for provider in providers if provider["provider_id"] == "openrouter"
+    )
+    assert ollama["auth_modes"] == ["none"]
+    assert ollama["default_base_url"] == "http://localhost:11434/v1"
+    assert openrouter["suggested_models"][0] == "openai/gpt-5-mini"
 
 
 def test_setup_ui_server_binds_localhost_and_saves_form(tmp_path) -> None:

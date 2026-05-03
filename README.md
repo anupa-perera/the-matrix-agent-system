@@ -106,7 +106,8 @@ or tests that only need the filesystem initialized.
 
 `the-matrix setup-ui` starts a tiny local-only onboarding server on `127.0.0.1` with a random
 URL token. It lets users choose a provider, model, privacy mode, and file-change consent from the
-browser while Python still owns all writes to SQLite and Keymaker. OAuth choices are shown as
+browser while Python still owns all writes to SQLite and Keymaker. The form auto-fills provider
+defaults such as suggested model, base URL, and supported auth modes. OAuth choices are shown as
 provider capability, but browser OAuth setup is not wired in this version.
 
 ## Model Gateway
