@@ -663,6 +663,29 @@ def render_setup_form(
       display: grid;
       gap: 14px;
     }}
+    .provider-registry {{
+      margin-top: 28px;
+    }}
+    .provider-registry summary {{
+      cursor: pointer;
+      list-style: none;
+      color: var(--phosphor-bright);
+      font-size: 15px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      text-shadow: 0 0 6px rgba(0, 255, 65, 0.4);
+    }}
+    .provider-registry summary::-webkit-details-marker {{ display: none; }}
+    .provider-registry summary::before {{
+      content: '▸ ';
+      color: var(--phosphor-dim);
+    }}
+    .provider-registry[open] summary::before {{ content: '▾ '; }}
+    .provider-registry .provider-notes-list {{
+      display: grid;
+      gap: 14px;
+      margin-top: 16px;
+    }}
     .footer-bar {{
       margin-top: 26px;
       padding-top: 14px;
@@ -751,8 +774,10 @@ def render_setup_form(
       <label class="check"><input name="test_provider" type="checkbox" checked> Test the connection before finishing</label>
       <button type="submit">Initialize Connection</button>
     </form>
-    <h2>Provider Registry</h2>
-    <div class="notes">{provider_notes}</div>
+    <details class="notes provider-registry">
+      <summary>Provider Registry</summary>
+      <div class="provider-notes-list">{provider_notes}</div>
+    </details>
     <div class="footer-bar">
       <span>// the matrix has you</span>
       <span>// follow the white rabbit &nbsp;▌</span>

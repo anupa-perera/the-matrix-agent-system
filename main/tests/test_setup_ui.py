@@ -85,6 +85,8 @@ def test_setup_ui_form_contains_session_token() -> None:
     assert "syncProvider()" in html
     assert 'id="auth_mode_row"' in html
     assert 'provider.auth_modes[0] === "none"' in html
+    assert '<details class="notes provider-registry">' in html
+    assert "<summary>Provider Registry</summary>" in html
 
 
 def test_setup_ui_form_embeds_provider_defaults() -> None:
