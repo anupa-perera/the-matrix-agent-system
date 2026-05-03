@@ -47,6 +47,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       --panel-edge: rgba(0, 255, 65, 0.10);
       --phosphor: #00b341;
       --phosphor-dim: #1f5530;
+      --phosphor-title: #7cff9d;
       --phosphor-deep: #0a2c14;
       --phosphor-bright: #00ff41;
       --phosphor-white: #d4ffe2;
@@ -136,7 +137,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     .boot-log {{
       margin-bottom: 18px;
       font-size: 13px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       letter-spacing: 0.5px;
       line-height: 1.9;
     }}
@@ -173,7 +174,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     }}
     h1::before {{
       content: '> ';
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       letter-spacing: 0;
     }}
     h1::after {{
@@ -189,7 +190,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       font-size: 12px;
       letter-spacing: 1.5px;
       text-transform: uppercase;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
     }}
     .hud-status span {{ display: inline-flex; align-items: center; gap: 8px; }}
     .hud-status .dot {{
@@ -198,16 +199,16 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       background: var(--phosphor-bright);
       animation: pulseDot 2.4s ease-in-out infinite;
     }}
-    .hud-status .v {{ color: var(--phosphor); }}
+    .hud-status .v {{ color: var(--phosphor-bright); }}
     .hud-meta {{
       text-align: right;
       font-size: 12px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       letter-spacing: 1.5px;
       text-transform: uppercase;
       line-height: 1.9;
     }}
-    .hud-meta strong {{ color: var(--phosphor); font-weight: normal; }}
+    .hud-meta strong {{ color: var(--phosphor-bright); font-weight: normal; }}
     .hud-meta .frame {{
       display: inline-block;
       border: 1px solid var(--line);
@@ -239,7 +240,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       top: 10px; left: 16px;
       font-size: 11px;
       letter-spacing: 2.5px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
     }}
     .panel::after {{
       content: '';
@@ -280,11 +281,11 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       font-weight: normal;
       text-transform: uppercase;
       letter-spacing: 2.5px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       padding-bottom: 8px;
       border-bottom: 1px dashed var(--line);
     }}
-    h2::before {{ content: '// '; color: var(--phosphor-dim); }}
+    h2::before {{ content: '// '; color: var(--phosphor-title); }}
     h3 {{
       margin: 0 0 4px;
       font-size: 14px;
@@ -293,7 +294,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       letter-spacing: 0.3px;
     }}
     p {{ color: var(--phosphor); }}
-    .muted {{ color: var(--phosphor-dim); }}
+    .muted {{ color: var(--phosphor-title); }}
     strong {{ color: var(--phosphor-bright); font-weight: normal; }}
     /* METRIC PANELS */
     .panel.metric-panel {{
@@ -307,7 +308,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       font-size: 12px;
       letter-spacing: 2.5px;
       text-transform: uppercase;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
     }}
     .metric {{
       font-family: "VT323", "Cascadia Mono", monospace;
@@ -336,7 +337,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       gap: 6px;
       border: 1px solid var(--line);
       padding: 4px 11px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       font-size: 11px;
       white-space: nowrap;
       text-transform: uppercase;
@@ -358,7 +359,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       content: '▸';
       position: absolute;
       left: 0; top: 12px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       font-size: 11px;
     }}
     .item:first-child {{ border-top: 0; padding-top: 0; }}
@@ -387,7 +388,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       font-size: 12px;
       letter-spacing: 2.5px;
       text-transform: uppercase;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
     }}
     .system-paths .path-value {{
       flex: 1;

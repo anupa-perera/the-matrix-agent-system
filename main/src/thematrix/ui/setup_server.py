@@ -303,6 +303,7 @@ def render_setup_form(
       --panel-edge: rgba(0, 255, 65, 0.10);
       --phosphor: #00b341;
       --phosphor-dim: #1f5530;
+      --phosphor-title: #7cff9d;
       --phosphor-deep: #0a2c14;
       --phosphor-bright: #00ff41;
       --phosphor-white: #d4ffe2;
@@ -384,7 +385,7 @@ def render_setup_form(
     .boot-log {{
       margin-bottom: 22px;
       font-size: 13px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       letter-spacing: 0.5px;
       line-height: 1.9;
     }}
@@ -411,7 +412,7 @@ def render_setup_form(
       text-transform: uppercase;
       animation: phosphorPulse 4.5s ease-in-out infinite;
     }}
-    h1::before {{ content: '> '; color: var(--phosphor-dim); letter-spacing: 0; }}
+    h1::before {{ content: '> '; color: var(--phosphor-title); letter-spacing: 0; }}
     h1::after {{
       content: '_';
       animation: blink 1.05s step-end infinite;
@@ -425,7 +426,7 @@ def render_setup_form(
       font-size: 12px;
       letter-spacing: 1.5px;
       text-transform: uppercase;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
     }}
     .hud-status span {{ display: inline-flex; align-items: center; gap: 8px; }}
     .hud-status .dot {{
@@ -434,11 +435,11 @@ def render_setup_form(
       background: var(--phosphor-bright);
       animation: pulseDot 2.4s ease-in-out infinite;
     }}
-    .hud-status .v {{ color: var(--phosphor); }}
+    .hud-status .v {{ color: var(--phosphor-bright); }}
     .lede {{
       margin: 14px 0 0;
       font-size: 14px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       letter-spacing: 0.3px;
     }}
     /* SECTION HEADINGS */
@@ -448,11 +449,11 @@ def render_setup_form(
       font-weight: normal;
       text-transform: uppercase;
       letter-spacing: 2.5px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       padding-bottom: 8px;
       border-bottom: 1px dashed var(--line);
     }}
-    h2::before {{ content: '// '; color: var(--phosphor-dim); }}
+    h2::before {{ content: '// '; color: var(--phosphor-title); }}
     p {{ margin: 0; }}
     /* FORM AS HUD CONSOLE */
     form, .notes {{
@@ -467,7 +468,7 @@ def render_setup_form(
       content: '◤';
       position: absolute;
       top: 6px; left: 8px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       font-size: 10px;
     }}
     form::after, .notes::after {{
@@ -519,14 +520,14 @@ def render_setup_form(
     }}
     select option {{ background: #000a00; color: var(--phosphor); }}
     .hint {{
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       font-size: 13px;
       letter-spacing: 0.2px;
       text-transform: none;
       font-weight: normal;
       line-height: 1.55;
     }}
-    .hint::before {{ content: '↳ '; color: var(--phosphor-dim); }}
+    .hint::before {{ content: '↳ '; color: var(--phosphor-title); }}
     /* PROVIDER CARD — live HUD readout */
     .provider-card {{
       position: relative;
@@ -544,7 +545,7 @@ def render_setup_form(
       font-size: 11px;
       letter-spacing: 2px;
       text-transform: uppercase;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
     }}
     .provider-card::after {{
       content: '';
@@ -565,7 +566,7 @@ def render_setup_form(
     }}
     .provider-card p {{ margin: 6px 0; }}
     .provider-card .setup-hint {{ color: var(--phosphor); font-size: 15px; line-height: 1.55; }}
-    .provider-card .data-boundary {{ color: var(--phosphor-dim); font-size: 13px; }}
+    .provider-card .data-boundary {{ color: var(--phosphor-title); font-size: 13px; }}
     .hidden {{ display: none; }}
     .row {{ display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 18px; }}
     .check {{
@@ -646,7 +647,7 @@ def render_setup_form(
       font-size: 16px;
       letter-spacing: 0.8px;
     }}
-    .note p {{ margin: 5px 0; font-size: 14px; color: var(--phosphor-dim); line-height: 1.55; }}
+    .note p {{ margin: 5px 0; font-size: 14px; color: var(--phosphor-title); line-height: 1.55; }}
     .note p:nth-child(2) {{ color: var(--phosphor); }}
     code {{
       font-family: "Share Tech Mono", "Cascadia Mono", monospace;
@@ -673,7 +674,7 @@ def render_setup_form(
     .provider-registry summary::-webkit-details-marker {{ display: none; }}
     .provider-registry summary::before {{
       content: '▸ ';
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
     }}
     .provider-registry[open] summary::before {{ content: '▾ '; }}
     .provider-registry .provider-notes-list {{
@@ -690,7 +691,7 @@ def render_setup_form(
       flex-wrap: wrap;
       gap: 12px;
       font-size: 11px;
-      color: var(--phosphor-dim);
+      color: var(--phosphor-title);
       letter-spacing: 2px;
       text-transform: uppercase;
       opacity: 0;
