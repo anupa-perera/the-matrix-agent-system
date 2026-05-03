@@ -20,6 +20,10 @@ jobs:
           python -m pip install build
       - name: Lint
         run: python -m ruff check .
+      - name: Check installer syntax
+        shell: pwsh
+        run: |
+          $null = [scriptblock]::Create((Get-Content install.ps1 -Raw))
       - name: Test
         run: python -m pytest
       - name: Build wheel

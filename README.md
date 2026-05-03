@@ -78,6 +78,33 @@ python -m ruff check .
 python -m pytest
 ```
 
+## Client Install
+
+For a non-technical Windows client, use the bootstrap installer:
+
+```powershell
+irm https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.ps1 | iex
+```
+
+The installer runs for the current Windows user and does not require admin rights. It installs
+`uv` if needed, installs The Matrix as an isolated command-line tool, then opens the guided setup
+with `the-matrix start`.
+
+After setup, the user only needs:
+
+```powershell
+the-matrix start
+the-matrix ask "Create a reusable research agent"
+```
+
+Advanced install options:
+
+```powershell
+.\install.ps1 -SkipStart
+.\install.ps1 -Python 3.12
+.\install.ps1 -Source "https://github.com/anupa-perera/the-matrix-agent-system/archive/refs/heads/main.zip"
+```
+
 ## Provider Setup
 
 Providers are user-selected. The framework does not force a default provider.
