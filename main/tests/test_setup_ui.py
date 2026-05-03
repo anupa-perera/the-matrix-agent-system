@@ -7,6 +7,7 @@ from urllib.request import Request, urlopen
 
 from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
+from thematrix.providers import ProviderDetection
 from thematrix.security import InMemorySecretStore, Keymaker
 from thematrix.ui.setup_server import (
     MAX_SETUP_BODY_BYTES,
@@ -85,7 +86,19 @@ def test_setup_ui_form_contains_session_token() -> None:
 
 
 def test_setup_ui_form_embeds_provider_defaults() -> None:
-    html = render_setup_form("token-123")
+    html = render_setup_form(
+        "token-123",
+        detections=[
+            ProviderDetection(
+                provider_id="ollama",
+                display_name="Ollama",
+                reachable=True,
+                base_url="http://localhost:11434/v1",
+                models=["llama3.2:latest"],
+                message="Ollama is reachable.",
+            )
+        ],
+    )
     match = re.search(
         r'<script id="provider-data" type="application/json">(.*?)</script>',
         html,
@@ -100,6 +113,8 @@ def test_setup_ui_form_embeds_provider_defaults() -> None:
     )
     assert ollama["auth_modes"] == ["none"]
     assert ollama["default_base_url"] == "http://localhost:11434/v1"
+    assert ollama["detected_reachable"] is True
+    assert ollama["detected_models"] == ["llama3.2:latest"]
     assert openrouter["suggested_models"][0] == "openai/gpt-5-mini"
 
 

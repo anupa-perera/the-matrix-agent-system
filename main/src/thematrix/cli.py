@@ -139,6 +139,63 @@ def setup_ui(
 
 
 @app.command()
+def start(
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open/--no-open", help="Open browser setup/dashboard pages."),
+    ] = True,
+    test_provider: Annotated[
+        bool,
+        typer.Option("--test-provider/--no-test-provider", help="Run a readiness check if needed."),
+    ] = True,
+    setup_timeout: Annotated[
+        int,
+        typer.Option(help="Seconds before the setup UI closes automatically."),
+    ] = 15 * 60,
+) -> None:
+    """Beginner-friendly setup and launch flow."""
+    paths = MatrixPaths()
+    vault, store = bootstrap(paths)
+
+    typer.echo("Welcome to The Matrix.")
+    typer.echo("I will check the local setup and open a guided setup page if anything is missing.")
+    typer.echo(f"Home:  {paths.home}")
+    typer.echo(f"Vault: {paths.vault}")
+
+    provider_config = store.get_default_provider_config()
+    onboarding_complete = store.get_preference("onboarding_complete") is True
+    if not onboarding_complete or provider_config is None:
+        typer.echo("Setup is not complete yet. Opening the guided local setup page.")
+        typer.echo("The page runs only on 127.0.0.1 and uses a random URL token.")
+        try:
+            serve_setup_ui(
+                paths,
+                vault,
+                store,
+                open_browser=open_browser,
+                url_callback=lambda value: typer.echo(f"Setup page: {value}"),
+                timeout_seconds=setup_timeout,
+            )
+        except KeyboardInterrupt:
+            typer.echo("Setup was stopped.")
+            raise typer.Exit(code=1) from None
+        provider_config = store.get_default_provider_config()
+        onboarding_complete = store.get_preference("onboarding_complete") is True
+
+    if not onboarding_complete or provider_config is None:
+        typer.echo("Setup is still incomplete. Run `the-matrix start` again when ready.")
+        raise typer.Exit(code=1)
+
+    _maybe_check_provider(store, provider_config, test_provider)
+    dashboard_path = write_dashboard(paths, store)
+    typer.echo("The Matrix is ready.")
+    typer.echo(f"Dashboard: {dashboard_path}")
+    if open_browser:
+        webbrowser.open(Path(dashboard_path).as_uri())
+    typer.echo('Try: the-matrix ask "Create a reusable research agent"')
+
+
+@app.command()
 def doctor() -> None:
     """Show local setup health without exposing secrets."""
     paths = MatrixPaths()
@@ -342,6 +399,34 @@ def _build_runtime(
         ),
     )
     return oracle, runtime
+
+
+def _maybe_check_provider(
+    store: RuntimeStore,
+    provider_config: ProviderConfig,
+    should_check: bool,
+) -> None:
+    verification = store.get_provider_verification(provider_config.provider_id)
+    if verification and verification.get("ok"):
+        typer.echo(f"Provider already verified: {provider_config.provider_id}")
+        return
+    if not should_check:
+        typer.echo("Provider readiness was not checked.")
+        return
+
+    typer.echo(f"Checking provider readiness: {provider_config.provider_id}")
+    health = default_model_gateway(store).health_check(provider_config)
+    store.record_provider_verification(
+        provider_id=provider_config.provider_id,
+        ok=health.ok,
+        message=health.message,
+        model=provider_config.selected_model,
+    )
+    if health.ok:
+        typer.echo(f"Provider ready: {health.message}")
+    else:
+        typer.echo(f"Provider check failed: {health.message}")
+        typer.echo("You can still use planning mode, or run `the-matrix setup-ui` to adjust settings.")
 
 
 @agents_app.command("list")

@@ -58,6 +58,7 @@ CLI command:       the-matrix
 
 ```text
 uv tool install the-matrix-agent-system
+the-matrix start
 the-matrix init
 the-matrix setup
 the-matrix setup-ui
@@ -82,6 +83,7 @@ python -m pytest
 Providers are user-selected. The framework does not force a default provider.
 
 ```powershell
+the-matrix start
 the-matrix setup
 the-matrix providers configure
 the-matrix providers current
@@ -103,14 +105,20 @@ Normal questions do not trigger cloud-use prompts after a provider is configured
 reserved for meaningful actions such as file changes, shell commands, sensitive memory writes,
 or privacy-mode conflicts.
 
-`the-matrix init` offers the onboarding wizard on first run. Use `--no-onboarding` for scripts
-or tests that only need the filesystem initialized.
+`the-matrix start` is the beginner-friendly entry point. It creates the local Matrix folders,
+opens the guided browser setup if anything is missing, checks provider readiness when possible,
+writes the local dashboard, and then exits. It is not an always-on service.
+
+`the-matrix init` offers the terminal onboarding wizard on first run. Use `--no-onboarding` for
+scripts or tests that only need the filesystem initialized.
 
 `the-matrix setup-ui` starts a tiny local-only onboarding server on `127.0.0.1` with a random
 URL token. It lets users choose a provider, model, privacy mode, and file-change consent from the
-browser while Python still owns all writes to SQLite and Keymaker. The form auto-fills provider
-defaults such as suggested model, base URL, and supported auth modes. OAuth choices are shown as
-provider capability, but browser OAuth setup is not wired in this version.
+browser while Python still owns all writes to SQLite and Keymaker. The form uses plain-language
+safe defaults, detects running local providers such as Ollama and LM Studio, auto-fills provider
+defaults such as suggested model, base URL, and supported auth modes, and can test the connection
+before finishing. OAuth choices are shown as provider capability, but browser OAuth setup is not
+wired in this version.
 
 ## Model Gateway
 
@@ -185,6 +193,7 @@ settings allow file changes. Paths outside the workspace and secret-looking path
 
 - `the-matrix agents list` shows reusable agents tracked by Architect.
 - `the-matrix agents show <agent-id>` shows one agent spec without printing prompt text.
+- `the-matrix start` runs the beginner-friendly setup and launch flow.
 - `the-matrix setup-ui` opens local-only browser onboarding.
 - `the-matrix providers detect` checks local Ollama and LM Studio endpoints.
 - `the-matrix memory prompt-blocks` shows prompt-cache hashes.
