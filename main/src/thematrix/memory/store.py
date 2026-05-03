@@ -58,10 +58,23 @@ class RuntimeStore:
                     selected_model TEXT NOT NULL,
                     auth_mode TEXT NOT NULL,
                     secret_ref TEXT,
+                    base_url TEXT,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     is_default INTEGER NOT NULL DEFAULT 1,
                     file_change_consent TEXT NOT NULL,
                     configured_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS model_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    ok INTEGER NOT NULL,
+                    latency_ms INTEGER,
+                    request_chars INTEGER NOT NULL,
+                    response_chars INTEGER NOT NULL,
+                    error_type TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS runs (
@@ -88,6 +101,7 @@ class RuntimeStore:
                 );
                 """
             )
+            self._ensure_column(conn, "provider_settings", "base_url", "TEXT")
 
     def upsert_agent(self, spec: AgentSpec) -> None:
         payload = spec.model_dump_json()
@@ -178,16 +192,18 @@ class RuntimeStore:
                     selected_model,
                     auth_mode,
                     secret_ref,
+                    base_url,
                     enabled,
                     is_default,
                     file_change_consent,
                     configured_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(provider_id) DO UPDATE SET
                     selected_model = excluded.selected_model,
                     auth_mode = excluded.auth_mode,
                     secret_ref = excluded.secret_ref,
+                    base_url = excluded.base_url,
                     enabled = excluded.enabled,
                     is_default = excluded.is_default,
                     file_change_consent = excluded.file_change_consent,
@@ -198,6 +214,7 @@ class RuntimeStore:
                     config.selected_model,
                     config.auth_mode.value,
                     config.secret_ref,
+                    config.base_url,
                     int(config.enabled),
                     int(config.is_default),
                     config.file_change_consent.value,
@@ -264,6 +281,43 @@ class RuntimeStore:
                     ),
                 )
 
+    def record_model_call(
+        self,
+        provider_id: str,
+        model: str,
+        ok: bool,
+        request_chars: int,
+        response_chars: int,
+        latency_ms: int | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO model_calls(
+                    created_at,
+                    provider_id,
+                    model,
+                    ok,
+                    latency_ms,
+                    request_chars,
+                    response_chars,
+                    error_type
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(UTC).isoformat(),
+                    provider_id,
+                    model,
+                    int(ok),
+                    latency_ms,
+                    request_chars,
+                    response_chars,
+                    error_type,
+                ),
+            )
+
     def set_preference(self, key: str, value: object) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -293,8 +347,20 @@ class RuntimeStore:
             selected_model=row["selected_model"],
             auth_mode=row["auth_mode"],
             secret_ref=row["secret_ref"],
+            base_url=row["base_url"],
             enabled=bool(row["enabled"]),
             is_default=bool(row["is_default"]),
             file_change_consent=row["file_change_consent"],
             configured_at=datetime.fromisoformat(row["configured_at"]),
         )
+
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        column_type: str,
+    ) -> None:
+        columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        if not any(row["name"] == column_name for row in columns):
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")

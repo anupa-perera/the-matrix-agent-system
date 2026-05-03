@@ -61,6 +61,7 @@ uv tool install the-matrix-agent-system
 the-matrix init
 the-matrix setup
 the-matrix providers list
+the-matrix providers test
 the-matrix ask "Create a reusable research agent"
 ```
 
@@ -79,6 +80,7 @@ Providers are user-selected. The framework does not force a default provider.
 the-matrix setup
 the-matrix providers configure
 the-matrix providers current
+the-matrix providers test
 ```
 
 Secrets are handled by **Keymaker**. Keymaker never stores raw secrets in Obsidian, SQLite,
@@ -98,3 +100,18 @@ or privacy-mode conflicts.
 
 `the-matrix init` offers the onboarding wizard on first run. Use `--no-onboarding` for scripts
 or tests that only need the filesystem initialized.
+
+## Model Gateway
+
+Providers are called through a single `ModelGateway` boundary. Oracle, Architect, Neo, and
+spawned agents should not know provider-specific HTTP details.
+
+The first gateway supports:
+
+- OpenAI-compatible APIs: OpenRouter, OpenAI, Mistral, Ollama, LM Studio, and custom endpoints.
+- Anthropic Messages API.
+- Gemini `generateContent` API.
+
+`the-matrix providers test` sends a small readiness prompt through the configured provider and
+records only metadata such as provider, model, status, and character counts. It does not write
+prompt text or secret values to Obsidian or SQLite.

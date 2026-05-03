@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from thematrix.schemas import AuthMode, ProviderKind, ProviderProfile
+from thematrix.schemas import AuthMode, ProviderAdapterKind, ProviderKind, ProviderProfile
 
 
 def provider_catalog() -> list[ProviderProfile]:
@@ -9,7 +9,9 @@ def provider_catalog() -> list[ProviderProfile]:
             provider_id="openrouter",
             display_name="OpenRouter",
             kind=ProviderKind.CLOUD,
+            adapter_kind=ProviderAdapterKind.OPENAI_COMPATIBLE,
             auth_modes=[AuthMode.API_KEY, AuthMode.OAUTH],
+            default_base_url="https://openrouter.ai/api/v1",
             suggested_models=[
                 "openai/gpt-5-mini",
                 "anthropic/claude-sonnet-4.5",
@@ -25,7 +27,9 @@ def provider_catalog() -> list[ProviderProfile]:
             provider_id="openai",
             display_name="OpenAI",
             kind=ProviderKind.CLOUD,
+            adapter_kind=ProviderAdapterKind.OPENAI_COMPATIBLE,
             auth_modes=[AuthMode.API_KEY],
+            default_base_url="https://api.openai.com/v1",
             suggested_models=["gpt-5-mini", "gpt-5.1", "gpt-4.1"],
             supports_model_selection=True,
             supports_tools=True,
@@ -38,7 +42,9 @@ def provider_catalog() -> list[ProviderProfile]:
             provider_id="anthropic",
             display_name="Anthropic",
             kind=ProviderKind.CLOUD,
+            adapter_kind=ProviderAdapterKind.ANTHROPIC_MESSAGES,
             auth_modes=[AuthMode.API_KEY],
+            default_base_url="https://api.anthropic.com/v1",
             suggested_models=["claude-sonnet-4.5", "claude-opus-4.1"],
             supports_model_selection=True,
             supports_structured_output=True,
@@ -49,7 +55,9 @@ def provider_catalog() -> list[ProviderProfile]:
             provider_id="gemini",
             display_name="Gemini",
             kind=ProviderKind.CLOUD,
+            adapter_kind=ProviderAdapterKind.GEMINI_GENERATE_CONTENT,
             auth_modes=[AuthMode.API_KEY, AuthMode.OAUTH],
+            default_base_url="https://generativelanguage.googleapis.com/v1beta",
             suggested_models=["gemini-2.5-pro", "gemini-2.5-flash"],
             supports_model_selection=True,
             supports_structured_output=True,
@@ -60,7 +68,9 @@ def provider_catalog() -> list[ProviderProfile]:
             provider_id="mistral",
             display_name="Mistral",
             kind=ProviderKind.CLOUD,
+            adapter_kind=ProviderAdapterKind.OPENAI_COMPATIBLE,
             auth_modes=[AuthMode.API_KEY],
+            default_base_url="https://api.mistral.ai/v1",
             suggested_models=["mistral-large-latest", "codestral-latest"],
             supports_model_selection=True,
             data_boundary="cloud: requests are sent to Mistral",
@@ -70,7 +80,9 @@ def provider_catalog() -> list[ProviderProfile]:
             provider_id="ollama",
             display_name="Ollama",
             kind=ProviderKind.LOCAL,
+            adapter_kind=ProviderAdapterKind.OPENAI_COMPATIBLE,
             auth_modes=[AuthMode.NONE],
+            default_base_url="http://localhost:11434/v1",
             suggested_models=["llama3.2", "qwen2.5-coder", "mistral"],
             supports_model_selection=True,
             data_boundary="local: requests stay on this PC if Ollama is bound to localhost",
@@ -80,7 +92,9 @@ def provider_catalog() -> list[ProviderProfile]:
             provider_id="lmstudio",
             display_name="LM Studio",
             kind=ProviderKind.LOCAL,
+            adapter_kind=ProviderAdapterKind.OPENAI_COMPATIBLE,
             auth_modes=[AuthMode.NONE],
+            default_base_url="http://localhost:1234/v1",
             suggested_models=["local-model"],
             supports_model_selection=True,
             data_boundary="local: requests stay on this PC if LM Studio is bound to localhost",
@@ -90,6 +104,7 @@ def provider_catalog() -> list[ProviderProfile]:
             provider_id="custom-openai-compatible",
             display_name="Custom OpenAI-compatible endpoint",
             kind=ProviderKind.CLOUD,
+            adapter_kind=ProviderAdapterKind.OPENAI_COMPATIBLE,
             auth_modes=[AuthMode.API_KEY, AuthMode.LOCAL_TOKEN, AuthMode.NONE],
             suggested_models=["custom-model"],
             supports_model_selection=True,

@@ -11,11 +11,12 @@ from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.neo import Neo
 from thematrix.oracle import Oracle
 from thematrix.onboarding import OnboardingService
-from thematrix.providers import provider_catalog
+from thematrix.providers import ModelGatewayError, default_model_gateway, provider_catalog
 from thematrix.runtime import Nebuchadnezzar
 from thematrix.schemas import (
     AuthMode,
     FileChangeConsent,
+    ModelRequest,
     OnboardingProfile,
     PrivacyMode,
     ProviderConfig,
@@ -122,6 +123,10 @@ def configure_provider(
         str | None,
         typer.Option(help="Model id. Omit to choose interactively."),
     ] = None,
+    base_url: Annotated[
+        str | None,
+        typer.Option(help="Provider base URL. Mostly useful for custom endpoints."),
+    ] = None,
     make_default: Annotated[
         bool,
         typer.Option("--default/--no-default", help="Make this the default provider."),
@@ -132,6 +137,7 @@ def configure_provider(
     vault, store = bootstrap(paths)
     profile = _resolve_provider_choice(store, provider_id)
     selected_model = _resolve_model_choice(profile, model)
+    selected_base_url = _resolve_base_url(profile, base_url)
     auth_mode = _resolve_auth_choice(profile)
     secret_ref = _resolve_secret_ref(profile, auth_mode)
     file_consent = _resolve_file_change_consent()
@@ -141,6 +147,7 @@ def configure_provider(
         selected_model=selected_model,
         auth_mode=auth_mode,
         secret_ref=secret_ref,
+        base_url=selected_base_url,
         is_default=make_default,
         file_change_consent=file_consent,
     )
@@ -151,6 +158,7 @@ def configure_provider(
         body=(
             f"Provider: {profile.display_name}\n\n"
             f"Model: {selected_model}\n\n"
+            f"Base URL: {selected_base_url or profile.default_base_url or 'not configured'}\n\n"
             f"Auth mode: {auth_mode.value}\n\n"
             f"File-change consent: {file_consent.value}\n\n"
             "No secret values were written to the vault."
@@ -177,10 +185,60 @@ def current_provider() -> None:
         secret_status = "configured" if config.secret_ref else "missing"
     typer.echo(f"Provider: {display_name}")
     typer.echo(f"Model:    {config.selected_model}")
+    typer.echo(f"Base URL: {config.base_url or (profile.default_base_url if profile else 'unknown')}")
     typer.echo(f"Auth:     {config.auth_mode.value}")
     typer.echo(f"Secrets:  {secret_status}")
     typer.echo(f"Default:  {config.is_default}")
     typer.echo(f"Files:    {config.file_change_consent.value}")
+
+
+@providers_app.command("test")
+def test_provider(
+    provider_id: Annotated[
+        str | None,
+        typer.Argument(help="Provider id to test. Omit to test the default provider."),
+    ] = None,
+    prompt: Annotated[
+        str,
+        typer.Option(help="Small prompt used for the provider readiness check."),
+    ] = "Reply with one short sentence saying the provider is ready.",
+) -> None:
+    """Send a small test request through the model gateway."""
+    paths = MatrixPaths()
+    vault, store = bootstrap(paths)
+    config = store.get_provider_config(provider_id) if provider_id else store.get_default_provider_config()
+    if config is None:
+        typer.echo("No provider is configured. Run: the-matrix setup")
+        raise typer.Exit(code=1)
+
+    gateway = default_model_gateway(store)
+    try:
+        response = gateway.generate(ModelRequest.from_prompt(prompt), config=config)
+    except ModelGatewayError as exc:
+        vault.append_log(
+            title="Provider test failed",
+            body=(
+                f"Provider: {config.provider_id}\n\n"
+                f"Model: {config.selected_model}\n\n"
+                f"Error type: {type(exc).__name__}\n\n"
+                "No prompt text or secret values were written to the vault."
+            ),
+        )
+        typer.echo(f"Provider test failed: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    vault.append_log(
+        title="Provider test completed",
+        body=(
+            f"Provider: {response.provider_id}\n\n"
+            f"Model: {response.model}\n\n"
+            f"Response characters: {len(response.text)}\n\n"
+            "No prompt text or secret values were written to the vault."
+        ),
+    )
+    typer.echo(f"Provider: {response.provider_id}")
+    typer.echo(f"Model:    {response.model}")
+    typer.echo(f"Ready:    {response.text}")
 
 
 @memory_app.command("path")
@@ -197,6 +255,7 @@ def _run_onboarding_wizard(paths: MatrixPaths, vault: MemoryVault, store: Runtim
 
     profile = _resolve_provider_choice(store, None)
     selected_model = _resolve_model_choice(profile, None)
+    selected_base_url = _resolve_base_url(profile, None)
     auth_mode = _resolve_auth_choice(profile)
     secret_ref = _resolve_secret_ref(profile, auth_mode, allow_skip=True)
     privacy_mode = _resolve_privacy_mode()
@@ -211,6 +270,7 @@ def _run_onboarding_wizard(paths: MatrixPaths, vault: MemoryVault, store: Runtim
         selected_model=selected_model,
         auth_mode=auth_mode,
         secret_ref=secret_ref,
+        base_url=selected_base_url,
         is_default=True,
         file_change_consent=file_consent,
     )
@@ -218,6 +278,7 @@ def _run_onboarding_wizard(paths: MatrixPaths, vault: MemoryVault, store: Runtim
         default_provider_id=profile.provider_id,
         default_model=selected_model,
         auth_mode=auth_mode,
+        base_url=selected_base_url,
         privacy_mode=privacy_mode,
         file_change_consent=file_consent,
         guarded_shell_enabled=guarded_shell_enabled,
@@ -267,6 +328,14 @@ def _resolve_model_choice(profile: ProviderProfile, model: str | None) -> str:
         if 1 <= selected_index <= len(profile.suggested_models):
             return profile.suggested_models[selected_index - 1]
     return choice
+
+
+def _resolve_base_url(profile: ProviderProfile, base_url: str | None) -> str | None:
+    if base_url:
+        return base_url
+    if profile.provider_id == "custom-openai-compatible":
+        return typer.prompt("Base URL", default="http://localhost:8000/v1")
+    return profile.default_base_url
 
 
 def _resolve_auth_choice(profile: ProviderProfile) -> AuthMode:

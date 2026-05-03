@@ -37,6 +37,12 @@ class ProviderKind(StrEnum):
     CLOUD = "cloud"
 
 
+class ProviderAdapterKind(StrEnum):
+    OPENAI_COMPATIBLE = "openai_compatible"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+    GEMINI_GENERATE_CONTENT = "gemini_generate_content"
+
+
 class AuthMode(StrEnum):
     NONE = "none"
     API_KEY = "api_key"
@@ -94,8 +100,10 @@ class ProviderProfile(BaseModel):
     provider_id: str
     display_name: str
     kind: ProviderKind
+    adapter_kind: ProviderAdapterKind
     auth_modes: list[AuthMode]
     suggested_models: list[str] = Field(default_factory=list)
+    default_base_url: str | None = None
     supports_model_selection: bool = True
     supports_tools: bool = False
     supports_structured_output: bool = False
@@ -110,6 +118,7 @@ class ProviderConfig(BaseModel):
     selected_model: str
     auth_mode: AuthMode
     secret_ref: str | None = None
+    base_url: str | None = None
     enabled: bool = True
     is_default: bool = True
     file_change_consent: FileChangeConsent = FileChangeConsent.ASK_EACH_TIME
@@ -121,11 +130,42 @@ class OnboardingProfile(BaseModel):
     default_provider_id: str
     default_model: str
     auth_mode: AuthMode
+    base_url: str | None = None
     privacy_mode: PrivacyMode = PrivacyMode.ASK_EACH_TIME
     file_change_consent: FileChangeConsent = FileChangeConsent.ASK_EACH_TIME
     guarded_shell_enabled: bool = True
     vault_path: str
     secret_configured: bool = False
+
+
+class ModelMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ModelRequest(BaseModel):
+    messages: list[ModelMessage]
+    temperature: float = 0.2
+    max_tokens: int = 256
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_prompt(cls, prompt: str) -> "ModelRequest":
+        return cls(messages=[ModelMessage(role="user", content=prompt)])
+
+
+class ModelResponse(BaseModel):
+    provider_id: str
+    model: str
+    text: str
+    raw: dict[str, Any] = Field(default_factory=dict)
+    usage: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderHealth(BaseModel):
+    provider_id: str
+    ok: bool
+    message: str
 
 
 class MatrixRunResult(BaseModel):
