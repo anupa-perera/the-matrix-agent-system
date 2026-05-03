@@ -34,7 +34,7 @@ from thematrix.schemas import (
 )
 from thematrix.security import Keymaker, SecretStoreError
 from thematrix.tools import FileExecutor, ShellExecutor
-from thematrix.ui import serve_setup_ui, write_dashboard
+from thematrix.ui import serve_app_ui, serve_setup_ui, write_dashboard
 
 app = typer.Typer(help="The Matrix Agent System CLI.")
 providers_app = typer.Typer(help="Manage model providers.")
@@ -142,7 +142,7 @@ def setup_ui(
 def start(
     open_browser: Annotated[
         bool,
-        typer.Option("--open/--no-open", help="Open browser setup/dashboard pages."),
+        typer.Option("--open/--no-open", help="Open browser setup/app pages."),
     ] = True,
     test_provider: Annotated[
         bool,
@@ -152,6 +152,10 @@ def start(
         int,
         typer.Option(help="Seconds before the setup UI closes automatically."),
     ] = 15 * 60,
+    app_timeout: Annotated[
+        int,
+        typer.Option(help="Seconds before the local app UI closes automatically."),
+    ] = 60 * 60,
 ) -> None:
     """Beginner-friendly setup and launch flow."""
     paths = MatrixPaths()
@@ -190,9 +194,21 @@ def start(
     dashboard_path = write_dashboard(paths, store)
     typer.echo("The Matrix is ready.")
     typer.echo(f"Dashboard: {dashboard_path}")
-    if open_browser:
-        webbrowser.open(Path(dashboard_path).as_uri())
-    typer.echo('Try: the-matrix ask "Create a reusable research agent"')
+    typer.echo("Opening the local app UI. Press Ctrl+C in this terminal to stop it.")
+    try:
+        url = serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=lambda request: _run_browser_request(paths, vault, store, request),
+            open_browser=open_browser,
+            url_callback=lambda value: typer.echo(f"App UI: {value}"),
+            timeout_seconds=app_timeout,
+        )
+    except KeyboardInterrupt:
+        typer.echo("App UI stopped.")
+        return
+    typer.echo(f"App UI closed: {url}")
 
 
 @app.command()
@@ -363,6 +379,7 @@ def _build_runtime(
     vault: MemoryVault,
     store: RuntimeStore,
     provider_config: ProviderConfig | None,
+    approval_callback=None,
 ) -> tuple[Oracle, Nebuchadnezzar]:
     prompt_library = PromptLibrary(paths.prompts_dir)
     gateway = default_model_gateway(store)
@@ -384,12 +401,12 @@ def _build_runtime(
             gateway,
             prompt_library,
             shell_executor=ShellExecutor(
-                approval_callback=_approve_shell_command,
+                approval_callback=approval_callback or _approve_shell_command,
                 cwd=Path.cwd(),
             ),
             file_executor=FileExecutor(
                 root=Path.cwd(),
-                approval_callback=_approve_file_write,
+                approval_callback=approval_callback or _approve_file_write,
                 file_change_consent=(
                     provider_config.file_change_consent
                     if provider_config
@@ -399,6 +416,32 @@ def _build_runtime(
         ),
     )
     return oracle, runtime
+
+
+def _run_browser_request(
+    paths: MatrixPaths,
+    vault: MemoryVault,
+    store: RuntimeStore,
+    request: str,
+) -> MatrixRunResult:
+    provider_config = store.get_default_provider_config()
+    selected_privacy = _default_privacy_mode(store)
+    _, runtime = _build_runtime(
+        paths,
+        vault,
+        store,
+        provider_config,
+        approval_callback=_deny_browser_approval,
+    )
+    return runtime.run(
+        request,
+        privacy_mode=selected_privacy,
+        provider_config=provider_config,
+    )
+
+
+def _deny_browser_approval(target: str, reason: str, purpose: str) -> bool:
+    return False
 
 
 def _maybe_check_provider(

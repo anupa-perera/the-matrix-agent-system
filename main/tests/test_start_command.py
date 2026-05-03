@@ -22,7 +22,9 @@ def test_start_opens_guided_setup_when_missing(monkeypatch, tmp_path) -> None:
         return "http://127.0.0.1:1234/?token=test"
 
     opened: list[str] = []
+    served_app: list[str] = []
     monkeypatch.setattr(cli, "serve_setup_ui", fake_setup_ui)
+    monkeypatch.setattr(cli, "serve_app_ui", lambda *args, **kwargs: served_app.append("app") or "url")
     monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url))
 
     result = CliRunner().invoke(
@@ -33,7 +35,7 @@ def test_start_opens_guided_setup_when_missing(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert "Opening the guided local setup page" in result.output
     assert "The Matrix is ready." in result.output
-    assert (tmp_path / "home" / "dashboard" / "index.html").exists()
+    assert served_app == ["app"]
     assert opened == []
 
 
@@ -63,6 +65,8 @@ def test_start_uses_ready_setup_without_opening_setup(monkeypatch, tmp_path) -> 
         raise AssertionError("setup UI should not open when setup is complete")
 
     monkeypatch.setattr(cli, "serve_setup_ui", fail_setup_ui)
+    served_app: list[str] = []
+    monkeypatch.setattr(cli, "serve_app_ui", lambda *args, **kwargs: served_app.append("app") or "url")
 
     result = CliRunner().invoke(
         cli.app,
@@ -72,3 +76,4 @@ def test_start_uses_ready_setup_without_opening_setup(monkeypatch, tmp_path) -> 
     assert result.exit_code == 0
     assert "Provider already verified: ollama" in result.output
     assert "The Matrix is ready." in result.output
+    assert served_app == ["app"]

@@ -134,7 +134,8 @@ or privacy-mode conflicts.
 
 `the-matrix start` is the beginner-friendly entry point. It creates the local Matrix folders,
 opens the guided browser setup if anything is missing, checks provider readiness when possible,
-writes the local dashboard, and then exits. It is not an always-on service.
+then opens a token-protected local app UI where users can submit requests from the browser. It is
+not an always-on service; the local app closes on timeout or when the terminal is stopped.
 
 `the-matrix init` offers the terminal onboarding wizard on first run. Use `--no-onboarding` for
 scripts or tests that only need the filesystem initialized.
