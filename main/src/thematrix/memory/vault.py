@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from thematrix.schemas import MatrixRunResult
+from thematrix.schemas import AgentSpec, MatrixRunResult
 
 
 class MemoryVault:
@@ -84,6 +84,33 @@ class MemoryVault:
             ),
         )
 
+    def record_agent_spec(self, spec: AgentSpec) -> None:
+        agent_path = self.root / "wiki" / "agents" / f"{spec.agent_id}.md"
+        agent_path.parent.mkdir(parents=True, exist_ok=True)
+        agent_path.write_text(
+            (
+                f"# {spec.agent_id}\n\n"
+                f"- Type: {spec.agent_type}\n"
+                f"- Purpose: {spec.purpose}\n"
+                f"- Risk: {spec.risk_level.value}\n"
+                f"- Reusable: {spec.reusable}\n"
+                f"- Reuse candidate: {spec.reuse_candidate_id or 'none'}\n"
+                f"- Provider: {spec.provider_id}\n"
+                f"- Model: {spec.model_id}\n\n"
+                "## Capabilities\n\n"
+                f"{self._markdown_list(spec.capabilities)}\n\n"
+                "## Tools\n\n"
+                f"{self._markdown_list(spec.tools_allowed)}\n\n"
+                "## Memory Scope\n\n"
+                f"{self._markdown_list(spec.memory_scope)}\n\n"
+                "## Constraints\n\n"
+                f"{self._markdown_list(spec.constraints)}\n\n"
+                "## Prompt Blocks\n\n"
+                f"{self._markdown_list(spec.prompt_block_refs)}\n"
+            ),
+            encoding="utf-8",
+        )
+
     def append_log(self, title: str, body: str) -> None:
         timestamp = datetime.now(UTC).isoformat()
         log_path = self.root / "log.md"
@@ -95,3 +122,8 @@ class MemoryVault:
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             path.write_text(content, encoding="utf-8")
+
+    def _markdown_list(self, values: list[str]) -> str:
+        if not values:
+            return "- None"
+        return "\n".join(f"- {value}" for value in values)

@@ -124,3 +124,14 @@ invalid JSON, Oracle falls back to deterministic local rules.
 
 The Oracle prompt is installed into the Matrix home prompt directory during bootstrap, so users
 can inspect and later customize it while SQLite keeps only prompt hash metadata.
+
+## Model-Backed Architect
+
+Architect can also use the configured `ModelGateway` to draft an `AgentSpec`. The model is only
+allowed to suggest the agent shape: type, purpose, capabilities, memory scope, constraints, and
+interaction points. Local code still owns provider selection, privacy mode, stable agent IDs,
+tool filtering, prompt hash tracking, and reuse lookup.
+
+Agent blueprint prompt text is written to markdown under the Matrix prompt directory. SQLite keeps
+the prompt block hash and reusable agent index, while Obsidian gets a user-visible agent page under
+`wiki/agents/`.

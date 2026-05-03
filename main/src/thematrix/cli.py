@@ -45,6 +45,11 @@ def bootstrap(paths: MatrixPaths) -> tuple[MemoryVault, RuntimeStore]:
         block_type="role_prompt",
         content=prompt_library.read("oracle_assess"),
     )
+    store.record_prompt_block(
+        block_ref="architect-design-v1",
+        block_type="role_prompt",
+        content=prompt_library.read("architect_design"),
+    )
     for provider in provider_catalog():
         store.upsert_provider(provider)
     return vault, store
@@ -94,13 +99,19 @@ def ask(
     paths = MatrixPaths()
     vault, store = bootstrap(paths)
     selected_privacy = privacy or _default_privacy_mode(store)
+    prompt_library = PromptLibrary(paths.prompts_dir)
+    gateway = default_model_gateway(store)
     oracle = Oracle(
-        model_gateway=default_model_gateway(store),
-        prompt_library=PromptLibrary(paths.prompts_dir),
+        model_gateway=gateway,
+        prompt_library=prompt_library,
     )
     runtime = Nebuchadnezzar(
         oracle=oracle,
-        architect=Architect(store),
+        architect=Architect(
+            store,
+            model_gateway=gateway,
+            prompt_library=prompt_library,
+        ),
         neo=Neo(),
         vault=vault,
         store=store,

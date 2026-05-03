@@ -27,5 +27,11 @@ def test_runtime_records_run(tmp_path) -> None:
     assert result.preflight_report is not None
     assert result.preflight_report.approved
     assert result.metadata["oracle_assessment_source"] == "heuristic"
+    assert result.metadata["architect_design_source"] == "heuristic"
     assert "No model provider is configured yet." in result.response
+    assert "Architect created" in result.response
+    assert result.agent_spec is not None
+    assert (
+        tmp_path / "vault" / "wiki" / "agents" / f"{result.agent_spec.agent_id}.md"
+    ).exists()
     assert (tmp_path / "vault" / "raw" / "runs" / f"{result.run_id}.json").exists()
