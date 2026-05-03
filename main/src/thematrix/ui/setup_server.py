@@ -268,11 +268,6 @@ def render_setup_form(
         f" ({escape(profile.kind.value)})</option>"
         for profile in providers
     )
-    model_options = "\n".join(
-        f'<option value="{escape(model)}"></option>'
-        for profile in providers
-        for model in profile.suggested_models
-    )
     auth_options = "\n".join(
         f'<option value="{mode.value}">{mode.value}</option>' for mode in AuthMode
     )
@@ -737,8 +732,7 @@ def render_setup_form(
       <div id="provider_card" class="provider-card"></div>
       <div class="row">
         <label>Model
-          <input id="model" name="model" list="models" placeholder="Enter a model id" required>
-          <datalist id="models">{model_options}</datalist>
+          <input id="model" name="model" placeholder="Enter a model id" required>
           <span id="model_hint" class="hint"></span>
         </label>
         <label id="auth_mode_row">Sign-in method
@@ -802,29 +796,33 @@ def render_setup_form(
       if (detectedProvider) providerSelect.value = detectedProvider.provider_id;
 
       function preferredAuth(provider) {{
-        if (provider.auth_modes.includes("api_key")) return "api_key";
-        if (provider.auth_modes.includes("none")) return "none";
-        if (provider.auth_modes.includes("local_token")) return "local_token";
-        return provider.auth_modes[0] || "none";
+        const modes = setupAuthModes(provider);
+        if (modes.includes("api_key")) return "api_key";
+        if (modes.includes("none")) return "none";
+        if (modes.includes("local_token")) return "local_token";
+        return modes[0] || "none";
+      }}
+
+      function setupAuthModes(provider) {{
+        const modes = provider.auth_modes.filter((mode) => mode !== "oauth");
+        return modes.length ? modes : provider.auth_modes;
       }}
 
       function syncProvider() {{
         const provider = byId[providerSelect.value];
         if (!provider) return;
         const models = provider.detected_models.length ? provider.detected_models : provider.suggested_models;
+        const authModes = setupAuthModes(provider);
         modelInput.value = models[0] || "default";
         baseUrlInput.value = provider.default_base_url || "";
         authSelect.innerHTML = "";
-        for (const mode of provider.auth_modes) {{
+        for (const mode of authModes) {{
           const option = document.createElement("option");
           option.value = mode;
           option.textContent = mode;
           authSelect.appendChild(option);
         }}
-        authModeRow.classList.toggle(
-          "hidden",
-          provider.auth_modes.length === 1 && provider.auth_modes[0] === "none"
-        );
+        authModeRow.classList.toggle("hidden", authModes.length <= 1);
         authSelect.value = preferredAuth(provider);
         providerCard.innerHTML = `
           <strong></strong>

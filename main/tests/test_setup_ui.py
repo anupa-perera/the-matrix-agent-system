@@ -83,8 +83,11 @@ def test_setup_ui_form_contains_session_token() -> None:
     assert "/save?token=token-123" in html
     assert "The Matrix Setup" in html
     assert "syncProvider()" in html
+    assert 'list="models"' not in html
+    assert "<datalist" not in html
     assert 'id="auth_mode_row"' in html
-    assert 'provider.auth_modes[0] === "none"' in html
+    assert 'mode !== "oauth"' in html
+    assert 'authModes.length <= 1' in html
     assert '<details class="notes provider-registry">' in html
     assert "<summary>Provider Registry</summary>" in html
 
