@@ -63,6 +63,8 @@ the-matrix setup
 the-matrix providers list
 the-matrix providers test
 the-matrix ask "Create a reusable research agent"
+the-matrix memory summary
+the-matrix ui
 ```
 
 For development, install the project in editable mode and run:
@@ -175,10 +177,12 @@ settings allow file changes. Paths outside the workspace and secret-looking path
 - `the-matrix agents list` shows reusable agents tracked by Architect.
 - `the-matrix agents show <agent-id>` shows one agent spec without printing prompt text.
 - `the-matrix memory prompt-blocks` shows prompt-cache hashes.
+- `the-matrix memory summary` shows a compact terminal dashboard.
 - `the-matrix memory security` shows recent Neo events.
 - `the-matrix memory model-calls` shows model-call metadata without prompt or response text.
 - `the-matrix memory runs [run-id]` shows run metadata and Architect decisions.
 - `the-matrix memory tasks` shows recent sequential mission tasks.
+- `the-matrix ui` writes a static local HTML dashboard under the Matrix home folder.
 - `the-matrix missions list` lists mission ledgers.
 - `the-matrix missions show <run-id>` shows one mission and its task statuses.
 - `the-matrix missions continue <run-id>` resumes unfinished tasks using current provider settings.

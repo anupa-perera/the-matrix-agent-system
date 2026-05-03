@@ -24,6 +24,14 @@ class MatrixPaths(BaseModel):
     def agents_dir(self) -> Path:
         return self.home / "agents"
 
+    @property
+    def dashboard_dir(self) -> Path:
+        return self.home / "dashboard"
+
+    @property
+    def dashboard_file(self) -> Path:
+        return self.dashboard_dir / "index.html"
+
 
 def default_home() -> Path:
     configured = os.getenv("THE_MATRIX_HOME")
@@ -43,4 +51,4 @@ def ensure_runtime_dirs(paths: MatrixPaths) -> None:
     paths.home.mkdir(parents=True, exist_ok=True)
     paths.prompts_dir.mkdir(parents=True, exist_ok=True)
     paths.agents_dir.mkdir(parents=True, exist_ok=True)
-
+    paths.dashboard_dir.mkdir(parents=True, exist_ok=True)

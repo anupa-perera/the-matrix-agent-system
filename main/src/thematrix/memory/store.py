@@ -195,6 +195,21 @@ class RuntimeStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def overview_counts(self) -> dict[str, int]:
+        tables = [
+            "agents",
+            "prompt_blocks",
+            "runs",
+            "mission_tasks",
+            "security_events",
+            "model_calls",
+        ]
+        with self.connect() as conn:
+            return {
+                table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in tables
+            }
+
     def list_run_records(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(

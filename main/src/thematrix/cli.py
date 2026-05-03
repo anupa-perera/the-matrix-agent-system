@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated
+import webbrowser
 
 import typer
 
@@ -27,6 +28,7 @@ from thematrix.schemas import (
 )
 from thematrix.security import Keymaker, SecretStoreError
 from thematrix.tools import FileExecutor, ShellExecutor
+from thematrix.ui import write_dashboard
 
 app = typer.Typer(help="The Matrix Agent System CLI.")
 providers_app = typer.Typer(help="Manage model providers.")
@@ -159,6 +161,22 @@ def ask(
     )
     typer.echo(oracle.finalize(result))
     typer.echo(f"Run logged: {result.run_id}")
+
+
+@app.command()
+def ui(
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open/--no-open", help="Open the generated dashboard in the browser."),
+    ] = False,
+) -> None:
+    """Generate a small local HTML dashboard."""
+    paths = MatrixPaths()
+    _, store = bootstrap(paths)
+    dashboard_path = write_dashboard(paths, store)
+    typer.echo(f"Dashboard written: {dashboard_path}")
+    if open_browser:
+        webbrowser.open(Path(dashboard_path).as_uri())
 
 
 @missions_app.command("list")
@@ -473,6 +491,42 @@ def test_provider(
 def memory_path() -> None:
     """Print the default Obsidian vault path."""
     typer.echo(MatrixPaths().vault)
+
+
+@memory_app.command("summary")
+def memory_summary() -> None:
+    """Show a compact memory dashboard in the terminal."""
+    _, store = bootstrap(MatrixPaths())
+    counts = store.overview_counts()
+    provider_config = store.get_default_provider_config()
+    typer.echo("The Matrix memory summary")
+    if provider_config is None:
+        typer.echo("Provider: not configured")
+    else:
+        typer.echo(
+            f"Provider: {provider_config.provider_id} model={provider_config.selected_model}"
+        )
+    typer.echo(
+        "Counts: "
+        f"runs={counts['runs']} agents={counts['agents']} "
+        f"prompt_blocks={counts['prompt_blocks']} security_events={counts['security_events']}"
+    )
+    recent_runs = store.list_run_records(limit=3)
+    typer.echo("Recent runs:")
+    if not recent_runs:
+        typer.echo("  none")
+    for record in recent_runs:
+        typer.echo(f"  {record['run_id']} - {record['request'][:120]}")
+    recent_events = store.list_security_events(limit=3)
+    typer.echo("Recent security:")
+    if not recent_events:
+        typer.echo("  none")
+    for event in recent_events:
+        issues = "; ".join(event["issues"]) if event["issues"] else "none"
+        typer.echo(
+            f"  {event['id']} risk={event['risk_level']} "
+            f"approved={bool(event['approved'])} issues={issues[:120]}"
+        )
 
 
 @memory_app.command("prompt-blocks")
