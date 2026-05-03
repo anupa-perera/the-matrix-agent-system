@@ -13,8 +13,11 @@ import webbrowser
 
 from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
+from thematrix.providers import detect_local_providers
 from thematrix.schemas import MatrixRunResult
+from thematrix.security import Keymaker
 from thematrix.ui.dashboard import write_dashboard
+from thematrix.ui.setup_server import apply_setup_form, render_setup_form
 
 MAX_APP_BODY_BYTES = 64 * 1024
 DEFAULT_APP_TIMEOUT_SECONDS = 60 * 60
@@ -24,6 +27,7 @@ DEFAULT_APP_TIMEOUT_SECONDS = 60 * 60
 class AppUiResponse:
     result: MatrixRunResult | None = None
     error: str | None = None
+    message: str | None = None
 
 
 def serve_app_ui(
@@ -80,6 +84,15 @@ def _handler_factory(
             if parsed.path == "/":
                 self._send_html(HTTPStatus.OK, render_app_page(paths, store, token))
                 return
+            if parsed.path == "/settings":
+                self._send_html(
+                    HTTPStatus.OK,
+                    render_setup_form(
+                        token,
+                        detections=detect_local_providers(timeout_seconds=0.5),
+                    ),
+                )
+                return
             if parsed.path == "/dashboard":
                 dashboard_path = write_dashboard(paths, store)
                 self._send_html(
@@ -94,36 +107,32 @@ def _handler_factory(
                 self._send_html(HTTPStatus.FORBIDDEN, _message_page("Forbidden", "Invalid token."))
                 return
             parsed = urlparse(self.path)
+            if parsed.path == "/save":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                result = apply_setup_form(form, paths, vault, store, Keymaker())
+                if not result.ok:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        render_setup_form(
+                            token,
+                            error=result.message,
+                            detections=detect_local_providers(timeout_seconds=0.5),
+                        ),
+                    )
+                    return
+                self._send_html(
+                    HTTPStatus.OK,
+                    render_app_page(paths, store, token, AppUiResponse(message=result.message)),
+                )
+                return
             if parsed.path != "/ask":
                 self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not Found", "Unknown route."))
                 return
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                self._send_html(
-                    HTTPStatus.BAD_REQUEST,
-                    render_app_page(
-                        paths,
-                        store,
-                        token,
-                        AppUiResponse(error="Content-Length must be a number."),
-                    ),
-                )
+            form = self._read_form(paths, store, token)
+            if form is None:
                 return
-            if length > MAX_APP_BODY_BYTES:
-                self._send_html(
-                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                    render_app_page(
-                        paths,
-                        store,
-                        token,
-                        AppUiResponse(error="Request payload is too large."),
-                    ),
-                )
-                return
-
-            raw = self.rfile.read(length).decode("utf-8")
-            form = {key: values[-1] for key, values in parse_qs(raw).items()}
             user_request = form.get("request", "").strip()
             if not user_request:
                 self._send_html(
@@ -156,6 +165,40 @@ def _handler_factory(
             finally:
                 run_lock.release()
             self._send_html(HTTPStatus.OK, render_app_page(paths, store, token, response))
+
+        def _read_form(
+            self,
+            paths: MatrixPaths,
+            store: RuntimeStore,
+            token: str,
+        ) -> dict[str, str] | None:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    render_app_page(
+                        paths,
+                        store,
+                        token,
+                        AppUiResponse(error="Content-Length must be a number."),
+                    ),
+                )
+                return None
+            if length > MAX_APP_BODY_BYTES:
+                self._send_html(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    render_app_page(
+                        paths,
+                        store,
+                        token,
+                        AppUiResponse(error="Request payload is too large."),
+                    ),
+                )
+                return None
+
+            raw = self.rfile.read(length).decode("utf-8")
+            return {key: values[-1] for key, values in parse_qs(raw).items()}
 
         def log_message(self, format: str, *args: object) -> None:
             return
@@ -190,6 +233,7 @@ def render_app_page(
         provider_label = f"{provider_config.provider_id} / {provider_config.selected_model}"
     result_html = _result_panel(response)
     recent_html = _recent_runs_panel(store)
+    help_html = _help_panel()
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -376,6 +420,20 @@ def render_app_page(
       padding-top: 12px;
     }}
     .item:first-child {{ border-top: 0; padding-top: 0; }}
+    details.panel summary {{
+      cursor: pointer;
+      list-style: none;
+      color: var(--phosphor-bright);
+      font-size: 15px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      text-shadow: 0 0 6px rgba(0,255,65,0.4);
+    }}
+    details.panel summary::-webkit-details-marker {{ display: none; }}
+    details.panel summary::before {{ content: '▸ '; color: var(--phosphor-title); }}
+    details.panel[open] summary::before {{ content: '▾ '; }}
+    .help-list {{ margin-top: 16px; }}
+    strong {{ color: var(--phosphor-bright); font-weight: normal; }}
     code {{ color: var(--phosphor-bright); overflow-wrap: anywhere; }}
     .actions {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }}
     @media (max-width: 760px) {{
@@ -403,11 +461,13 @@ def render_app_page(
         </label>
         <div class="actions">
           <button type="submit">Run Mission</button>
+          <a class="button-link" href="/settings?token={escape(token)}">Provider Settings</a>
           <a class="button-link" href="/dashboard?token={escape(token)}">Refresh Dashboard</a>
         </div>
       </form>
     </section>
     {result_html}
+    {help_html}
     {recent_html}
   </main>
   <script>
@@ -448,6 +508,13 @@ def render_app_page(
 
 
 def _result_panel(response: AppUiResponse) -> str:
+    if response.message:
+        return f"""
+    <section class="panel">
+      <h2>System Message</h2>
+      <p class="result">{escape(response.message)}</p>
+    </section>
+"""
     if response.error:
         return f"""
     <section class="panel">
@@ -485,6 +552,33 @@ def _recent_runs_panel(store: RuntimeStore) -> str:
       <h2>Recent Missions</h2>
       <div class="list">{content}</div>
     </section>
+"""
+
+
+def _help_panel() -> str:
+    return """
+    <details class="panel">
+      <summary>Help / Commands</summary>
+      <div class="list help-list">
+        <div class="item">
+          <p><strong>Run from browser</strong></p>
+          <p class="muted">Use the request box above for normal agent missions.</p>
+        </div>
+        <div class="item">
+          <p><strong>Change provider</strong></p>
+          <p class="muted">Open Provider Settings in this page, choose provider/model, then save and test.</p>
+        </div>
+        <div class="item">
+          <p><strong>Useful terminal commands</strong></p>
+          <p><code>the-matrix start</code></p>
+          <p><code>the-matrix ask "your request"</code></p>
+          <p><code>the-matrix providers current</code></p>
+          <p><code>the-matrix doctor</code></p>
+          <p><code>the-matrix ui --open</code></p>
+          <p><code>the-matrix memory summary</code></p>
+        </div>
+      </div>
+    </details>
 """
 
 

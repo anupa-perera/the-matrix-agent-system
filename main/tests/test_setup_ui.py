@@ -182,6 +182,8 @@ def test_setup_ui_server_binds_localhost_and_saves_form(tmp_path) -> None:
     thread.join(timeout=5)
     config = store.get_default_provider_config()
     assert "Setup saved" in body
+    assert "Open Dashboard" in body
+    assert paths.dashboard_file.exists()
     assert config is not None
     assert config.provider_id == "ollama"
     assert store.get_preference("default_privacy_mode") == "local_only"

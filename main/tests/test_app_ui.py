@@ -36,7 +36,10 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     html = render_app_page(paths, store, "token-123")
 
     assert "/ask?token=token-123" in html
+    assert "/settings?token=token-123" in html
     assert "Transmit Request" in html
+    assert "Help / Commands" in html
+    assert "the-matrix providers current" in html
     assert "Recent Missions" in html
 
 
@@ -86,6 +89,32 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
 
     assert "Mission complete." in body
     assert requests == ["Build a tiny helper"]
+
+    with urlopen(f"http://{parsed.netloc}/settings?{parsed.query}", timeout=5) as response:
+        settings_body = response.read().decode("utf-8")
+    assert "Model Interface" in settings_body
+    assert "/save?" in settings_body
+
+    payload = urlencode(
+        {
+            "provider_id": "ollama",
+            "model": "llama3.2",
+            "auth_mode": "none",
+            "privacy_mode": "local_only",
+            "file_change_consent": "ask_each_time",
+        }
+    ).encode("utf-8")
+    save_request = Request(
+        f"http://{parsed.netloc}/save?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(save_request, timeout=5) as response:
+        save_body = response.read().decode("utf-8")
+
+    assert "Saved setup" in save_body
+    assert store.get_default_provider_config() is not None
 
     # Let the timeout close the server without making this test wait for it.
     # The thread is daemonized because the app UI is intentionally long-lived.

@@ -6,6 +6,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
+from pathlib import Path
 from secrets import token_urlsafe
 from threading import Thread, Timer
 from typing import Callable
@@ -30,6 +31,7 @@ from thematrix.schemas import (
     ProviderProfile,
 )
 from thematrix.security import Keymaker, SecretStoreError
+from thematrix.ui.dashboard import write_dashboard
 
 MAX_SETUP_BODY_BYTES = 64 * 1024
 DEFAULT_SETUP_TIMEOUT_SECONDS = 15 * 60
@@ -233,7 +235,20 @@ def _handler_factory(
                     ),
                 )
                 return
-            self._send_html(HTTPStatus.OK, _message_page("Setup saved", result.message))
+            dashboard_path = write_dashboard(paths, store)
+            self._send_html(
+                HTTPStatus.OK,
+                _message_page(
+                    "Setup saved",
+                    result.message,
+                    actions=[
+                        (
+                            "Open Dashboard",
+                            Path(dashboard_path).resolve().as_uri(),
+                        )
+                    ],
+                ),
+            )
             Thread(target=self.server.shutdown, daemon=True).start()
 
         def log_message(self, format: str, *args: object) -> None:
@@ -978,7 +993,19 @@ def _detected_message(
     return detection.message if detection else ""
 
 
-def _message_page(title: str, message: str) -> str:
+def _message_page(
+    title: str,
+    message: str,
+    actions: list[tuple[str, str]] | None = None,
+) -> str:
+    action_html = ""
+    if actions:
+        links = "\n".join(
+            f'<a class="button-link" href="{escape(href, quote=True)}">{escape(label)}</a>'
+            for label, href in actions
+        )
+        action_html = f'<div class="actions">{links}</div>'
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1067,6 +1094,30 @@ def _message_page(title: str, message: str) -> str:
       letter-spacing: 0.3px;
     }}
     p::before {{ content: '> '; color: #1f5530; }}
+    .actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 22px;
+    }}
+    .button-link {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 42px;
+      padding: 11px 16px;
+      border: 1px solid #00ff41;
+      color: #001405;
+      background: #00ff41;
+      font-size: 13px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      text-decoration: none;
+      box-shadow: 0 0 14px rgba(0, 255, 65, 0.32);
+    }}
+    .button-link:hover {{
+      background: #7cff9d;
+      border-color: #7cff9d;
+    }}
     .footer-bar {{
       margin-top: 22px;
       font-size: 10px;
@@ -1084,6 +1135,7 @@ def _message_page(title: str, message: str) -> str:
     <section>
       <h1>{escape(title)}</h1>
       <p>{escape(message)}</p>
+      {action_html}
     </section>
     <div class="footer-bar">// the matrix has you &nbsp;&middot;&nbsp; follow the white rabbit ▌</div>
   </main>
