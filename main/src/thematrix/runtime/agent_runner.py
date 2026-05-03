@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
+
+from pydantic import BaseModel, Field
 
 from thematrix.prompts import PromptLibrary
+from thematrix.prompts.json_tools import extract_json_object
 from thematrix.schemas import (
     AgentSpec,
     ModelRequest,
@@ -11,6 +15,7 @@ from thematrix.schemas import (
     OracleBrief,
     ProviderConfig,
 )
+from thematrix.tools import ShellCommandResult, ShellDecision, ShellExecutor
 
 
 class RunnerModelGateway(Protocol):
@@ -27,7 +32,19 @@ class AgentExecutionResult:
     response: str
     provider_id: str
     model_id: str
+    tool_results: list[ShellCommandResult] | None = None
     error: str | None = None
+
+
+class AgentToolRequest(BaseModel):
+    kind: Literal["shell"] = "shell"
+    command: str
+    purpose: str = ""
+
+
+class AgentToolPlan(BaseModel):
+    response: str = ""
+    tool_requests: list[AgentToolRequest] = Field(default_factory=list)
 
 
 class AgentRunner:
@@ -37,9 +54,11 @@ class AgentRunner:
         self,
         model_gateway: RunnerModelGateway,
         prompt_library: PromptLibrary,
+        shell_executor: ShellExecutor | None = None,
     ):
         self.model_gateway = model_gateway
         self.prompt_library = prompt_library
+        self.shell_executor = shell_executor
 
     def run(
         self,
@@ -70,14 +89,52 @@ class AgentRunner:
                 response=f"Agent execution could not start: {exc}",
                 provider_id=spec.provider_id,
                 model_id=spec.model_id,
+                tool_results=[],
+                error=type(exc).__name__,
+            )
+
+        plan = self._parse_tool_plan(response.text)
+        if not plan.tool_requests:
+            return AgentExecutionResult(
+                executed=True,
+                response=plan.response or response.text,
+                provider_id=response.provider_id,
+                model_id=response.model,
+                tool_results=[],
+            )
+
+        tool_results = self._run_tool_requests(spec, plan.tool_requests)
+        final_prompt = self._tool_followup_prompt(blueprint, brief, user_request, plan, tool_results)
+        try:
+            final_response = self.model_gateway.generate(
+                ModelRequest.from_prompt(final_prompt).model_copy(
+                    update={
+                        "max_tokens": 768,
+                        "metadata": {
+                            "agent_id": spec.agent_id,
+                            "agent_type": spec.agent_type,
+                            "tool_results": len(tool_results),
+                        },
+                    }
+                ),
+                config=provider_config,
+            )
+        except Exception as exc:
+            return AgentExecutionResult(
+                executed=False,
+                response=f"Agent execution stopped after tool review: {exc}",
+                provider_id=response.provider_id,
+                model_id=response.model,
+                tool_results=tool_results,
                 error=type(exc).__name__,
             )
 
         return AgentExecutionResult(
             executed=True,
-            response=response.text,
-            provider_id=response.provider_id,
-            model_id=response.model,
+            response=final_response.text,
+            provider_id=final_response.provider_id,
+            model_id=final_response.model,
+            tool_results=tool_results,
         )
 
     def _execution_prompt(
@@ -92,8 +149,76 @@ class AgentRunner:
             f"User request:\n{user_request.strip()}\n\n"
             "Oracle brief:\n"
             f"{brief.model_dump_json(indent=2)}\n\n"
-            "Respond as the spawned agent. Stay within the blueprint. "
-            "If the request requires tools that are not available yet, explain the next safe step."
+            "Respond as the spawned agent. Stay within the blueprint.\n\n"
+            "If you need a shell command, return exactly one JSON object in this shape:\n"
+            '{"response":"why the command is useful","tool_requests":'
+            '[{"kind":"shell","command":"git status -sb","purpose":"Check state"}]}\n\n'
+            "Only request commands that fit the blueprint. Do not request commands for secrets. "
+            "If no tool is needed, answer normally."
+        )
+
+    def _parse_tool_plan(self, text: str) -> AgentToolPlan:
+        try:
+            return AgentToolPlan.model_validate(extract_json_object(text))
+        except Exception:
+            return AgentToolPlan(response=text)
+
+    def _run_tool_requests(
+        self,
+        spec: AgentSpec,
+        requests: list[AgentToolRequest],
+    ) -> list[ShellCommandResult]:
+        results: list[ShellCommandResult] = []
+        for request in requests:
+            if request.kind != "shell":
+                continue
+            if "shell_guarded" not in spec.tools_allowed:
+                results.append(
+                    ShellCommandResult(
+                        command=request.command,
+                        purpose=request.purpose,
+                        decision=ShellDecision.BLOCK,
+                        reason="This agent spec does not allow shell_guarded.",
+                    )
+                )
+                continue
+            if self.shell_executor is None:
+                results.append(
+                    ShellCommandResult(
+                        command=request.command,
+                        purpose=request.purpose,
+                        decision=ShellDecision.APPROVAL_REQUIRED,
+                        reason="Shell execution is not attached in this runtime.",
+                    )
+                )
+                continue
+            results.append(self.shell_executor.run(request.command, purpose=request.purpose))
+        return results
+
+    def _tool_followup_prompt(
+        self,
+        blueprint: str,
+        brief: OracleBrief,
+        user_request: str,
+        plan: AgentToolPlan,
+        tool_results: list[ShellCommandResult],
+    ) -> str:
+        result_json = json.dumps(
+            [result.model_dump() for result in tool_results],
+            indent=2,
+        )
+        return (
+            f"{blueprint}\n\n"
+            "# Current Mission\n\n"
+            f"User request:\n{user_request.strip()}\n\n"
+            "Oracle brief:\n"
+            f"{brief.model_dump_json(indent=2)}\n\n"
+            "Your tool request summary:\n"
+            f"{plan.response}\n\n"
+            "Tool results:\n"
+            f"{result_json}\n\n"
+            "Now give the final user-facing answer. Mention blocked or approval-needed commands "
+            "plainly if they affected the result."
         )
 
     def _fallback_blueprint(self, spec: AgentSpec) -> str:

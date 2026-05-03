@@ -150,6 +150,12 @@ calling the configured model with the agent blueprint markdown and the current O
 provider is configured, the run stays in safe planning mode and tells the user to configure a
 provider before execution.
 
+Spawned agents can request guarded shell commands through structured JSON. Low-risk read/check
+commands such as `git status`, `git diff`, `pytest`, `ruff check`, and directory listing can run
+automatically. Commands that can change the machine, install packages, make network calls, or push
+code require explicit CLI approval. Dangerous patterns are blocked before approval. Tool outputs
+are written to Obsidian under `raw/tool_outputs/`.
+
 ## Inspection Commands
 
 - `the-matrix agents list` shows reusable agents tracked by Architect.

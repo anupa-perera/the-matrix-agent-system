@@ -43,6 +43,7 @@ class Nebuchadnezzar:
         preflight = self.neo.review_agent_spec(spec)
         execution_status = "skipped"
         execution_error = None
+        execution_tool_results = []
 
         if preflight.approved:
             selection = "reused" if spec.reuse_candidate_id else "created"
@@ -67,6 +68,7 @@ class Nebuchadnezzar:
                 )
                 execution_status = "executed" if execution.executed else "error"
                 execution_error = execution.error
+                execution_tool_results = execution.tool_results or []
                 if execution.executed:
                     response = f"{response}\n\nSpawned agent response:\n\n{execution.response}"
                 else:
@@ -103,11 +105,13 @@ class Nebuchadnezzar:
                 ),
                 "agent_execution_status": execution_status,
                 "agent_execution_error": execution_error,
+                "tool_result_count": len(execution_tool_results),
             },
         )
         self.store.record_run(result)
         if result.agent_spec is not None:
             self.vault.record_agent_spec(result.agent_spec)
+        self.vault.record_tool_outputs(result.run_id, execution_tool_results)
         if result.preflight_report is not None:
             self.vault.record_security_review(result.run_id, "preflight", result.preflight_report)
         if result.output_report is not None:

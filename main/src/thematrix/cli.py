@@ -24,6 +24,7 @@ from thematrix.schemas import (
     ProviderProfile,
 )
 from thematrix.security import Keymaker, SecretStoreError
+from thematrix.tools import ShellExecutor
 
 app = typer.Typer(help="The Matrix Agent System CLI.")
 providers_app = typer.Typer(help="Manage model providers.")
@@ -117,7 +118,14 @@ def ask(
         neo=Neo(),
         vault=vault,
         store=store,
-        agent_runner=AgentRunner(gateway, prompt_library),
+        agent_runner=AgentRunner(
+            gateway,
+            prompt_library,
+            shell_executor=ShellExecutor(
+                approval_callback=_approve_shell_command,
+                cwd=Path.cwd(),
+            ),
+        ),
     )
     result = runtime.run(
         request,
@@ -566,6 +574,14 @@ def _resolve_file_change_consent() -> FileChangeConsent:
     if allow:
         return FileChangeConsent.ALLOW_ALWAYS
     return FileChangeConsent.ASK_EACH_TIME
+
+
+def _approve_shell_command(command: str, reason: str, purpose: str) -> bool:
+    typer.echo("A spawned agent requested a shell command that needs approval.")
+    typer.echo(f"Purpose: {purpose or 'not provided'}")
+    typer.echo(f"Reason:  {reason}")
+    typer.echo(f"Command: {command}")
+    return typer.confirm("Run this command?", default=False)
 
 
 if __name__ == "__main__":

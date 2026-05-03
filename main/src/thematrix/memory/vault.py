@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from thematrix.schemas import AgentSpec, MatrixRunResult, SecurityReport
+from thematrix.tools import ShellCommandResult
 
 
 class MemoryVault:
@@ -132,6 +133,46 @@ class MemoryVault:
             ),
             encoding="utf-8",
         )
+
+    def record_tool_outputs(
+        self,
+        run_id: str,
+        results: list[ShellCommandResult],
+    ) -> None:
+        if not results:
+            return
+        output_path = self.root / "raw" / "tool_outputs" / f"{run_id}.md"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        sections = [f"# Tool Outputs: {run_id}\n"]
+        for index, result in enumerate(results, start=1):
+            sections.append(
+                "\n".join(
+                    [
+                        f"## Tool {index}",
+                        "",
+                        f"- Command: `{result.command}`",
+                        f"- Purpose: {result.purpose or 'not provided'}",
+                        f"- Decision: {result.decision.value}",
+                        f"- Executed: {result.executed}",
+                        f"- Exit code: {result.exit_code if result.exit_code is not None else 'none'}",
+                        f"- Reason: {result.reason}",
+                        "",
+                        "### Stdout",
+                        "",
+                        "```text",
+                        result.stdout,
+                        "```",
+                        "",
+                        "### Stderr",
+                        "",
+                        "```text",
+                        result.stderr,
+                        "```",
+                        "",
+                    ]
+                )
+            )
+        output_path.write_text("\n".join(sections), encoding="utf-8")
 
     def append_log(self, title: str, body: str) -> None:
         timestamp = datetime.now(UTC).isoformat()
