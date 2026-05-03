@@ -282,94 +282,424 @@ def render_setup_form(
     )
     provider_json = _provider_setup_json(providers, detection_by_id)
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
+    detected_count = sum(1 for d in (detections or []) if d.reachable)
+    if detections is None:
+        detected_line = "skipping local provider scan"
+    elif detected_count == 0:
+        detected_line = "no local providers detected"
+    elif detected_count == 1:
+        detected_line = "1 local provider detected"
+    else:
+        detected_line = f"{detected_count} local providers detected"
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>The Matrix Setup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
   <style>
+    :root {{
+      color-scheme: dark;
+      --void: #000000;
+      --panel-bg: rgba(0, 14, 4, 0.78);
+      --panel-edge: rgba(0, 255, 65, 0.10);
+      --phosphor: #00b341;
+      --phosphor-dim: #1f5530;
+      --phosphor-deep: #0a2c14;
+      --phosphor-bright: #00ff41;
+      --phosphor-white: #d4ffe2;
+      --phosphor-amber: #ffb94d;
+      --phosphor-red: #ff003c;
+      --line: rgba(0, 255, 65, 0.14);
+      --line-soft: rgba(0, 255, 65, 0.06);
+    }}
+    * {{ box-sizing: border-box; }}
+    html, body {{ margin: 0; padding: 0; }}
     body {{
-      margin: 0;
-      background: #f7f8f5;
-      color: #1f2523;
-      font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+      background: var(--void);
+      color: var(--phosphor);
+      font-family: "Share Tech Mono", "Cascadia Mono", "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.55;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }}
+    #matrix-rain {{
+      position: fixed;
+      inset: 0;
+      width: 100vw; height: 100vh;
+      z-index: 0;
+      opacity: 0.28;
+      pointer-events: none;
+    }}
+    body::before {{
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse 95% 80% at 50% 45%,
+        transparent 0%,
+        rgba(0, 0, 0, 0.2) 60%,
+        rgba(0, 0, 0, 0.55) 100%);
+      pointer-events: none;
+      z-index: 1;
+    }}
+    body::after {{
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent 0px,
+        transparent 2px,
+        rgba(0, 0, 0, 0.22) 3px,
+        transparent 4px
+      );
+      pointer-events: none;
+      z-index: 999;
+      mix-blend-mode: multiply;
+    }}
+    @keyframes blink {{ 0%, 49% {{ opacity: 1; }} 50%, 100% {{ opacity: 0; }} }}
+    @keyframes wake {{
+      from {{ opacity: 0; transform: translateY(8px); filter: blur(3px); }}
+      to {{ opacity: 1; transform: translateY(0); filter: blur(0); }}
+    }}
+    @keyframes bootLine {{
+      from {{ opacity: 0; transform: translateX(-12px); }}
+      to {{ opacity: 1; transform: translateX(0); }}
+    }}
+    @keyframes pulseDot {{
+      0%, 100% {{ box-shadow: 0 0 4px var(--phosphor-bright), 0 0 8px rgba(0, 255, 65, 0.5); opacity: 1; }}
+      50% {{ box-shadow: 0 0 2px var(--phosphor-bright); opacity: 0.45; }}
+    }}
+    @keyframes phosphorPulse {{
+      0%, 100% {{ text-shadow: 0 0 4px rgba(0, 255, 65, 0.95), 0 0 18px rgba(0, 255, 65, 0.55), 0 0 36px rgba(0, 255, 65, 0.25); }}
+      50% {{ text-shadow: 0 0 6px rgba(0, 255, 65, 1), 0 0 24px rgba(0, 255, 65, 0.7), 0 0 48px rgba(0, 255, 65, 0.35); }}
     }}
     main {{
-      width: min(860px, calc(100% - 32px));
+      position: relative;
+      z-index: 2;
+      width: min(900px, calc(100% - 48px));
       margin: 0 auto;
-      padding: 28px 0 44px;
+      padding: 36px 0 56px;
     }}
-    h1 {{ margin: 0 0 4px; font-size: 30px; letter-spacing: 0; }}
-    h2 {{ margin: 24px 0 10px; font-size: 18px; }}
-    p {{ margin: 0 0 12px; color: #65706b; }}
+    /* BOOT LOG */
+    .boot-log {{
+      margin-bottom: 22px;
+      font-size: 11px;
+      color: var(--phosphor-dim);
+      letter-spacing: 1px;
+      line-height: 1.85;
+    }}
+    .boot-log p {{ margin: 0; opacity: 0; animation: bootLine 380ms ease-out both; }}
+    .boot-log p::before {{ content: '> '; color: var(--phosphor); }}
+    .boot-log p:nth-child(1) {{ animation-delay: 80ms; }}
+    .boot-log p:nth-child(2) {{ animation-delay: 240ms; }}
+    .boot-log p:nth-child(3) {{ animation-delay: 400ms; }}
+    .boot-log p:nth-child(4) {{ animation-delay: 560ms; color: var(--phosphor); }}
+    /* HEADER */
+    header {{
+      padding-bottom: 22px;
+      margin-bottom: 26px;
+      border-bottom: 1px solid var(--line);
+      animation: wake 700ms ease-out 600ms both;
+    }}
+    h1 {{
+      font-family: "VT323", "Cascadia Mono", monospace;
+      font-size: clamp(56px, 8vw, 96px);
+      line-height: 0.85;
+      margin: 0 0 12px;
+      letter-spacing: 6px;
+      color: var(--phosphor-bright);
+      text-transform: uppercase;
+      animation: phosphorPulse 4.5s ease-in-out infinite;
+    }}
+    h1::before {{ content: '> '; color: var(--phosphor-dim); letter-spacing: 0; }}
+    h1::after {{
+      content: '_';
+      animation: blink 1.05s step-end infinite;
+      color: var(--phosphor-bright);
+      margin-left: 4px;
+    }}
+    .hud-status {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--phosphor-dim);
+    }}
+    .hud-status span {{ display: inline-flex; align-items: center; gap: 8px; }}
+    .hud-status .dot {{
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--phosphor-bright);
+      animation: pulseDot 2.4s ease-in-out infinite;
+    }}
+    .hud-status .v {{ color: var(--phosphor); }}
+    .lede {{
+      margin: 14px 0 0;
+      font-size: 12px;
+      color: var(--phosphor-dim);
+      letter-spacing: 0.5px;
+    }}
+    /* SECTION HEADINGS */
+    h2 {{
+      margin: 28px 0 14px;
+      font-size: 11px;
+      font-weight: normal;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      color: var(--phosphor-dim);
+      padding-bottom: 8px;
+      border-bottom: 1px dashed var(--line);
+    }}
+    h2::before {{ content: '// '; color: var(--phosphor-dim); }}
+    p {{ margin: 0; }}
+    /* FORM AS HUD CONSOLE */
     form, .notes {{
-      background: white;
-      border: 1px solid #dce1db;
-      border-radius: 8px;
-      padding: 18px;
+      position: relative;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-edge);
+      border-left: 2px solid var(--phosphor-dim);
+      padding: 28px 22px 22px;
+      animation: wake 700ms ease-out 800ms both;
     }}
-    label {{ display: grid; gap: 6px; margin: 12px 0; font-weight: 600; }}
+    form::before, .notes::before {{
+      content: '◤';
+      position: absolute;
+      top: 6px; left: 8px;
+      color: var(--phosphor-dim);
+      font-size: 10px;
+    }}
+    form::after, .notes::after {{
+      content: '◢';
+      position: absolute;
+      bottom: 6px; right: 8px;
+      color: var(--phosphor-dim);
+      font-size: 10px;
+    }}
+    .notes {{ animation-delay: 1000ms; }}
+    label {{
+      display: grid;
+      gap: 8px;
+      margin: 14px 0;
+      font-size: 10px;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: var(--phosphor-dim);
+    }}
     input, select {{
       width: 100%;
-      border: 1px solid #cfd6d0;
-      border-radius: 6px;
-      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      padding: 11px 12px;
       font: inherit;
-      background: white;
-    }}
-    .hint {{
-      color: #65706b;
       font-size: 13px;
-      font-weight: 400;
+      background: rgba(0, 8, 2, 0.8);
+      color: var(--phosphor-bright);
+      caret-color: var(--phosphor-bright);
+      letter-spacing: 0.5px;
+      text-transform: none;
+      transition: border-color 150ms ease, box-shadow 150ms ease;
     }}
+    input:focus, select:focus {{
+      border-color: var(--phosphor-bright);
+      box-shadow: 0 0 0 1px var(--phosphor-bright), 0 0 14px rgba(0, 255, 65, 0.25);
+      outline: none;
+    }}
+    input::placeholder {{ color: rgba(31, 85, 48, 0.7); text-transform: none; letter-spacing: 0.5px; }}
+    select {{
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: linear-gradient(45deg, transparent 50%, var(--phosphor) 50%),
+                        linear-gradient(135deg, var(--phosphor) 50%, transparent 50%);
+      background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+      background-size: 5px 5px, 5px 5px;
+      background-repeat: no-repeat;
+      padding-right: 32px;
+    }}
+    select option {{ background: #000a00; color: var(--phosphor); }}
+    .hint {{
+      color: var(--phosphor-dim);
+      font-size: 11px;
+      letter-spacing: 0.3px;
+      text-transform: none;
+      font-weight: normal;
+    }}
+    .hint::before {{ content: '↳ '; color: var(--phosphor-dim); }}
+    /* PROVIDER CARD — live HUD readout */
     .provider-card {{
-      border: 1px solid #dce1db;
-      border-radius: 8px;
-      padding: 12px;
-      background: #fbfcfa;
-      margin: 12px 0;
+      position: relative;
+      border: 1px solid var(--line);
+      background: rgba(0, 22, 8, 0.55);
+      padding: 18px 16px 14px;
+      margin: 18px 0;
     }}
-    .provider-card strong {{ display: block; margin-bottom: 4px; }}
+    .provider-card::before {{
+      content: '◤ live readout';
+      position: absolute;
+      top: -7px; left: 12px;
+      background: var(--void);
+      padding: 0 8px;
+      font-size: 9px;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      color: var(--phosphor-dim);
+    }}
+    .provider-card::after {{
+      content: '';
+      position: absolute;
+      bottom: 6px; right: 6px;
+      width: 12px; height: 12px;
+      border-bottom: 1px solid var(--phosphor-dim);
+      border-right: 1px solid var(--phosphor-dim);
+    }}
+    .provider-card strong {{
+      display: block;
+      margin-bottom: 8px;
+      color: var(--phosphor-bright);
+      text-shadow: 0 0 6px rgba(0, 255, 65, 0.5);
+      font-weight: normal;
+      font-size: 14px;
+      letter-spacing: 1px;
+    }}
+    .provider-card p {{ margin: 4px 0; }}
+    .provider-card .setup-hint {{ color: var(--phosphor); font-size: 13px; }}
+    .provider-card .data-boundary {{ color: var(--phosphor-dim); font-size: 12px; }}
     .hidden {{ display: none; }}
-    .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
-    .check {{ display: flex; gap: 8px; align-items: center; font-weight: 500; }}
-    .check input {{ width: auto; }}
-    button {{
-      margin-top: 14px;
-      border: 0;
-      border-radius: 6px;
-      padding: 11px 14px;
-      background: #1f7a4d;
-      color: white;
-      font-weight: 700;
+    .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
+    .check {{
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      font-size: 12px;
+      color: var(--phosphor);
+      text-transform: none;
+      letter-spacing: 0.3px;
       cursor: pointer;
     }}
+    .check input {{
+      width: 14px; height: 14px;
+      accent-color: var(--phosphor-bright);
+      cursor: pointer;
+    }}
+    /* SUBMIT BUTTON — chunky HUD action */
+    button {{
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 22px;
+      border: 1px solid var(--phosphor-bright);
+      border-radius: 0;
+      padding: 14px 28px;
+      background: transparent;
+      color: var(--phosphor-bright);
+      font: inherit;
+      font-family: "VT323", "Cascadia Mono", monospace;
+      font-size: 22px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 4px;
+      box-shadow: 0 0 12px rgba(0, 255, 65, 0.3),
+                  inset 0 0 12px rgba(0, 255, 65, 0.04);
+      text-shadow: 0 0 8px rgba(0, 255, 65, 0.7);
+      transition: background 200ms ease, box-shadow 200ms ease, transform 100ms ease;
+      position: relative;
+    }}
+    button::before {{ content: '▸'; font-size: 18px; }}
+    button:hover {{
+      background: rgba(0, 255, 65, 0.1);
+      box-shadow: 0 0 24px rgba(0, 255, 65, 0.5),
+                  inset 0 0 24px rgba(0, 255, 65, 0.08);
+    }}
+    button:active {{ transform: translateY(1px); }}
     .error {{
-      border: 1px solid #e6c0bd;
-      background: #fff6f4;
-      color: #9b2f2f;
-      border-radius: 6px;
-      padding: 10px;
-      margin: 14px 0;
+      position: relative;
+      border: 1px solid rgba(255, 0, 60, 0.5);
+      background: rgba(40, 0, 8, 0.7);
+      color: var(--phosphor-red);
+      padding: 12px 14px 12px 36px;
+      margin: 18px 0;
+      text-shadow: 0 0 6px rgba(255, 0, 60, 0.4);
+      letter-spacing: 0.5px;
+      animation: wake 380ms ease-out both;
+    }}
+    .error::before {{
+      content: '⚠';
+      position: absolute;
+      top: 50%; left: 14px;
+      transform: translateY(-50%);
+      font-size: 14px;
     }}
     .note {{
-      border-top: 1px solid #dce1db;
-      padding-top: 10px;
-      margin-top: 10px;
+      border-top: 1px dashed var(--line);
+      padding-top: 12px;
+      margin-top: 12px;
     }}
     .note:first-child {{ border-top: 0; padding-top: 0; margin-top: 0; }}
-    code {{ color: #0d6b72; overflow-wrap: anywhere; }}
-    @media (max-width: 760px) {{ .row {{ grid-template-columns: 1fr; }} }}
+    .note strong {{
+      display: block;
+      margin-bottom: 4px;
+      color: var(--phosphor-bright);
+      text-shadow: 0 0 4px rgba(0, 255, 65, 0.4);
+      font-weight: normal;
+      letter-spacing: 1px;
+    }}
+    .note p {{ margin: 4px 0; font-size: 12px; color: var(--phosphor-dim); }}
+    .note p:nth-child(2) {{ color: var(--phosphor); }}
+    code {{
+      font-family: "Share Tech Mono", "Cascadia Mono", monospace;
+      color: var(--phosphor-bright);
+      text-shadow: 0 0 6px rgba(0, 255, 65, 0.4);
+      overflow-wrap: anywhere;
+    }}
+    .footer-bar {{
+      margin-top: 26px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 10px;
+      color: var(--phosphor-dim);
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      opacity: 0;
+      animation: wake 600ms ease-out 1500ms both;
+    }}
+    @media (max-width: 760px) {{
+      .row {{ grid-template-columns: 1fr; }}
+      h1 {{ font-size: 52px; letter-spacing: 3px; }}
+    }}
   </style>
 </head>
 <body>
+  <canvas id="matrix-rain" aria-hidden="true"></canvas>
   <main>
-    <h1>The Matrix Setup</h1>
-    <p>This guide sets up the local memory folder, model connection, and safe permission defaults. It runs only on this PC.</p>
+    <div class="boot-log" aria-hidden="true">
+      <p>opening secure channel :: 127.0.0.1</p>
+      <p>scanning environment for providers</p>
+      <p>{escape(detected_line)}</p>
+      <p>awaiting operator</p>
+    </div>
+    <header>
+      <h1>The Matrix</h1>
+      <div class="hud-status">
+        <span><span class="dot"></span>node<span class="v">::local</span></span>
+        <span>channel<span class="v">::secure</span></span>
+        <span>vault<span class="v">::pending</span></span>
+        <span>keymaker<span class="v">::ready</span></span>
+      </div>
+      <p class="lede">Configure the local memory vault, model link, and safety protocols. This session is bound to this node only.</p>
+    </header>
     {error_html}
     <form method="post" action="/save?token={escape(token)}">
-      <h2>1. Choose How The Matrix Thinks</h2>
+      <h2>01 / Model Interface</h2>
       <label>Model provider
         <select id="provider_id" name="provider_id" required>{provider_options}</select>
         <span class="hint">If a local model app is already running, it will be selected for you.</span>
@@ -394,7 +724,7 @@ def render_setup_form(
         <input id="base_url" name="base_url" placeholder="Use provider default unless you need a custom endpoint">
         <span id="base_url_hint" class="hint"></span>
       </label>
-      <h2>2. Choose Safe Defaults</h2>
+      <h2>02 / Safety Protocols</h2>
       <div class="row">
         <label>Data sharing
           <select name="privacy_mode">
@@ -412,10 +742,14 @@ def render_setup_form(
       </div>
       <label class="check"><input name="guarded_shell_enabled" type="checkbox" checked> Allow safe read/check commands automatically</label>
       <label class="check"><input name="test_provider" type="checkbox" checked> Test the connection before finishing</label>
-      <button type="submit">Finish setup</button>
+      <button type="submit">Initialize Connection</button>
     </form>
-    <h2>Provider Help</h2>
+    <h2>Provider Registry</h2>
     <div class="notes">{provider_notes}</div>
+    <div class="footer-bar">
+      <span>// the matrix has you</span>
+      <span>// follow the white rabbit &nbsp;▌</span>
+    </div>
     <script id="provider-data" type="application/json">{provider_json}</script>
     <script>
       const providers = JSON.parse(document.getElementById("provider-data").textContent);
@@ -497,6 +831,45 @@ def render_setup_form(
       syncProvider();
     </script>
   </main>
+  <script>
+    (function () {{
+      const canvas = document.getElementById('matrix-rain');
+      if (!canvas || !canvas.getContext) return;
+      const ctx = canvas.getContext('2d');
+      const glyphs = 'ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ0123456789ABCDEF<>/\\\\|=+-*';
+      const fontSize = 16;
+      let cols, drops;
+      function setup() {{
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        cols = Math.floor(canvas.width / fontSize);
+        drops = Array.from({{ length: cols }}, () => Math.random() * -80);
+      }}
+      setup();
+      window.addEventListener('resize', setup);
+      function draw() {{
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.045)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.font = fontSize + 'px "Share Tech Mono", "Cascadia Mono", monospace';
+        for (let i = 0; i < cols; i++) {{
+          const ch = glyphs.charAt(Math.floor(Math.random() * glyphs.length));
+          const y = drops[i] * fontSize;
+          if (Math.random() > 0.975) {{
+            ctx.fillStyle = '#d4ffe2';
+            ctx.shadowColor = '#00ff41';
+            ctx.shadowBlur = 10;
+          }} else {{
+            ctx.fillStyle = '#00b341';
+            ctx.shadowBlur = 0;
+          }}
+          ctx.fillText(ch, i * fontSize, y);
+          if (y > canvas.height && Math.random() > 0.972) drops[i] = 0;
+          drops[i]++;
+        }}
+      }}
+      setInterval(draw, 60);
+    }})();
+  </script>
 </body>
 </html>
 """
@@ -580,15 +953,109 @@ def _message_page(title: str, message: str) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape(title)}</title>
+  <title>The Matrix {escape(title)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
   <style>
-    body {{ margin: 0; background: #f7f8f5; color: #1f2523; font: 15px/1.45 "Segoe UI", system-ui, sans-serif; }}
-    main {{ width: min(720px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0; }}
-    section {{ background: white; border: 1px solid #dce1db; border-radius: 8px; padding: 18px; }}
-    h1 {{ margin: 0 0 8px; }}
-    p {{ margin: 0; color: #65706b; }}
+    * {{ box-sizing: border-box; }}
+    html, body {{ margin: 0; padding: 0; }}
+    body {{
+      background: #000000;
+      color: #00b341;
+      font: 14px/1.55 "Share Tech Mono", "Cascadia Mono", "Courier New", monospace;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }}
+    body::before {{
+      content: '';
+      position: fixed; inset: 0;
+      background: radial-gradient(ellipse 70% 60% at 50% 50%,
+        transparent 0%, rgba(0,0,0,0.45) 70%, rgba(0,0,0,0.9) 100%);
+      pointer-events: none; z-index: 1;
+    }}
+    body::after {{
+      content: '';
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(0deg,
+        transparent 0px, transparent 2px,
+        rgba(0,0,0,0.22) 3px, transparent 4px);
+      pointer-events: none; z-index: 999;
+      mix-blend-mode: multiply;
+    }}
+    @keyframes blink {{ 0%, 49% {{ opacity: 1; }} 50%, 100% {{ opacity: 0; }} }}
+    @keyframes wake {{
+      from {{ opacity: 0; transform: translateY(8px); filter: blur(3px); }}
+      to {{ opacity: 1; transform: translateY(0); filter: blur(0); }}
+    }}
+    main {{
+      position: relative; z-index: 2;
+      width: min(720px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 80px 0 48px;
+    }}
+    section {{
+      position: relative;
+      background: rgba(0, 14, 4, 0.78);
+      border: 1px solid rgba(0, 255, 65, 0.10);
+      border-left: 2px solid #00ff41;
+      padding: 36px 28px 28px;
+      animation: wake 600ms ease-out both;
+    }}
+    section::before {{
+      content: '◤';
+      position: absolute; top: 8px; left: 10px;
+      color: #1f5530; font-size: 12px;
+    }}
+    section::after {{
+      content: '◢';
+      position: absolute; bottom: 8px; right: 10px;
+      color: #1f5530; font-size: 12px;
+    }}
+    h1 {{
+      margin: 0 0 14px;
+      font-family: "VT323", "Cascadia Mono", monospace;
+      font-size: 56px;
+      line-height: 0.9;
+      letter-spacing: 4px;
+      color: #00ff41;
+      text-transform: uppercase;
+      text-shadow: 0 0 6px rgba(0, 255, 65, 0.95), 0 0 22px rgba(0, 255, 65, 0.45);
+    }}
+    h1::before {{ content: '> '; color: #1f5530; letter-spacing: 0; }}
+    h1::after {{
+      content: '_';
+      animation: blink 1.05s step-end infinite;
+      color: #00ff41;
+      margin-left: 4px;
+    }}
+    p {{
+      margin: 0;
+      color: #00b341;
+      font-size: 14px;
+      letter-spacing: 0.3px;
+    }}
+    p::before {{ content: '> '; color: #1f5530; }}
+    .footer-bar {{
+      margin-top: 22px;
+      font-size: 10px;
+      color: #1f5530;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      text-align: center;
+      opacity: 0;
+      animation: wake 500ms ease-out 600ms both;
+    }}
   </style>
 </head>
-<body><main><section><h1>{escape(title)}</h1><p>{escape(message)}</p></section></main></body>
+<body>
+  <main>
+    <section>
+      <h1>{escape(title)}</h1>
+      <p>{escape(message)}</p>
+    </section>
+    <div class="footer-bar">// the matrix has you &nbsp;&middot;&nbsp; follow the white rabbit ▌</div>
+  </main>
+</body>
 </html>
 """

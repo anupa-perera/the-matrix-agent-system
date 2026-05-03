@@ -36,99 +36,412 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>The Matrix Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
   <style>
     :root {{
-      color-scheme: light;
-      --bg: #f7f8f5;
-      --panel: #ffffff;
-      --text: #1f2523;
-      --muted: #65706b;
-      --line: #dce1db;
-      --green: #1f7a4d;
-      --cyan: #0d6b72;
-      --red: #b74343;
-      --gold: #8a651c;
+      color-scheme: dark;
+      --void: #000000;
+      --panel-bg: rgba(0, 14, 4, 0.78);
+      --panel-edge: rgba(0, 255, 65, 0.10);
+      --phosphor: #00b341;
+      --phosphor-dim: #1f5530;
+      --phosphor-deep: #0a2c14;
+      --phosphor-bright: #00ff41;
+      --phosphor-white: #d4ffe2;
+      --phosphor-amber: #ffb94d;
+      --phosphor-red: #ff003c;
+      --line: rgba(0, 255, 65, 0.12);
+      --line-soft: rgba(0, 255, 65, 0.06);
     }}
     * {{ box-sizing: border-box; }}
+    html, body {{ margin: 0; padding: 0; }}
     body {{
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: var(--void);
+      color: var(--phosphor);
+      font-family: "Share Tech Mono", "Cascadia Mono", "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.55;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }}
+    /* Digital rain — the iconic falling code */
+    #matrix-rain {{
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
+      opacity: 0.45;
+      pointer-events: none;
+    }}
+    /* Subtle vignette — gives depth without hiding the rain */
+    body::before {{
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 95% 75% at 50% 50%,
+          transparent 0%,
+          rgba(0, 0, 0, 0.15) 60%,
+          rgba(0, 0, 0, 0.45) 100%);
+      pointer-events: none;
+      z-index: 1;
+    }}
+    /* CRT scanlines — every other row of pixels */
+    body::after {{
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent 0px,
+        transparent 2px,
+        rgba(0, 0, 0, 0.22) 3px,
+        transparent 4px
+      );
+      pointer-events: none;
+      z-index: 999;
+      mix-blend-mode: multiply;
+    }}
+    @keyframes blink {{
+      0%, 49% {{ opacity: 1; }}
+      50%, 100% {{ opacity: 0; }}
+    }}
+    @keyframes pulseDot {{
+      0%, 100% {{ box-shadow: 0 0 4px var(--phosphor-bright), 0 0 8px rgba(0, 255, 65, 0.5); opacity: 1; }}
+      50% {{ box-shadow: 0 0 2px var(--phosphor-bright); opacity: 0.45; }}
+    }}
+    @keyframes wake {{
+      from {{ opacity: 0; transform: translateY(8px); filter: blur(4px); }}
+      to {{ opacity: 1; transform: translateY(0); filter: blur(0); }}
+    }}
+    @keyframes bootLine {{
+      from {{ opacity: 0; transform: translateX(-12px); }}
+      to {{ opacity: 1; transform: translateX(0); }}
+    }}
+    @keyframes phosphorPulse {{
+      0%, 100% {{ text-shadow: 0 0 4px rgba(0, 255, 65, 0.95), 0 0 18px rgba(0, 255, 65, 0.55), 0 0 36px rgba(0, 255, 65, 0.25); }}
+      50% {{ text-shadow: 0 0 6px rgba(0, 255, 65, 1), 0 0 24px rgba(0, 255, 65, 0.7), 0 0 48px rgba(0, 255, 65, 0.35); }}
     }}
     main {{
-      width: min(1180px, calc(100% - 32px));
+      position: relative;
+      z-index: 2;
+      width: min(1240px, calc(100% - 48px));
       margin: 0 auto;
-      padding: 28px 0 42px;
+      padding: 36px 0 48px;
     }}
+    /* BOOT LOG — terminal-style intro lines */
+    .boot-log {{
+      margin-bottom: 18px;
+      font-size: 11px;
+      color: var(--phosphor-dim);
+      letter-spacing: 1px;
+      line-height: 1.85;
+    }}
+    .boot-log p {{
+      margin: 0;
+      opacity: 0;
+      animation: bootLine 380ms ease-out both;
+    }}
+    .boot-log p::before {{ content: '> '; color: var(--phosphor); }}
+    .boot-log p:nth-child(1) {{ animation-delay: 80ms; }}
+    .boot-log p:nth-child(2) {{ animation-delay: 240ms; }}
+    .boot-log p:nth-child(3) {{ animation-delay: 400ms; }}
+    .boot-log p:nth-child(4) {{ animation-delay: 560ms; color: var(--phosphor); }}
+    /* HEADER */
     header {{
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 18px;
-      padding-bottom: 20px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: end;
+      padding-bottom: 22px;
+      margin-bottom: 28px;
       border-bottom: 1px solid var(--line);
+      animation: wake 700ms ease-out 600ms both;
     }}
-    h1, h2, h3, p {{ margin: 0; }}
-    h1 {{ font-size: 30px; font-weight: 700; letter-spacing: 0; }}
-    h2 {{ font-size: 17px; margin-bottom: 12px; }}
-    h3 {{ font-size: 14px; margin-bottom: 4px; }}
-    .muted {{ color: var(--muted); }}
+    h1 {{
+      font-family: "VT323", "Cascadia Mono", monospace;
+      font-size: clamp(64px, 9vw, 112px);
+      line-height: 0.85;
+      margin: 0 0 12px;
+      letter-spacing: 6px;
+      color: var(--phosphor-bright);
+      text-transform: uppercase;
+      animation: phosphorPulse 4.5s ease-in-out infinite;
+    }}
+    h1::before {{
+      content: '> ';
+      color: var(--phosphor-dim);
+      letter-spacing: 0;
+    }}
+    h1::after {{
+      content: '_';
+      animation: blink 1.05s step-end infinite;
+      color: var(--phosphor-bright);
+      margin-left: 4px;
+    }}
+    .hud-status {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--phosphor-dim);
+    }}
+    .hud-status span {{ display: inline-flex; align-items: center; gap: 8px; }}
+    .hud-status .dot {{
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--phosphor-bright);
+      animation: pulseDot 2.4s ease-in-out infinite;
+    }}
+    .hud-status .v {{ color: var(--phosphor); }}
+    .hud-meta {{
+      text-align: right;
+      font-size: 10px;
+      color: var(--phosphor-dim);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      line-height: 1.9;
+    }}
+    .hud-meta strong {{ color: var(--phosphor); font-weight: normal; }}
+    .hud-meta .frame {{
+      display: inline-block;
+      border: 1px solid var(--line);
+      padding: 2px 8px;
+      margin-bottom: 4px;
+      color: var(--phosphor);
+    }}
+    /* GRID */
     .grid {{
       display: grid;
       grid-template-columns: repeat(12, 1fr);
-      gap: 14px;
-      margin-top: 18px;
+      gap: 16px;
+      counter-reset: panel;
     }}
+    /* PANELS — HUD framed, with section IDs and corner brackets */
     .panel {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 16px;
+      position: relative;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-edge);
+      border-left: 2px solid var(--phosphor-dim);
+      padding: 32px 18px 18px;
+      counter-increment: panel;
+      animation: wake 600ms ease-out both;
+      transition: border-left-color 200ms ease, background 200ms ease;
     }}
+    .panel::before {{
+      content: '§' counter(panel, decimal-leading-zero);
+      position: absolute;
+      top: 9px; left: 16px;
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: var(--phosphor-dim);
+    }}
+    .panel::after {{
+      content: '';
+      position: absolute;
+      top: 6px; right: 6px;
+      width: 14px; height: 14px;
+      border-top: 1px solid var(--phosphor-dim);
+      border-right: 1px solid var(--phosphor-dim);
+      transition: border-color 200ms ease;
+    }}
+    .panel:hover {{
+      border-left-color: var(--phosphor-bright);
+      background: rgba(0, 22, 8, 0.85);
+    }}
+    .panel:hover::after {{ border-color: var(--phosphor-bright); }}
+    /* Stagger panel reveal — feels like a HUD initializing */
+    .panel:nth-child(1) {{ animation-delay: 700ms; }}
+    .panel:nth-child(2) {{ animation-delay: 760ms; }}
+    .panel:nth-child(3) {{ animation-delay: 820ms; }}
+    .panel:nth-child(4) {{ animation-delay: 880ms; }}
+    .panel:nth-child(5) {{ animation-delay: 940ms; }}
+    .panel:nth-child(6) {{ animation-delay: 1000ms; }}
+    .panel:nth-child(7) {{ animation-delay: 1060ms; }}
+    .panel:nth-child(8) {{ animation-delay: 1120ms; }}
+    .panel:nth-child(9) {{ animation-delay: 1180ms; }}
+    .panel:nth-child(10) {{ animation-delay: 1240ms; }}
+    .panel:nth-child(11) {{ animation-delay: 1300ms; }}
     .span-3 {{ grid-column: span 3; }}
     .span-4 {{ grid-column: span 4; }}
     .span-6 {{ grid-column: span 6; }}
     .span-8 {{ grid-column: span 8; }}
     .span-12 {{ grid-column: span 12; }}
-    .metric {{ font-size: 30px; font-weight: 700; }}
+    /* HEADINGS */
+    h1, h2, h3, p {{ margin: 0; }}
+    h2 {{
+      margin: 0 0 14px;
+      font-size: 11px;
+      font-weight: normal;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      color: var(--phosphor-dim);
+      padding-bottom: 8px;
+      border-bottom: 1px dashed var(--line);
+    }}
+    h2::before {{ content: '// '; color: var(--phosphor-dim); }}
+    h3 {{
+      margin: 0 0 4px;
+      font-size: 12px;
+      font-weight: normal;
+      color: var(--phosphor);
+      letter-spacing: 0.5px;
+    }}
+    p {{ color: var(--phosphor); }}
+    .muted {{ color: var(--phosphor-dim); }}
+    strong {{ color: var(--phosphor-bright); font-weight: normal; }}
+    /* METRIC PANELS */
+    .panel.metric-panel {{
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 144px;
+      padding: 28px 18px 18px;
+    }}
+    .panel.metric-panel > p.muted {{
+      font-size: 10px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--phosphor-dim);
+    }}
+    .metric {{
+      font-family: "VT323", "Cascadia Mono", monospace;
+      font-size: 76px;
+      line-height: 1;
+      color: var(--phosphor-bright);
+      letter-spacing: 3px;
+      margin-top: 6px;
+      text-shadow:
+        0 0 6px rgba(0, 255, 65, 0.95),
+        0 0 22px rgba(0, 255, 65, 0.45);
+    }}
+    .metric-bar {{
+      margin-top: 12px;
+      height: 2px;
+      background: linear-gradient(to right,
+        var(--phosphor-bright) 0%,
+        var(--phosphor-dim) 60%,
+        transparent 100%);
+      opacity: 0.7;
+    }}
+    /* TAGS */
     .tag {{
       display: inline-flex;
       align-items: center;
+      gap: 6px;
       border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 2px 8px;
-      color: var(--muted);
-      font-size: 12px;
+      padding: 3px 10px;
+      color: var(--phosphor-dim);
+      font-size: 10px;
       white-space: nowrap;
+      text-transform: uppercase;
+      letter-spacing: 1.8px;
     }}
-    .tag.ok {{ border-color: #bad9c8; color: var(--green); }}
-    .tag.warn {{ border-color: #ead8a8; color: var(--gold); }}
-    .tag.risk {{ border-color: #e6c0bd; color: var(--red); }}
-    .list {{ display: grid; gap: 10px; }}
-    .item {{ border-top: 1px solid var(--line); padding-top: 10px; }}
+    .tag::before {{ content: '['; }}
+    .tag::after {{ content: ']'; }}
+    .tag.ok {{ border-color: rgba(0, 255, 65, 0.4); color: var(--phosphor-bright); background: rgba(0, 255, 65, 0.06); }}
+    .tag.warn {{ border-color: rgba(255, 185, 77, 0.4); color: var(--phosphor-amber); background: rgba(255, 185, 77, 0.05); }}
+    .tag.risk {{ border-color: rgba(255, 0, 60, 0.4); color: var(--phosphor-red); background: rgba(255, 0, 60, 0.06); }}
+    /* LISTS */
+    .list {{ display: grid; gap: 12px; }}
+    .item {{
+      position: relative;
+      border-top: 1px dashed var(--line);
+      padding: 12px 0 0 16px;
+    }}
+    .item::before {{
+      content: '▸';
+      position: absolute;
+      left: 0; top: 12px;
+      color: var(--phosphor-dim);
+      font-size: 11px;
+    }}
     .item:first-child {{ border-top: 0; padding-top: 0; }}
+    .item:first-child::before {{ top: 0; }}
     .row {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; }}
     code {{
-      overflow-wrap: anywhere;
-      font-family: "Cascadia Mono", Consolas, monospace;
+      font-family: "Share Tech Mono", "Cascadia Mono", monospace;
       font-size: 12px;
-      color: var(--cyan);
+      color: var(--phosphor-bright);
+      text-shadow: 0 0 6px rgba(0, 255, 65, 0.4);
+      overflow-wrap: anywhere;
     }}
-    @media (max-width: 860px) {{
-      header {{ align-items: flex-start; flex-direction: column; }}
+    /* SYSTEM PATHS — terminal-style key/value rows */
+    .system-paths .path-row {{
+      display: flex;
+      gap: 16px;
+      align-items: baseline;
+      padding: 8px 0;
+      border-bottom: 1px dashed var(--line);
+    }}
+    .system-paths .path-row:last-child {{ border-bottom: 0; }}
+    .system-paths .path-key {{
+      flex: 0 0 80px;
+      font-size: 10px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--phosphor-dim);
+    }}
+    .system-paths .path-value {{
+      flex: 1;
+      color: var(--phosphor-bright);
+      text-shadow: 0 0 6px rgba(0, 255, 65, 0.35);
+      word-break: break-all;
+    }}
+    /* FOOTER STATUS */
+    .footer-bar {{
+      margin-top: 28px;
+      padding: 14px 0 4px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 10px;
+      color: var(--phosphor-dim);
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
+      opacity: 0;
+      animation: wake 600ms ease-out 1500ms both;
+    }}
+    .footer-bar .right {{ color: var(--phosphor); }}
+    @media (max-width: 960px) {{
+      h1 {{ font-size: 56px; letter-spacing: 3px; }}
+      header {{ grid-template-columns: 1fr; }}
+      .hud-meta {{ text-align: left; }}
       .span-3, .span-4, .span-6, .span-8 {{ grid-column: span 12; }}
     }}
   </style>
 </head>
 <body>
+  <canvas id="matrix-rain" aria-hidden="true"></canvas>
   <main>
+    <div class="boot-log" aria-hidden="true">
+      <p>connecting to vault @ <code>{escape(str(paths.vault))}</code></p>
+      <p>oracle interface :: ready</p>
+      <p>nebuchadnezzar runtime :: armed</p>
+      <p>signal locked. you are not alone.</p>
+    </div>
     <header>
       <div>
         <h1>The Matrix</h1>
-        <p class="muted">Local agent system dashboard</p>
+        <div class="hud-status">
+          <span><span class="dot"></span>node<span class="v">::online</span></span>
+          <span>vault<span class="v">::sealed</span></span>
+          <span>oracle<span class="v">::ready</span></span>
+          <span>neo<span class="v">::watchful</span></span>
+        </div>
       </div>
-      <div class="muted">Generated {escape(generated_at)}</div>
+      <div class="hud-meta">
+        <div class="frame">local agent system</div>
+        <div>build <strong>0x4a5e</strong></div>
+        <div>gen <strong>{escape(generated_at)}</strong></div>
+      </div>
     </header>
     <section class="grid">
       {metric_panel("Runs", counts["runs"])}
@@ -141,13 +454,62 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       {security_panel(security_events)}
       {prompt_blocks_panel(prompt_blocks)}
       {model_calls_panel(model_calls)}
-      <section class="panel span-12">
-        <h2>Memory Paths</h2>
-        <p><span class="muted">Home:</span> <code>{escape(str(paths.home))}</code></p>
-        <p><span class="muted">Vault:</span> <code>{escape(str(paths.vault))}</code></p>
+      <section class="panel system-paths span-12">
+        <h2>System Paths</h2>
+        <div class="path-row">
+          <span class="path-key">home</span>
+          <span class="path-value">{escape(str(paths.home))}</span>
+        </div>
+        <div class="path-row">
+          <span class="path-key">vault</span>
+          <span class="path-value">{escape(str(paths.vault))}</span>
+        </div>
       </section>
     </section>
+    <div class="footer-bar">
+      <span>// the matrix has you</span>
+      <span class="right">// follow the white rabbit &nbsp;▌</span>
+    </div>
   </main>
+  <script>
+    (function () {{
+      const canvas = document.getElementById('matrix-rain');
+      if (!canvas || !canvas.getContext) return;
+      const ctx = canvas.getContext('2d');
+      const glyphs = 'ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ0123456789ABCDEF<>/\\\\|=+-*';
+      const fontSize = 16;
+      let cols, drops;
+      function setup() {{
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        cols = Math.floor(canvas.width / fontSize);
+        drops = Array.from({{ length: cols }}, () => Math.random() * -80);
+      }}
+      setup();
+      window.addEventListener('resize', setup);
+      function draw() {{
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.045)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.font = fontSize + 'px "Share Tech Mono", "Cascadia Mono", monospace';
+        for (let i = 0; i < cols; i++) {{
+          const ch = glyphs.charAt(Math.floor(Math.random() * glyphs.length));
+          const y = drops[i] * fontSize;
+          if (Math.random() > 0.975) {{
+            ctx.fillStyle = '#d4ffe2';
+            ctx.shadowColor = '#00ff41';
+            ctx.shadowBlur = 10;
+          }} else {{
+            ctx.fillStyle = '#00b341';
+            ctx.shadowBlur = 0;
+          }}
+          ctx.fillText(ch, i * fontSize, y);
+          if (y > canvas.height && Math.random() > 0.972) drops[i] = 0;
+          drops[i]++;
+        }}
+      }}
+      setInterval(draw, 55);
+    }})();
+  </script>
 </body>
 </html>
 """
@@ -155,9 +517,12 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
 
 def metric_panel(title: str, value: int) -> str:
     return f"""
-      <section class="panel span-3">
+      <section class="panel metric-panel span-3">
         <p class="muted">{escape(title)}</p>
-        <div class="metric">{value}</div>
+        <div>
+          <div class="metric">{value}</div>
+          <div class="metric-bar"></div>
+        </div>
       </section>
 """
 
@@ -215,8 +580,8 @@ def runs_panel(runs: list[dict], store: RuntimeStore) -> str:
         )
     return f"""
       <section class="panel span-8">
-        <h2>Recent Runs</h2>
-        <div class="list">{''.join(items) or empty_text("No runs recorded yet.")}</div>
+        <h2>Recent Missions</h2>
+        <div class="list">{''.join(items) or empty_text("No missions recorded yet.")}</div>
       </section>
 """
 
@@ -237,8 +602,8 @@ def agents_panel(agents: list[dict]) -> str:
     ]
     return f"""
       <section class="panel span-6">
-        <h2>Reusable Agents</h2>
-        <div class="list">{''.join(items) or empty_text("No reusable agents recorded yet.")}</div>
+        <h2>Active Agents</h2>
+        <div class="list">{''.join(items) or empty_text("No agents deployed yet.")}</div>
       </section>
 """
 
