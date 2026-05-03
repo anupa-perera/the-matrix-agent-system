@@ -9,13 +9,14 @@ from thematrix.schemas import ModelRequest, ModelResponse, OracleBrief, PrivacyM
 
 
 class FakeGateway:
-    def __init__(self, text: str):
-        self.text = text
+    def __init__(self, text: str | list[str]):
+        self.responses = text if isinstance(text, list) else [text]
         self.requests: list[ModelRequest] = []
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         self.requests.append(request)
-        return ModelResponse(provider_id="fake", model="fake-model", text=self.text)
+        index = min(len(self.requests) - 1, len(self.responses) - 1)
+        return ModelResponse(provider_id="fake", model="fake-model", text=self.responses[index])
 
 
 def test_architect_uses_model_draft_but_sanitizes_runtime_power(tmp_path: Path) -> None:
@@ -115,3 +116,79 @@ def test_architect_plans_build_then_sentinel_review(tmp_path: Path) -> None:
     assert [task.agent_spec.agent_type for task in plan.tasks] == ["builder", "sentinel"]
     assert plan.tasks[0].sequence == 1
     assert plan.tasks[1].sequence == 2
+
+
+def test_architect_uses_model_for_sequential_plan_then_sanitizes_specs(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    gateway = FakeGateway(
+        [
+            """
+            {
+              "tasks": [
+                "Research the repository structure.",
+                "Implement the requested change.",
+                "Review the change for safety risks."
+              ]
+            }
+            """,
+            """
+            {
+              "agent_type": "researcher",
+              "purpose": "Research repository structure.",
+              "capabilities": ["inspect_project"],
+              "tools_allowed": ["memory_read", "provider_call"],
+              "memory_scope": ["wiki/agents/"],
+              "constraints": [],
+              "interaction_points": ["final_user_handoff"],
+              "risk_level": "low",
+              "reusable": true
+            }
+            """,
+            """
+            {
+              "agent_type": "builder",
+              "purpose": "Implement requested local changes.",
+              "capabilities": ["edit_files"],
+              "tools_allowed": ["file_read", "file_write", "shell_guarded"],
+              "memory_scope": ["wiki/agents/"],
+              "constraints": [],
+              "interaction_points": ["before_file_writes"],
+              "risk_level": "medium",
+              "reusable": true
+            }
+            """,
+            """
+            {
+              "agent_type": "sentinel",
+              "purpose": "Review changes for safety risks.",
+              "capabilities": ["audit_outputs"],
+              "tools_allowed": ["memory_read", "security_policy_read"],
+              "memory_scope": ["wiki/risks/"],
+              "constraints": [],
+              "interaction_points": ["final_user_handoff"],
+              "risk_level": "medium",
+              "reusable": true
+            }
+            """,
+        ]
+    )
+    brief = OracleBrief(
+        intent="Research and implement a repo change",
+        ethical_status="safe",
+        user_interaction_required=True,
+        human_need="Keep it clear.",
+    )
+
+    plan = Architect(store, model_gateway=gateway, prompt_library=prompt_library).plan_mission(
+        brief
+    )
+
+    assert [task.agent_spec.agent_type for task in plan.tasks] == [
+        "researcher",
+        "builder",
+        "sentinel",
+    ]
+    assert len(gateway.requests) == 4

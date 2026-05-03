@@ -28,6 +28,7 @@ def test_runtime_records_run(tmp_path) -> None:
     assert result.preflight_report.approved
     assert result.metadata["oracle_assessment_source"] == "heuristic"
     assert result.metadata["architect_design_source"] == "heuristic"
+    assert result.metadata["architect_plan_source"] == "heuristic"
     assert result.metadata["agent_execution_status"] == "skipped"
     assert result.metadata["tool_result_count"] == 0
     assert result.metadata["agent_outcome_recorded"] is False

@@ -89,6 +89,11 @@ class Nebuchadnezzar:
                     "last_design_source",
                     "unknown",
                 ),
+                "architect_plan_source": getattr(
+                    self.architect,
+                    "last_plan_source",
+                    "unknown",
+                ),
                 "agent_execution_status": execution_status,
                 "agent_execution_error": execution_error,
                 "tool_result_count": len(execution_tool_results),

@@ -39,6 +39,10 @@ class ArchitectDraft(BaseModel):
     reusable: bool = True
 
 
+class ArchitectPlanDraft(BaseModel):
+    tasks: list[str] = Field(default_factory=list)
+
+
 class Architect:
     """Precise agent designer, memory coordinator, and reuse planner."""
 
@@ -52,6 +56,7 @@ class Architect:
         self.model_gateway = model_gateway
         self.prompt_library = prompt_library or PromptLibrary()
         self.last_design_source = "heuristic"
+        self.last_plan_source = "heuristic"
 
     def design_agent(
         self,
@@ -108,7 +113,8 @@ class Architect:
         provider_config: ProviderConfig | None = None,
     ) -> MissionPlan:
         tasks: list[MissionTask] = []
-        for sequence, task_brief in enumerate(self._task_briefs_for(brief), start=1):
+        task_briefs = self._task_briefs_for(brief, privacy_mode, provider_config)
+        for sequence, task_brief in enumerate(task_briefs, start=1):
             spec = self.design_agent(
                 task_brief,
                 privacy_mode=privacy_mode,
@@ -184,8 +190,13 @@ class Architect:
             reusable=True,
         )
 
-    def _task_briefs_for(self, brief: OracleBrief) -> list[OracleBrief]:
-        intents = self._task_intents_for(brief.intent)
+    def _task_briefs_for(
+        self,
+        brief: OracleBrief,
+        privacy_mode: PrivacyMode,
+        provider_config: ProviderConfig | None,
+    ) -> list[OracleBrief]:
+        intents = self._task_intents_for(brief, privacy_mode, provider_config)
         return [
             brief.model_copy(
                 update={
@@ -197,7 +208,49 @@ class Architect:
             for index, intent in enumerate(intents, start=1)
         ]
 
-    def _task_intents_for(self, intent: str) -> list[str]:
+    def _task_intents_for(
+        self,
+        brief: OracleBrief,
+        privacy_mode: PrivacyMode,
+        provider_config: ProviderConfig | None,
+    ) -> list[str]:
+        if self.model_gateway is not None:
+            try:
+                intents = self._task_intents_with_model(brief, privacy_mode, provider_config)
+                if intents:
+                    self.last_plan_source = "model"
+                    return intents
+            except Exception:
+                self.last_plan_source = "heuristic_fallback"
+                return self._task_intents_with_heuristics(brief.intent)
+        self.last_plan_source = "heuristic"
+        return self._task_intents_with_heuristics(brief.intent)
+
+    def _task_intents_with_model(
+        self,
+        brief: OracleBrief,
+        privacy_mode: PrivacyMode,
+        provider_config: ProviderConfig | None,
+    ) -> list[str]:
+        runtime_context = {
+            "privacy_mode": privacy_mode.value,
+            "provider_id": provider_config.provider_id if provider_config else "unconfigured",
+            "model_id": provider_config.selected_model if provider_config else "unconfigured",
+        }
+        prompt = (
+            self.prompt_library.read("architect_plan")
+            .replace("{{ oracle_brief_json }}", brief.model_dump_json(indent=2))
+            .replace("{{ runtime_context_json }}", json.dumps(runtime_context, indent=2))
+        )
+        response = self.model_gateway.generate(
+            ModelRequest.from_prompt(prompt).model_copy(
+                update={"temperature": 0.0, "max_tokens": 384}
+            )
+        )
+        draft = ArchitectPlanDraft.model_validate(extract_json_object(response.text))
+        return self._dedupe_tasks(self._clean_text_items(draft.tasks, limit=4))
+
+    def _task_intents_with_heuristics(self, intent: str) -> list[str]:
         lowered = intent.lower()
         tasks: list[str] = []
         if any(term in lowered for term in ["research", "compare", "investigate", "analyze"]):

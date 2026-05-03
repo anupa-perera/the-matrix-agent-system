@@ -143,6 +143,8 @@ actually complete the request.
 Multi-agent cooperation starts sequentially: Architect creates an ordered mission plan, each task
 gets its own agent spec, and Nebuchadnezzar runs one task at a time while passing previous task
 results forward. SQLite stores the task ledger and Obsidian gets a readable workflow page.
+When a provider is configured, Architect can draft the sequence from a markdown prompt; invalid
+model output falls back to deterministic local planning.
 
 ## Neo Security Reviews
 

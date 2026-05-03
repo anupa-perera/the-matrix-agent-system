@@ -53,6 +53,11 @@ def bootstrap(paths: MatrixPaths) -> tuple[MemoryVault, RuntimeStore]:
         block_type="role_prompt",
         content=prompt_library.read("architect_design"),
     )
+    store.record_prompt_block(
+        block_ref="architect-plan-v1",
+        block_type="role_prompt",
+        content=prompt_library.read("architect_plan"),
+    )
     for provider in provider_catalog():
         store.upsert_provider(provider)
     return vault, store
