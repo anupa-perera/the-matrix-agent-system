@@ -171,6 +171,19 @@ class RuntimeStore:
             return None
         return AgentSpec.model_validate_json(row["spec_json"])
 
+    def record_agent_outcome(self, agent_id: str, success: bool) -> None:
+        column = "success_count" if success else "failure_count"
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE agents
+                SET {column} = {column} + 1,
+                    last_used_at = ?
+                WHERE agent_id = ?
+                """,
+                (datetime.now(UTC).isoformat(), agent_id),
+            )
+
     def record_prompt_block(self, block_ref: str, block_type: str, content: str) -> None:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self.connect() as conn:

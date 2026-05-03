@@ -83,6 +83,11 @@ class Nebuchadnezzar:
             response = "Neo blocked the agent before execution."
 
         output_report = self.neo.review_output(response)
+        agent_outcome_success = self._agent_outcome_success(
+            preflight_approved=preflight.approved,
+            output_approved=output_report.approved,
+            execution_status=execution_status,
+        )
         result = MatrixRunResult(
             request=user_request,
             oracle_brief=brief,
@@ -106,9 +111,13 @@ class Nebuchadnezzar:
                 "agent_execution_status": execution_status,
                 "agent_execution_error": execution_error,
                 "tool_result_count": len(execution_tool_results),
+                "agent_outcome_recorded": agent_outcome_success is not None,
+                "agent_outcome_success": agent_outcome_success,
             },
         )
         self.store.record_run(result)
+        if agent_outcome_success is not None:
+            self.store.record_agent_outcome(spec.agent_id, success=agent_outcome_success)
         if result.agent_spec is not None:
             self.vault.record_agent_spec(result.agent_spec)
         self.vault.record_tool_outputs(result.run_id, execution_tool_results)
@@ -118,3 +127,17 @@ class Nebuchadnezzar:
             self.vault.record_security_review(result.run_id, "output", result.output_report)
         self.vault.record_run(result)
         return result
+
+    def _agent_outcome_success(
+        self,
+        preflight_approved: bool,
+        output_approved: bool,
+        execution_status: str,
+    ) -> bool | None:
+        if not preflight_approved:
+            return False
+        if execution_status == "skipped":
+            return None
+        if execution_status == "error":
+            return False
+        return output_approved

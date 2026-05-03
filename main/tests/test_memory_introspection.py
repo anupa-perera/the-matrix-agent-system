@@ -18,6 +18,7 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     )
 
     store.upsert_agent(spec)
+    store.record_agent_outcome("builder-test-agent", success=True)
     store.record_prompt_block("agent-blueprint-builder-test-agent", "agent_blueprint", "prompt")
     store.record_model_call(
         provider_id="openrouter",
@@ -50,6 +51,8 @@ def test_runtime_store_lists_agents_prompt_blocks_model_calls_and_security_event
     security_events = store.list_security_events()
 
     assert agents[0]["agent_id"] == "builder-test-agent"
+    assert agents[0]["success_count"] == 1
+    assert agents[0]["failure_count"] == 0
     assert store.get_agent("builder-test-agent") == spec
     assert prompt_blocks[0]["block_ref"] == "agent-blueprint-builder-test-agent"
     assert len(prompt_blocks[0]["content_hash"]) == 64

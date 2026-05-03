@@ -62,6 +62,9 @@ def test_runtime_executes_spawned_agent_when_provider_is_configured(tmp_path) ->
     assert gateway.configs[0] is not None
     assert gateway.configs[0].provider_id == "ollama"
     assert "# Agent Blueprint" in gateway.requests[0].messages[0].content
+    records = store.list_agent_records()
+    assert records[0]["success_count"] == 1
+    assert records[0]["failure_count"] == 0
 
 
 def test_agent_runner_executes_allowed_shell_tool_and_returns_final_answer(tmp_path) -> None:

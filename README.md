@@ -136,6 +136,10 @@ Agent blueprint prompt text is written to markdown under the Matrix prompt direc
 the prompt block hash and reusable agent index, while Obsidian gets a user-visible agent page under
 `wiki/agents/`.
 
+After execution, the runtime updates reusable agent success/failure counters in SQLite. Dry-run
+planning without a configured provider does not count as success, because the spawned agent did not
+actually complete the request.
+
 ## Neo Security Reviews
 
 Neo reviews the final `AgentSpec` before execution and the final response before user delivery.
