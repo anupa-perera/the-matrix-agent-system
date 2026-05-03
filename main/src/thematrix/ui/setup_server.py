@@ -381,7 +381,7 @@ def render_setup_form(
           <datalist id="models">{model_options}</datalist>
           <span id="model_hint" class="hint"></span>
         </label>
-        <label>Sign-in method
+        <label id="auth_mode_row">Sign-in method
           <select id="auth_mode" name="auth_mode">{auth_options}</select>
           <span id="auth_hint" class="hint"></span>
         </label>
@@ -423,6 +423,7 @@ def render_setup_form(
       const providerSelect = document.getElementById("provider_id");
       const modelInput = document.getElementById("model");
       const authSelect = document.getElementById("auth_mode");
+      const authModeRow = document.getElementById("auth_mode_row");
       const apiKeyRow = document.getElementById("api_key_row");
       const apiKeyInput = document.getElementById("api_key");
       const baseUrlInput = document.getElementById("base_url");
@@ -454,6 +455,10 @@ def render_setup_form(
           option.textContent = mode;
           authSelect.appendChild(option);
         }}
+        authModeRow.classList.toggle(
+          "hidden",
+          provider.auth_modes.length === 1 && provider.auth_modes[0] === "none"
+        );
         authSelect.value = preferredAuth(provider);
         providerCard.innerHTML = `
           <strong></strong>
