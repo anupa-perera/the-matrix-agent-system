@@ -322,8 +322,8 @@ def render_setup_form(
       background: var(--void);
       color: var(--phosphor);
       font-family: "Share Tech Mono", "Cascadia Mono", "Courier New", monospace;
-      font-size: 14px;
-      line-height: 1.55;
+      font-size: 15px;
+      line-height: 1.6;
       min-height: 100vh;
       overflow-x: hidden;
     }}
@@ -388,10 +388,10 @@ def render_setup_form(
     /* BOOT LOG */
     .boot-log {{
       margin-bottom: 22px;
-      font-size: 11px;
+      font-size: 13px;
       color: var(--phosphor-dim);
-      letter-spacing: 1px;
-      line-height: 1.85;
+      letter-spacing: 0.5px;
+      line-height: 1.9;
     }}
     .boot-log p {{ margin: 0; opacity: 0; animation: bootLine 380ms ease-out both; }}
     .boot-log p::before {{ content: '> '; color: var(--phosphor); }}
@@ -427,8 +427,8 @@ def render_setup_form(
       display: flex;
       flex-wrap: wrap;
       gap: 18px;
-      font-size: 11px;
-      letter-spacing: 2px;
+      font-size: 12px;
+      letter-spacing: 1.5px;
       text-transform: uppercase;
       color: var(--phosphor-dim);
     }}
@@ -442,17 +442,17 @@ def render_setup_form(
     .hud-status .v {{ color: var(--phosphor); }}
     .lede {{
       margin: 14px 0 0;
-      font-size: 12px;
+      font-size: 14px;
       color: var(--phosphor-dim);
-      letter-spacing: 0.5px;
+      letter-spacing: 0.3px;
     }}
     /* SECTION HEADINGS */
     h2 {{
       margin: 28px 0 14px;
-      font-size: 11px;
+      font-size: 13px;
       font-weight: normal;
       text-transform: uppercase;
-      letter-spacing: 3px;
+      letter-spacing: 2.5px;
       color: var(--phosphor-dim);
       padding-bottom: 8px;
       border-bottom: 1px dashed var(--line);
@@ -486,9 +486,9 @@ def render_setup_form(
     label {{
       display: grid;
       gap: 8px;
-      margin: 14px 0;
-      font-size: 10px;
-      letter-spacing: 2.5px;
+      margin: 16px 0;
+      font-size: 12px;
+      letter-spacing: 2px;
       text-transform: uppercase;
       color: var(--phosphor-dim);
     }}
@@ -496,13 +496,13 @@ def render_setup_form(
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 0;
-      padding: 11px 12px;
+      padding: 12px 14px;
       font: inherit;
-      font-size: 13px;
+      font-size: 15px;
       background: rgba(0, 8, 2, 0.8);
       color: var(--phosphor-bright);
       caret-color: var(--phosphor-bright);
-      letter-spacing: 0.5px;
+      letter-spacing: 0.3px;
       text-transform: none;
       transition: border-color 150ms ease, box-shadow 150ms ease;
     }}
@@ -525,10 +525,11 @@ def render_setup_form(
     select option {{ background: #000a00; color: var(--phosphor); }}
     .hint {{
       color: var(--phosphor-dim);
-      font-size: 11px;
-      letter-spacing: 0.3px;
+      font-size: 13px;
+      letter-spacing: 0.2px;
       text-transform: none;
       font-weight: normal;
+      line-height: 1.55;
     }}
     .hint::before {{ content: '↳ '; color: var(--phosphor-dim); }}
     /* PROVIDER CARD — live HUD readout */
@@ -542,11 +543,11 @@ def render_setup_form(
     .provider-card::before {{
       content: '◤ live readout';
       position: absolute;
-      top: -7px; left: 12px;
+      top: -8px; left: 12px;
       background: var(--void);
       padding: 0 8px;
-      font-size: 9px;
-      letter-spacing: 2.5px;
+      font-size: 11px;
+      letter-spacing: 2px;
       text-transform: uppercase;
       color: var(--phosphor-dim);
     }}
@@ -560,30 +561,30 @@ def render_setup_form(
     }}
     .provider-card strong {{
       display: block;
-      margin-bottom: 8px;
+      margin-bottom: 10px;
       color: var(--phosphor-bright);
       text-shadow: 0 0 6px rgba(0, 255, 65, 0.5);
       font-weight: normal;
-      font-size: 14px;
-      letter-spacing: 1px;
+      font-size: 17px;
+      letter-spacing: 0.8px;
     }}
-    .provider-card p {{ margin: 4px 0; }}
-    .provider-card .setup-hint {{ color: var(--phosphor); font-size: 13px; }}
-    .provider-card .data-boundary {{ color: var(--phosphor-dim); font-size: 12px; }}
+    .provider-card p {{ margin: 6px 0; }}
+    .provider-card .setup-hint {{ color: var(--phosphor); font-size: 15px; line-height: 1.55; }}
+    .provider-card .data-boundary {{ color: var(--phosphor-dim); font-size: 13px; }}
     .hidden {{ display: none; }}
-    .row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
+    .row {{ display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 18px; }}
     .check {{
       display: flex;
-      gap: 10px;
+      gap: 12px;
       align-items: center;
-      font-size: 12px;
+      font-size: 14px;
       color: var(--phosphor);
       text-transform: none;
-      letter-spacing: 0.3px;
+      letter-spacing: 0.2px;
       cursor: pointer;
     }}
     .check input {{
-      width: 14px; height: 14px;
+      width: 16px; height: 16px;
       accent-color: var(--phosphor-bright);
       cursor: pointer;
     }}
@@ -643,19 +644,24 @@ def render_setup_form(
     .note:first-child {{ border-top: 0; padding-top: 0; margin-top: 0; }}
     .note strong {{
       display: block;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
       color: var(--phosphor-bright);
       text-shadow: 0 0 4px rgba(0, 255, 65, 0.4);
       font-weight: normal;
-      letter-spacing: 1px;
+      font-size: 16px;
+      letter-spacing: 0.8px;
     }}
-    .note p {{ margin: 4px 0; font-size: 12px; color: var(--phosphor-dim); }}
+    .note p {{ margin: 5px 0; font-size: 14px; color: var(--phosphor-dim); line-height: 1.55; }}
     .note p:nth-child(2) {{ color: var(--phosphor); }}
     code {{
       font-family: "Share Tech Mono", "Cascadia Mono", monospace;
       color: var(--phosphor-bright);
       text-shadow: 0 0 6px rgba(0, 255, 65, 0.4);
       overflow-wrap: anywhere;
+    }}
+    .notes {{
+      display: grid;
+      gap: 14px;
     }}
     .footer-bar {{
       margin-top: 26px;
@@ -665,15 +671,16 @@ def render_setup_form(
       justify-content: space-between;
       flex-wrap: wrap;
       gap: 12px;
-      font-size: 10px;
+      font-size: 11px;
       color: var(--phosphor-dim);
-      letter-spacing: 2.5px;
+      letter-spacing: 2px;
       text-transform: uppercase;
       opacity: 0;
       animation: wake 600ms ease-out 1500ms both;
     }}
     @media (max-width: 760px) {{
       .row {{ grid-template-columns: 1fr; }}
+      main {{ width: min(900px, calc(100% - 28px)); }}
       h1 {{ font-size: 52px; letter-spacing: 3px; }}
     }}
   </style>

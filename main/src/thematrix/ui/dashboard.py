@@ -61,8 +61,8 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       background: var(--void);
       color: var(--phosphor);
       font-family: "Share Tech Mono", "Cascadia Mono", "Courier New", monospace;
-      font-size: 14px;
-      line-height: 1.55;
+      font-size: 15px;
+      line-height: 1.6;
       min-height: 100vh;
       overflow-x: hidden;
     }}
@@ -135,10 +135,10 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     /* BOOT LOG — terminal-style intro lines */
     .boot-log {{
       margin-bottom: 18px;
-      font-size: 11px;
+      font-size: 13px;
       color: var(--phosphor-dim);
-      letter-spacing: 1px;
-      line-height: 1.85;
+      letter-spacing: 0.5px;
+      line-height: 1.9;
     }}
     .boot-log p {{
       margin: 0;
@@ -186,8 +186,8 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       display: flex;
       flex-wrap: wrap;
       gap: 18px;
-      font-size: 11px;
-      letter-spacing: 2px;
+      font-size: 12px;
+      letter-spacing: 1.5px;
       text-transform: uppercase;
       color: var(--phosphor-dim);
     }}
@@ -201,9 +201,9 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     .hud-status .v {{ color: var(--phosphor); }}
     .hud-meta {{
       text-align: right;
-      font-size: 10px;
+      font-size: 12px;
       color: var(--phosphor-dim);
-      letter-spacing: 2px;
+      letter-spacing: 1.5px;
       text-transform: uppercase;
       line-height: 1.9;
     }}
@@ -236,9 +236,9 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     .panel::before {{
       content: '§' counter(panel, decimal-leading-zero);
       position: absolute;
-      top: 9px; left: 16px;
-      font-size: 10px;
-      letter-spacing: 3px;
+      top: 10px; left: 16px;
+      font-size: 11px;
+      letter-spacing: 2.5px;
       color: var(--phosphor-dim);
     }}
     .panel::after {{
@@ -276,10 +276,10 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     h1, h2, h3, p {{ margin: 0; }}
     h2 {{
       margin: 0 0 14px;
-      font-size: 11px;
+      font-size: 13px;
       font-weight: normal;
       text-transform: uppercase;
-      letter-spacing: 3px;
+      letter-spacing: 2.5px;
       color: var(--phosphor-dim);
       padding-bottom: 8px;
       border-bottom: 1px dashed var(--line);
@@ -287,10 +287,10 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     h2::before {{ content: '// '; color: var(--phosphor-dim); }}
     h3 {{
       margin: 0 0 4px;
-      font-size: 12px;
+      font-size: 14px;
       font-weight: normal;
       color: var(--phosphor);
-      letter-spacing: 0.5px;
+      letter-spacing: 0.3px;
     }}
     p {{ color: var(--phosphor); }}
     .muted {{ color: var(--phosphor-dim); }}
@@ -304,8 +304,8 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       padding: 28px 18px 18px;
     }}
     .panel.metric-panel > p.muted {{
-      font-size: 10px;
-      letter-spacing: 3px;
+      font-size: 12px;
+      letter-spacing: 2.5px;
       text-transform: uppercase;
       color: var(--phosphor-dim);
     }}
@@ -335,12 +335,12 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       align-items: center;
       gap: 6px;
       border: 1px solid var(--line);
-      padding: 3px 10px;
+      padding: 4px 11px;
       color: var(--phosphor-dim);
-      font-size: 10px;
+      font-size: 11px;
       white-space: nowrap;
       text-transform: uppercase;
-      letter-spacing: 1.8px;
+      letter-spacing: 1.5px;
     }}
     .tag::before {{ content: '['; }}
     .tag::after {{ content: ']'; }}
@@ -364,9 +364,11 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     .item:first-child {{ border-top: 0; padding-top: 0; }}
     .item:first-child::before {{ top: 0; }}
     .row {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; }}
+    .row h3 {{ min-width: 0; }}
+    .row .tag {{ flex: 0 0 auto; }}
     code {{
       font-family: "Share Tech Mono", "Cascadia Mono", monospace;
-      font-size: 12px;
+      font-size: 13px;
       color: var(--phosphor-bright);
       text-shadow: 0 0 6px rgba(0, 255, 65, 0.4);
       overflow-wrap: anywhere;
@@ -381,14 +383,15 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     }}
     .system-paths .path-row:last-child {{ border-bottom: 0; }}
     .system-paths .path-key {{
-      flex: 0 0 80px;
-      font-size: 10px;
-      letter-spacing: 3px;
+      flex: 0 0 90px;
+      font-size: 12px;
+      letter-spacing: 2.5px;
       text-transform: uppercase;
       color: var(--phosphor-dim);
     }}
     .system-paths .path-value {{
       flex: 1;
+      font-size: 14px;
       color: var(--phosphor-bright);
       text-shadow: 0 0 6px rgba(0, 255, 65, 0.35);
       word-break: break-all;
@@ -402,9 +405,9 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       justify-content: space-between;
       flex-wrap: wrap;
       gap: 12px;
-      font-size: 10px;
+      font-size: 11px;
       color: var(--phosphor-dim);
-      letter-spacing: 2.5px;
+      letter-spacing: 2px;
       text-transform: uppercase;
       opacity: 0;
       animation: wake 600ms ease-out 1500ms both;
@@ -412,6 +415,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     .footer-bar .right {{ color: var(--phosphor); }}
     @media (max-width: 960px) {{
       h1 {{ font-size: 56px; letter-spacing: 3px; }}
+      main {{ width: min(1240px, calc(100% - 28px)); }}
       header {{ grid-template-columns: 1fr; }}
       .hud-meta {{ text-align: left; }}
       .span-3, .span-4, .span-6, .span-8 {{ grid-column: span 12; }}
