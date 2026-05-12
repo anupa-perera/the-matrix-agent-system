@@ -14,7 +14,11 @@ def write_dashboard(paths: MatrixPaths, store: RuntimeStore) -> str:
     return str(paths.dashboard_file)
 
 
-def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
+def render_dashboard_html(
+    paths: MatrixPaths,
+    store: RuntimeStore,
+    app_token: str | None = None,
+) -> str:
     counts = store.overview_counts()
     provider_config = store.get_default_provider_config()
     provider_profile = (
@@ -29,6 +33,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     security_events = store.list_security_events(limit=6)
     model_calls = store.list_model_calls(limit=6)
     generated_at = datetime.now(UTC).isoformat(timespec="seconds")
+    control_panel_html = control_panel(app_token)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -268,11 +273,49 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
     .panel:nth-child(9) {{ animation-delay: 1180ms; }}
     .panel:nth-child(10) {{ animation-delay: 1240ms; }}
     .panel:nth-child(11) {{ animation-delay: 1300ms; }}
+    .panel:nth-child(12) {{ animation-delay: 1360ms; }}
     .span-3 {{ grid-column: span 3; }}
     .span-4 {{ grid-column: span 4; }}
     .span-6 {{ grid-column: span 6; }}
     .span-8 {{ grid-column: span 8; }}
     .span-12 {{ grid-column: span 12; }}
+    /* HOME ACTIONS */
+    .control-grid {{
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+    }}
+    .control-action {{
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 118px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      color: var(--phosphor);
+      text-decoration: none;
+      background: rgba(0, 255, 65, 0.035);
+      transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+    }}
+    .control-action:hover {{
+      border-color: var(--phosphor-bright);
+      background: rgba(0, 255, 65, 0.09);
+      transform: translateY(-1px);
+    }}
+    .control-action strong {{
+      display: block;
+      margin-bottom: 8px;
+      font-size: 15px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }}
+    .control-action span {{
+      display: block;
+      color: var(--phosphor-title);
+      font-size: 12px;
+      line-height: 1.45;
+    }}
+    .control-action code {{ font-size: 12px; }}
     /* HEADINGS */
     h1, h2, h3, p {{ margin: 0; }}
     h2 {{
@@ -420,6 +463,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       header {{ grid-template-columns: 1fr; }}
       .hud-meta {{ text-align: left; }}
       .span-3, .span-4, .span-6, .span-8 {{ grid-column: span 12; }}
+      .control-grid {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -449,6 +493,7 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
       </div>
     </header>
     <section class="grid">
+      {control_panel_html}
       {metric_panel("Runs", counts["runs"])}
       {metric_panel("Agents", counts["agents"])}
       {metric_panel("Prompt Blocks", counts["prompt_blocks"])}
@@ -517,6 +562,46 @@ def render_dashboard_html(paths: MatrixPaths, store: RuntimeStore) -> str:
   </script>
 </body>
 </html>
+"""
+
+
+def control_panel(app_token: str | None) -> str:
+    if app_token:
+        actions = [
+            ("Mission Console", "/?token=" + app_token, "Ask for work in plain English."),
+            ("Change Model", "/settings?token=" + app_token, "Switch local or cloud provider."),
+            ("System Check", "/diagnostics?token=" + app_token, "Check setup health and safety state."),
+            ("Memory", "/memory?token=" + app_token, "View where the local vault stores memory."),
+            ("Refresh", "/dashboard?token=" + app_token, "Reload this control center."),
+        ]
+    else:
+        actions = [
+            ("Start App", "#start-app", "Run the beginner launcher command."),
+            ("Ask Agent", "#start-app", "Use the app console after launch."),
+            ("Change Model", "#start-app", "Open provider settings after launch."),
+            ("System Check", "#start-app", "Run diagnostics from the app or terminal."),
+            ("Memory", "#memory", "Inspect the Obsidian vault paths below."),
+        ]
+    links = "\n".join(
+        f"""
+          <a class="control-action" href="{escape(href, quote=True)}">
+            <strong>{escape(label)}</strong>
+            <span>{escape(description)}</span>
+          </a>
+"""
+        for label, href, description in actions
+    )
+    static_hint = ""
+    if app_token is None:
+        static_hint = """
+        <p id="start-app" class="muted">Launch the live local app with <code>the-matrix start</code>.</p>
+"""
+    return f"""
+      <section class="panel span-12">
+        <h2>Control Center</h2>
+        <div class="control-grid">{links}</div>
+        {static_hint}
+      </section>
 """
 
 

@@ -38,6 +38,22 @@ def test_dashboard_renders_local_memory_summary(tmp_path) -> None:
     html = render_dashboard_html(paths, store)
 
     assert "The Matrix Dashboard" in html
+    assert "Control Center" in html
+    assert "the-matrix start" in html
     assert "Build a helper" in html
     assert "Verification: ok" in html
     assert str(paths.vault) in html
+
+
+def test_dashboard_renders_live_app_actions(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+
+    html = render_dashboard_html(paths, store, app_token="token-123")
+
+    assert "Mission Console" in html
+    assert "/?token=token-123" in html
+    assert "/settings?token=token-123" in html
+    assert "/diagnostics?token=token-123" in html
+    assert "/memory?token=token-123" in html

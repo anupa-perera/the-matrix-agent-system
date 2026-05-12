@@ -16,7 +16,7 @@ from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.providers import detect_local_providers
 from thematrix.schemas import MatrixRunResult
 from thematrix.security import Keymaker
-from thematrix.ui.dashboard import write_dashboard
+from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
 from thematrix.ui.setup_server import apply_setup_form, render_setup_form
 
 MAX_APP_BODY_BYTES = 64 * 1024
@@ -47,7 +47,7 @@ def serve_app_ui(
         _handler_factory(paths, vault, store, token, request_runner, run_lock),
     )
     host, bound_port = server.server_address
-    url = f"http://{host}:{bound_port}/?token={token}"
+    url = f"http://{host}:{bound_port}/dashboard?token={token}"
     if url_callback is not None:
         url_callback(url)
     if open_browser:
@@ -94,11 +94,14 @@ def _handler_factory(
                 )
                 return
             if parsed.path == "/dashboard":
-                dashboard_path = write_dashboard(paths, store)
-                self._send_html(
-                    HTTPStatus.OK,
-                    _message_page("Dashboard Updated", f"Dashboard written: {dashboard_path}"),
-                )
+                write_dashboard(paths, store)
+                self._send_html(HTTPStatus.OK, render_dashboard_html(paths, store, token))
+                return
+            if parsed.path == "/diagnostics":
+                self._send_html(HTTPStatus.OK, _diagnostics_page(paths, store, token))
+                return
+            if parsed.path == "/memory":
+                self._send_html(HTTPStatus.OK, _memory_page(paths, store, token))
                 return
             self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not Found", "Unknown route."))
 
@@ -580,6 +583,122 @@ def _help_panel() -> str:
       </div>
     </details>
 """
+
+
+def _diagnostics_page(paths: MatrixPaths, store: RuntimeStore, token: str) -> str:
+    provider_config = store.get_default_provider_config()
+    keymaker = Keymaker()
+    onboarding_complete = store.get_preference("onboarding_complete") is True
+    provider_label = "not configured"
+    verification_label = "not checked"
+    if provider_config is not None:
+        provider_label = f"{provider_config.provider_id} / {provider_config.selected_model}"
+        verification = store.get_provider_verification(provider_config.provider_id)
+        if verification is not None:
+            verification_label = (
+                "ok" if verification.get("ok") else f"failed: {verification.get('message')}"
+            )
+    rows = [
+        ("Home folder", _status_text(paths.home.exists()), str(paths.home)),
+        ("Vault folder", _status_text(paths.vault.exists()), str(paths.vault)),
+        ("Runtime database", _status_text(paths.runtime_db.exists()), str(paths.runtime_db)),
+        ("Prompt library", _status_text((paths.prompts_dir / "oracle_assess.md").exists()), ""),
+        ("Secrets backend", keymaker.backend_name, f"writable={keymaker.can_write}"),
+        ("Onboarding", _status_text(onboarding_complete), ""),
+        ("Provider", provider_label, ""),
+        ("Verification", verification_label, ""),
+    ]
+    return _utility_page(
+        "System Check",
+        token,
+        "Local health checks for the runtime, memory, model access, and secret storage.",
+        _rows_html(rows),
+    )
+
+
+def _memory_page(paths: MatrixPaths, store: RuntimeStore, token: str) -> str:
+    counts = store.overview_counts()
+    rows = [
+        ("Vault", "human-readable memory", str(paths.vault)),
+        ("Log", "timeline", str(paths.vault / "log.md")),
+        ("Agents", f"{counts['agents']} reusable records", str(paths.vault / "wiki" / "agents")),
+        ("Workflows", "mission ledgers", str(paths.vault / "wiki" / "workflows")),
+        ("Raw runs", f"{counts['runs']} recorded missions", str(paths.vault / "raw" / "runs")),
+        ("Prompt cache", f"{counts['prompt_blocks']} indexed blocks", str(paths.prompts_dir)),
+        ("Runtime index", "SQLite metadata only", str(paths.runtime_db)),
+    ]
+    return _utility_page(
+        "Memory",
+        token,
+        "The Matrix stores readable memory in the Obsidian vault and fast lookup metadata in SQLite.",
+        _rows_html(rows),
+    )
+
+
+def _utility_page(title: str, token: str, intro: str, content: str) -> str:
+    dashboard_url = f"/dashboard?token={escape(token, quote=True)}"
+    ask_url = f"/?token={escape(token, quote=True)}"
+    settings_url = f"/settings?token={escape(token, quote=True)}"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Matrix {escape(title)}</title>
+  <style>
+    body {{ margin: 0; background: #000; color: #00b341; font: 15px/1.6 "Cascadia Mono", "Courier New", monospace; }}
+    main {{ width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0; }}
+    section {{ background: rgba(0,14,4,0.84); border: 1px solid rgba(0,255,65,0.14); border-left: 2px solid #00ff41; padding: 22px; }}
+    h1 {{ margin: 0 0 8px; color: #00ff41; font-size: 38px; }}
+    p {{ margin: 0 0 18px; color: #7cff9d; }}
+    .actions {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 22px; }}
+    a {{ color: #00ff41; }}
+    .button-link {{ border: 1px solid #00ff41; padding: 10px 13px; text-decoration: none; text-transform: uppercase; font-size: 13px; }}
+    .button-link:hover {{ background: rgba(0,255,65,0.1); }}
+    .row {{ display: grid; grid-template-columns: 180px 1fr; gap: 12px; padding: 11px 0; border-top: 1px dashed rgba(0,255,65,0.16); }}
+    .row:first-child {{ border-top: 0; }}
+    .key {{ color: #7cff9d; text-transform: uppercase; letter-spacing: 1.4px; font-size: 12px; }}
+    .value {{ color: #00ff41; overflow-wrap: anywhere; }}
+    .note {{ color: #00b341; overflow-wrap: anywhere; }}
+    @media (max-width: 720px) {{ .row {{ grid-template-columns: 1fr; }} }}
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <h1>{escape(title)}</h1>
+      <p>{escape(intro)}</p>
+      <div class="actions">
+        <a class="button-link" href="{dashboard_url}">Dashboard</a>
+        <a class="button-link" href="{ask_url}">Ask Agent</a>
+        <a class="button-link" href="{settings_url}">Change Model</a>
+      </div>
+      {content}
+    </section>
+  </main>
+</body>
+</html>
+"""
+
+
+def _rows_html(rows: list[tuple[str, str, str]]) -> str:
+    items = "\n".join(
+        f"""
+        <div class="row">
+          <div class="key">{escape(key)}</div>
+          <div>
+            <div class="value">{escape(value)}</div>
+            <div class="note">{escape(note)}</div>
+          </div>
+        </div>
+"""
+        for key, value, note in rows
+    )
+    return f"<div>{items}</div>"
+
+
+def _status_text(ok: bool) -> str:
+    return "ok" if ok else "needs attention"
 
 
 def _message_page(title: str, message: str) -> str:

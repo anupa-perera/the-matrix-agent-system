@@ -69,6 +69,7 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     thread.start()
     assert ready.wait(timeout=5)
     parsed = urlparse(captured_url[0])
+    assert parsed.path == "/dashboard"
 
     try:
         urlopen(f"http://{parsed.netloc}/", timeout=5)
@@ -115,6 +116,22 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
 
     assert "Saved setup" in save_body
     assert store.get_default_provider_config() is not None
+
+    with urlopen(f"http://{parsed.netloc}/dashboard?{parsed.query}", timeout=5) as response:
+        dashboard_body = response.read().decode("utf-8")
+    assert "Control Center" in dashboard_body
+    assert "/diagnostics?" in dashboard_body
+    assert "/memory?" in dashboard_body
+
+    with urlopen(f"http://{parsed.netloc}/diagnostics?{parsed.query}", timeout=5) as response:
+        diagnostics_body = response.read().decode("utf-8")
+    assert "System Check" in diagnostics_body
+    assert "Secrets backend" in diagnostics_body
+
+    with urlopen(f"http://{parsed.netloc}/memory?{parsed.query}", timeout=5) as response:
+        memory_body = response.read().decode("utf-8")
+    assert "The Matrix stores readable memory" in memory_body
+    assert str(paths.vault) in memory_body
 
     # Let the timeout close the server without making this test wait for it.
     # The thread is daemonized because the app UI is intentionally long-lived.
