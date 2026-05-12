@@ -57,3 +57,4 @@ def test_dashboard_renders_live_app_actions(tmp_path) -> None:
     assert "/settings?token=token-123" in html
     assert "/diagnostics?token=token-123" in html
     assert "/memory?token=token-123" in html
+    assert "/shutdown?token=token-123" in html

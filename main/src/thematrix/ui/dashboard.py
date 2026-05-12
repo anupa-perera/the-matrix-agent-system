@@ -316,6 +316,13 @@ def render_dashboard_html(
       line-height: 1.45;
     }}
     .control-action code {{ font-size: 12px; }}
+    .control-form {{ margin: 0; }}
+    .control-button {{
+      width: 100%;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }}
     /* HEADINGS */
     h1, h2, h3, p {{ margin: 0; }}
     h2 {{
@@ -566,6 +573,7 @@ def render_dashboard_html(
 
 
 def control_panel(app_token: str | None) -> str:
+    stop_html = ""
     if app_token:
         actions = [
             ("Mission Console", "/?token=" + app_token, "Ask for work in plain English."),
@@ -574,6 +582,14 @@ def control_panel(app_token: str | None) -> str:
             ("Memory", "/memory?token=" + app_token, "View where the local vault stores memory."),
             ("Refresh", "/dashboard?token=" + app_token, "Reload this control center."),
         ]
+        stop_html = f"""
+          <form class="control-form" method="post" action="/shutdown?token={escape(app_token, quote=True)}">
+            <button class="control-action control-button" type="submit">
+              <strong>Stop App</strong>
+              <span>Close the local app server safely.</span>
+            </button>
+          </form>
+"""
     else:
         actions = [
             ("Start App", "#start-app", "Run the beginner launcher command."),
@@ -599,7 +615,7 @@ def control_panel(app_token: str | None) -> str:
     return f"""
       <section class="panel span-12">
         <h2>Control Center</h2>
-        <div class="control-grid">{links}</div>
+        <div class="control-grid">{links}{stop_html}</div>
         {static_hint}
       </section>
 """

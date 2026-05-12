@@ -7,7 +7,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 from secrets import token_urlsafe
-from threading import Lock, Timer
+from threading import Lock, Thread, Timer
 from urllib.parse import parse_qs, urlparse
 import webbrowser
 
@@ -110,6 +110,13 @@ def _handler_factory(
                 self._send_html(HTTPStatus.FORBIDDEN, _message_page("Forbidden", "Invalid token."))
                 return
             parsed = urlparse(self.path)
+            if parsed.path == "/shutdown":
+                self._send_html(
+                    HTTPStatus.OK,
+                    _message_page("App stopped", "The local Matrix app has been stopped."),
+                )
+                Thread(target=self.server.shutdown, daemon=True).start()
+                return
             if parsed.path == "/save":
                 form = self._read_form(paths, store, token)
                 if form is None:

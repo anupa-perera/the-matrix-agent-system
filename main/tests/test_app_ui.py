@@ -133,5 +133,14 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     assert "The Matrix stores readable memory" in memory_body
     assert str(paths.vault) in memory_body
 
-    # Let the timeout close the server without making this test wait for it.
-    # The thread is daemonized because the app UI is intentionally long-lived.
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5) as response:
+        shutdown_body = response.read().decode("utf-8")
+
+    thread.join(timeout=5)
+    assert "App stopped" in shutdown_body
+    assert not thread.is_alive()
