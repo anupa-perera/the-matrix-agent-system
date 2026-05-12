@@ -82,14 +82,24 @@ python -m pytest
 
 For a non-technical Windows client:
 
-1. Download or unzip the project folder.
-2. Open the folder.
-3. Double-click `Install The Matrix.cmd`.
+1. Open `START_HERE_WINDOWS.txt`.
+2. Follow the click-by-click instructions in that file.
+3. Double-click `Install The Matrix.cmd` when the guide tells you to.
 4. Follow the browser setup.
 
 The installer runs for the current Windows user and does not require admin rights. It installs
 `uv` if needed, installs The Matrix as an isolated command-line tool, creates Desktop and Start
 Menu shortcuts, then opens the guided setup with `the-matrix start`.
+
+The short version for a Windows ZIP download is:
+
+1. Open File Explorer.
+2. Go to Downloads.
+3. Right-click the ZIP file.
+4. Click Extract All.
+5. Click Extract.
+6. Open the extracted folder.
+7. Double-click `Install The Matrix.cmd`.
 
 After setup, the user can start The Matrix from:
 

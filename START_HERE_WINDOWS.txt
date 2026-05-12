@@ -1,0 +1,154 @@
+THE MATRIX - WINDOWS SETUP GUIDE
+
+Use this guide if you are not a technical user.
+
+What you will do:
+1. Get the project folder onto your computer.
+2. Open that folder.
+3. Double-click the installer.
+4. Finish setup in your browser.
+5. Start The Matrix from the Desktop shortcut next time.
+
+
+OPTION A - IF SOMEONE SENT YOU A ZIP FILE
+
+1. Save the ZIP file to your computer.
+   Most browsers save it in the Downloads folder.
+
+2. Open File Explorer.
+   You can press Windows key + E.
+
+3. Click Downloads on the left side.
+
+4. Find the ZIP file.
+   It may be named something like:
+   the-matrix-agent-system-main.zip
+
+5. Right-click the ZIP file.
+
+6. Click Extract All.
+
+7. Click Extract.
+   Windows will create a normal folder next to the ZIP file.
+
+8. Open the extracted folder.
+   The folder should contain:
+   Install The Matrix.cmd
+   Start The Matrix.cmd
+   README.md
+   install.ps1
+
+9. Double-click Install The Matrix.cmd.
+
+
+OPTION B - IF YOU HAVE A GITHUB LINK
+
+1. Open the GitHub link in your browser.
+
+2. If GitHub asks you to sign in, sign in first.
+
+3. Click the green Code button.
+
+4. Click Download ZIP.
+
+5. Wait for the download to finish.
+
+6. Open File Explorer.
+   You can press Windows key + E.
+
+7. Click Downloads on the left side.
+
+8. Find the downloaded ZIP file.
+   It may be named:
+   the-matrix-agent-system-main.zip
+
+9. Right-click the ZIP file.
+
+10. Click Extract All.
+
+11. Click Extract.
+
+12. Open the extracted folder.
+
+13. Double-click Install The Matrix.cmd.
+
+
+WHAT HAPPENS AFTER YOU DOUBLE-CLICK INSTALL
+
+1. A black command window opens.
+   Keep it open.
+
+2. Windows may show a security warning.
+   If you trust this project folder, click:
+   More info
+   Run anyway
+
+3. The installer may download a small Python tool called uv.
+   This is normal.
+
+4. The installer installs The Matrix for your Windows user.
+   It does not need administrator permission.
+
+5. The installer creates:
+   Desktop shortcut: The Matrix
+   Start Menu shortcut: The Matrix
+
+6. Your browser opens a setup page.
+   The address should start with:
+   127.0.0.1
+
+   This means the page is running on your own computer.
+
+
+WHAT TO DO IN THE BROWSER SETUP
+
+1. Look at the Start here box.
+
+2. Choose an AI connection.
+
+   If Ollama or LM Studio is already running on your computer,
+   The Matrix may select it automatically.
+
+   If you use a cloud provider such as OpenRouter or OpenAI,
+   choose that provider and paste your API key when asked.
+
+3. Leave Advanced settings closed unless someone told you to change them.
+
+4. Click Start The Matrix.
+
+5. Wait for the dashboard to open.
+
+
+HOW TO START THE MATRIX NEXT TIME
+
+Use one of these:
+
+1. Double-click the Desktop shortcut named The Matrix.
+
+2. Open the Start Menu and search for The Matrix.
+
+3. Open this folder and double-click Start The Matrix.cmd.
+
+
+IF SOMETHING GOES WRONG
+
+Do not close the black command window.
+
+Take a screenshot of the error message and send it to the person who gave you The Matrix.
+
+Useful things to mention:
+1. What step you were on.
+2. Whether the browser opened.
+3. Whether you saw a Windows security warning.
+4. The exact error text if you can copy it.
+
+
+WHERE THE MATRIX STORES FILES
+
+The Matrix stores its app files here:
+C:\Users\<your name>\.thematrix
+
+The human-readable memory vault is here:
+C:\Users\<your name>\Documents\The Matrix Vault
+
+You normally do not need to open these folders.
