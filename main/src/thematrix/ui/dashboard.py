@@ -2,9 +2,22 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from html import escape
+from urllib.parse import quote
 
 from thematrix.config import MatrixPaths
 from thematrix.memory import RuntimeStore
+
+DASHBOARD_FAVICON = "data:image/svg+xml," + quote(
+    """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="8" fill="#000000"/>
+  <rect x="6" y="6" width="52" height="52" rx="4" fill="#001405" stroke="#00ff41" stroke-width="3"/>
+  <path d="M18 18 L30 32 L18 46" fill="none" stroke="#00ff41" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M36 44 H48" stroke="#7cff9d" stroke-width="6" stroke-linecap="round"/>
+</svg>
+""".strip(),
+    safe="",
+)
 
 
 def write_dashboard(paths: MatrixPaths, store: RuntimeStore) -> str:
@@ -41,6 +54,7 @@ def render_dashboard_html(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>The Matrix Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="{DASHBOARD_FAVICON}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">

@@ -38,6 +38,8 @@ def test_dashboard_renders_local_memory_summary(tmp_path) -> None:
     html = render_dashboard_html(paths, store)
 
     assert "The Matrix Dashboard" in html
+    assert '<link rel="icon" type="image/svg+xml"' in html
+    assert "data:image/svg+xml" in html
     assert "Control Center" in html
     assert "the-matrix start" in html
     assert "Build a helper" in html
