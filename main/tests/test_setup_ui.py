@@ -179,14 +179,22 @@ def test_setup_ui_server_binds_localhost_and_saves_form(tmp_path) -> None:
     with urlopen(request, timeout=5) as response:
         body = response.read().decode("utf-8")
 
-    thread.join(timeout=5)
     config = store.get_default_provider_config()
     assert "Setup saved" in body
+    assert "Continuing to dashboard..." in body
     assert "Open Dashboard" in body
+    assert f"/dashboard?{parsed.query}" in body
     assert paths.dashboard_file.exists()
     assert config is not None
     assert config.provider_id == "ollama"
     assert store.get_preference("default_privacy_mode") == "local_only"
+
+    with urlopen(f"http://{parsed.netloc}/dashboard?{parsed.query}", timeout=5) as response:
+        dashboard_body = response.read().decode("utf-8")
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert "The Matrix Dashboard" in dashboard_body
 
 
 def test_setup_ui_rejects_oversized_body(tmp_path) -> None:
@@ -214,18 +222,16 @@ def test_setup_ui_rejects_oversized_body(tmp_path) -> None:
     thread.start()
     assert ready.wait(timeout=5)
     parsed = urlparse(captured_url[0])
-    request = Request(
-        f"http://{parsed.netloc}/save?{parsed.query}",
-        data=b"x" * (MAX_SETUP_BODY_BYTES + 1),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    try:
-        urlopen(request, timeout=5)
-    except HTTPError as exc:
-        assert exc.code == 413
-    else:
-        raise AssertionError("Setup UI accepted an oversized request body.")
+
+    import http.client
+
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    conn.putrequest("POST", f"/save?{parsed.query}")
+    conn.putheader("Content-Length", str(MAX_SETUP_BODY_BYTES + 1))
+    conn.endheaders()
+    response = conn.getresponse()
+    assert response.status == 413
+    conn.close()
 
     payload = urlencode(
         {
@@ -246,7 +252,10 @@ def test_setup_ui_rejects_oversized_body(tmp_path) -> None:
         timeout=5,
     ):
         pass
+    with urlopen(f"http://{parsed.netloc}/dashboard?{parsed.query}", timeout=5):
+        pass
     thread.join(timeout=5)
+    assert not thread.is_alive()
 
 
 def test_setup_ui_rejects_malformed_content_length(tmp_path) -> None:
@@ -304,4 +313,7 @@ def test_setup_ui_rejects_malformed_content_length(tmp_path) -> None:
         timeout=5,
     ):
         pass
+    with urlopen(f"http://{parsed.netloc}/dashboard?{parsed.query}", timeout=5):
+        pass
     thread.join(timeout=5)
+    assert not thread.is_alive()

@@ -6,7 +6,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
-from pathlib import Path
 from secrets import token_urlsafe
 from threading import Thread, Timer
 from typing import Callable
@@ -31,7 +30,7 @@ from thematrix.schemas import (
     ProviderProfile,
 )
 from thematrix.security import Keymaker, SecretStoreError
-from thematrix.ui.dashboard import write_dashboard
+from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
 
 MAX_SETUP_BODY_BYTES = 64 * 1024
 DEFAULT_SETUP_TIMEOUT_SECONDS = 15 * 60
@@ -195,6 +194,15 @@ def _handler_factory(
             if not self._token_ok():
                 self._send_html(HTTPStatus.FORBIDDEN, _message_page("Forbidden", "Invalid token."))
                 return
+            parsed = urlparse(self.path)
+            if parsed.path == "/dashboard":
+                write_dashboard(paths, store)
+                self._send_html(HTTPStatus.OK, render_dashboard_html(paths, store))
+                Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            if parsed.path != "/":
+                self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not found", "Unknown route."))
+                return
             self._send_html(
                 HTTPStatus.OK,
                 render_setup_form(token, detections=detect_local_providers(timeout_seconds=0.5)),
@@ -235,21 +243,17 @@ def _handler_factory(
                     ),
                 )
                 return
-            dashboard_path = write_dashboard(paths, store)
+            write_dashboard(paths, store)
+            dashboard_url = f"/dashboard?token={token}"
             self._send_html(
                 HTTPStatus.OK,
                 _message_page(
                     "Setup saved",
                     result.message,
-                    actions=[
-                        (
-                            "Open Dashboard",
-                            Path(dashboard_path).resolve().as_uri(),
-                        )
-                    ],
+                    actions=[("Open Dashboard", dashboard_url)],
+                    continue_url=dashboard_url,
                 ),
             )
-            Thread(target=self.server.shutdown, daemon=True).start()
 
         def log_message(self, format: str, *args: object) -> None:
             return
@@ -997,6 +1001,7 @@ def _message_page(
     title: str,
     message: str,
     actions: list[tuple[str, str]] | None = None,
+    continue_url: str | None = None,
 ) -> str:
     action_html = ""
     if actions:
@@ -1005,12 +1010,26 @@ def _message_page(
             for label, href in actions
         )
         action_html = f'<div class="actions">{links}</div>'
+    refresh_html = ""
+    continue_html = ""
+    script_html = ""
+    if continue_url:
+        escaped_url = escape(continue_url, quote=True)
+        refresh_html = f'<meta http-equiv="refresh" content="1.2;url={escaped_url}">'
+        continue_html = '<p class="continuing">Continuing to dashboard...</p>'
+        script_html = f"""
+  <script>
+    window.setTimeout(function () {{
+      window.location.href = "{escaped_url}";
+    }}, 1200);
+  </script>"""
 
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {refresh_html}
   <title>The Matrix {escape(title)}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1093,7 +1112,12 @@ def _message_page(
       font-size: 14px;
       letter-spacing: 0.3px;
     }}
+    p + p {{ margin-top: 10px; }}
     p::before {{ content: '> '; color: #1f5530; }}
+    .continuing {{
+      color: #7cff9d;
+      font-size: 15px;
+    }}
     .actions {{
       display: flex;
       flex-wrap: wrap;
@@ -1135,10 +1159,12 @@ def _message_page(
     <section>
       <h1>{escape(title)}</h1>
       <p>{escape(message)}</p>
+      {continue_html}
       {action_html}
     </section>
     <div class="footer-bar">// the matrix has you &nbsp;&middot;&nbsp; follow the white rabbit ▌</div>
   </main>
+  {script_html}
 </body>
 </html>
 """
