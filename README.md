@@ -80,6 +80,9 @@ python -m pytest
 
 ## Client Install
 
+The framework is designed to run on Windows, macOS, and Linux. The runtime is Python,
+uses local folders under the current user account, and opens a browser UI on `127.0.0.1`.
+
 For a non-technical Windows client:
 
 1. Open `START_HERE_WINDOWS.txt`.
@@ -131,6 +134,30 @@ The command-friendly files are:
 - `install.cmd`: installs The Matrix from Command Prompt.
 - `start.cmd`: starts The Matrix from Command Prompt after install.
 
+For a macOS or Linux client:
+
+1. Open `START_HERE_MAC_LINUX.txt`.
+2. Follow the Terminal instructions in that file.
+3. Finish setup in the browser.
+
+macOS/Linux one-line install:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.sh | sh
+```
+
+macOS/Linux start option after install:
+
+```sh
+the-matrix start
+```
+
+macOS/Linux local-folder install option:
+
+```sh
+sh install.sh
+```
+
 Advanced install options:
 
 ```powershell
@@ -138,6 +165,14 @@ Advanced install options:
 .\install.ps1 -NoShortcuts
 .\install.ps1 -Python 3.12
 .\install.ps1 -Source "https://github.com/anupa-perera/the-matrix-agent-system/archive/refs/heads/main.zip"
+```
+
+macOS/Linux advanced install options:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.sh | MATRIX_SKIP_START=1 sh
+curl -fsSL https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.sh | MATRIX_PYTHON=3.12 sh
+MATRIX_SOURCE="/path/to/the-matrix-agent-system" sh install.sh
 ```
 
 ## Provider Setup

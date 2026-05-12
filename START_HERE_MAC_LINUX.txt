@@ -1,0 +1,151 @@
+THE MATRIX - MAC AND LINUX SETUP GUIDE
+
+Use this guide if you are on macOS or Linux.
+
+What you will do:
+1. Open Terminal.
+2. Paste one install command.
+3. Finish setup in your browser.
+4. Start The Matrix later with one command.
+
+
+FAST INSTALL - ONE COMMAND
+
+1. Open Terminal.
+
+   On macOS:
+   Press Command + Space.
+   Type Terminal.
+   Press Enter.
+
+   On Linux:
+   Open your app menu.
+   Search for Terminal.
+   Open it.
+
+2. Copy this whole command:
+
+   curl -fsSL https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.sh | sh
+
+3. Paste it into Terminal.
+
+4. Press Enter.
+
+5. Wait for the installer to finish.
+
+6. Your browser should open the local setup page.
+   The address should start with:
+   127.0.0.1
+
+   This means the page is running on your own computer.
+
+
+IF CURL IS NOT AVAILABLE
+
+Use this only if the fast install command says curl is missing.
+
+1. Download the project ZIP from GitHub.
+
+2. Extract the ZIP file.
+
+3. Open Terminal inside the extracted folder.
+
+4. Run:
+
+   sh install.sh
+
+
+WHAT HAPPENS DURING INSTALL
+
+1. The installer checks for uv.
+
+2. If uv is missing, it downloads uv from the official Astral installer.
+
+3. The installer installs The Matrix for your user only.
+   It does not need administrator or root permission.
+
+4. The installer starts:
+
+   the-matrix start
+
+5. The browser setup opens.
+
+
+WHAT TO DO IN THE BROWSER SETUP
+
+1. Look at the Start here box.
+
+2. Choose an AI connection.
+
+   If Ollama or LM Studio is already running on your computer,
+   The Matrix may select it automatically.
+
+   If you use a cloud provider such as OpenRouter or OpenAI,
+   choose that provider and paste your API key when asked.
+
+3. Leave Advanced settings closed unless someone told you to change them.
+
+4. Click Start The Matrix.
+
+5. Wait for the dashboard to open.
+
+
+HOW TO START THE MATRIX NEXT TIME
+
+Open Terminal and run:
+
+the-matrix start
+
+If that says command not found, run:
+
+~/.local/bin/the-matrix start
+
+If you installed from an extracted project folder, you can also open Terminal in that folder and run:
+
+sh start.sh
+
+
+ADVANCED OPTIONS
+
+Install without starting the browser setup:
+
+curl -fsSL https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.sh | MATRIX_SKIP_START=1 sh
+
+Use a different Python version:
+
+curl -fsSL https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.sh | MATRIX_PYTHON=3.12 sh
+
+Install from a local folder:
+
+sh install.sh
+
+
+IF SOMETHING GOES WRONG
+
+Do not close Terminal.
+
+Copy the error text or take a screenshot and send it to the person who gave you The Matrix.
+
+If the error says command not found after install:
+1. Close Terminal.
+2. Open Terminal again.
+3. Run:
+
+   the-matrix start
+
+If it still fails, run:
+
+~/.local/bin/the-matrix start
+
+
+WHERE THE MATRIX STORES FILES
+
+The Matrix stores its app files here:
+
+~/.thematrix
+
+The human-readable memory vault is here:
+
+~/Documents/The Matrix Vault
+
+You normally do not need to open these folders.
