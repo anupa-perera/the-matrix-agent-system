@@ -159,7 +159,7 @@ $Source = Resolve-InstallSource -RequestedSource $Source
 $uvPath = Install-UvIfMissing
 
 Write-Step "Installing The Matrix Agent System"
-$installArgs = @("tool", "install", "--python", $Python)
+$installArgs = @("--system-certs", "tool", "install", "--python", $Python)
 if (-not $NoForce) {
     $installArgs += "--force"
 }
@@ -168,6 +168,9 @@ $installArgs += $Source
 Write-Host "Using uv: $uvPath"
 Write-Host "Source: $Source"
 & $uvPath @installArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "The Matrix installation failed. Close any open Matrix windows, check the error above, and run the installer again."
+}
 
 Add-ToolBinToCurrentPath
 $matrix = Find-TheMatrix

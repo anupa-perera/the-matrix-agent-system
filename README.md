@@ -107,6 +107,30 @@ After setup, the user can start The Matrix from:
 - the Start Menu shortcut
 - `Start The Matrix.cmd` inside the project folder
 
+Command Prompt install option:
+
+```cmd
+curl -L -o "%TEMP%\install-matrix.cmd" https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.cmd && "%TEMP%\install-matrix.cmd"
+```
+
+Command Prompt install option after downloading the project folder:
+
+```cmd
+cd /d C:\path\to\the-matrix-agent-system
+install.cmd
+```
+
+Command Prompt start option:
+
+```cmd
+start.cmd
+```
+
+The command-friendly files are:
+
+- `install.cmd`: installs The Matrix from Command Prompt.
+- `start.cmd`: starts The Matrix from Command Prompt after install.
+
 Advanced install options:
 
 ```powershell

@@ -35,6 +35,8 @@ OPTION A - IF SOMEONE SENT YOU A ZIP FILE
    The folder should contain:
    Install The Matrix.cmd
    Start The Matrix.cmd
+   install.cmd
+   start.cmd
    README.md
    install.ps1
 
@@ -130,11 +132,76 @@ Use one of these:
 3. Open this folder and double-click Start The Matrix.cmd.
 
 
+OPTIONAL - INSTALL FROM COMMAND PROMPT WITH ONE LINE
+
+Use this if someone tells you to install from Command Prompt.
+You do not need to download the ZIP first.
+
+1. Press Windows key + R.
+
+2. Type:
+   cmd
+
+3. Press Enter.
+
+4. Copy this whole line:
+   curl -L -o "%TEMP%\install-matrix.cmd" https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.cmd && "%TEMP%\install-matrix.cmd"
+
+5. Paste it into Command Prompt.
+
+6. Press Enter.
+
+7. Follow the browser setup.
+
+If the command says 404 or cannot find the file, the GitHub repo may not be public yet.
+Ask the person who gave you The Matrix for the ZIP file instead.
+
+
+OPTIONAL - INSTALL FROM COMMAND PROMPT AFTER DOWNLOADING THE FOLDER
+
+Use this only if you are comfortable typing commands.
+
+1. Open the extracted project folder.
+
+2. Click the address bar at the top of File Explorer.
+
+3. Type:
+   cmd
+
+4. Press Enter.
+   A Command Prompt window opens in this folder.
+
+5. Type:
+   install.cmd
+
+6. Press Enter.
+
+7. Follow the browser setup.
+
+Tip:
+The installer uses Windows system certificates when downloading Python packages.
+This helps on many company or school computers.
+
+To start The Matrix later from Command Prompt:
+
+1. Open Command Prompt in this folder the same way.
+
+2. Type:
+   start.cmd
+
+3. Press Enter.
+
+
 IF SOMETHING GOES WRONG
 
 Do not close the black command window.
 
 Take a screenshot of the error message and send it to the person who gave you The Matrix.
+
+If the error says Access is denied while installing:
+1. Close any open The Matrix windows.
+2. Close any Command Prompt windows running The Matrix.
+3. Run the installer again.
 
 Useful things to mention:
 1. What step you were on.
