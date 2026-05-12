@@ -1,8 +1,9 @@
 param(
-    [string] $Source = "https://github.com/anupa-perera/the-matrix-agent-system/archive/refs/heads/main.zip",
+    [string] $Source = "",
     [string] $Python = "3.13",
     [switch] $SkipStart,
-    [switch] $NoForce
+    [switch] $NoForce,
+    [switch] $NoShortcuts
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +13,26 @@ function Write-Step {
     param([string] $Message)
     Write-Host ""
     Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+function Resolve-InstallSource {
+    param([string] $RequestedSource)
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedSource)) {
+        return $RequestedSource
+    }
+
+    $scriptRoot = $PSScriptRoot
+    if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
+        $scriptRoot = (Get-Location).Path
+    }
+
+    $localProject = Join-Path $scriptRoot "pyproject.toml"
+    if (Test-Path $localProject) {
+        return $scriptRoot
+    }
+
+    return "https://github.com/anupa-perera/the-matrix-agent-system/archive/refs/heads/main.zip"
 }
 
 function Find-Uv {
@@ -94,9 +115,47 @@ function Add-ToolBinToCurrentPath {
     }
 }
 
+function New-MatrixShortcut {
+    param(
+        [string] $ShortcutPath,
+        [string] $MatrixCommand
+    )
+
+    $parent = Split-Path -Parent $ShortcutPath
+    if (-not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    $shortcut.TargetPath = $env:ComSpec
+    $shortcut.Arguments = "/k `"$MatrixCommand`" start"
+    $shortcut.WorkingDirectory = Split-Path -Parent $MatrixCommand
+    $shortcut.Description = "Start The Matrix local agent system"
+    $shortcut.Save()
+}
+
+function Install-MatrixShortcuts {
+    param([string] $MatrixCommand)
+
+    Write-Step "Creating shortcuts"
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    $startMenu = Join-Path ([Environment]::GetFolderPath("StartMenu")) "Programs"
+    $shortcuts = @(
+        (Join-Path $desktop "The Matrix.lnk"),
+        (Join-Path $startMenu "The Matrix.lnk")
+    )
+
+    foreach ($shortcut in $shortcuts) {
+        New-MatrixShortcut -ShortcutPath $shortcut -MatrixCommand $MatrixCommand
+        Write-Host "Shortcut: $shortcut"
+    }
+}
+
 Write-Host "The Matrix installer"
 Write-Host "This installs the CLI for the current Windows user. Admin rights are not required."
 
+$Source = Resolve-InstallSource -RequestedSource $Source
 $uvPath = Install-UvIfMissing
 
 Write-Step "Installing The Matrix Agent System"
@@ -118,6 +177,10 @@ if (-not $matrix) {
 
 Write-Step "Installation complete"
 Write-Host "Command: $matrix"
+
+if (-not $NoShortcuts) {
+    Install-MatrixShortcuts -MatrixCommand $matrix
+}
 
 if (-not $SkipStart) {
     Write-Step "Starting guided setup"

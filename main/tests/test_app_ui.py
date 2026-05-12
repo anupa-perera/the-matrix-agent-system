@@ -93,7 +93,8 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
 
     with urlopen(f"http://{parsed.netloc}/settings?{parsed.query}", timeout=5) as response:
         settings_body = response.read().decode("utf-8")
-    assert "Model Interface" in settings_body
+    assert "Connect a model" in settings_body
+    assert "Start here" in settings_body
     assert "/save?" in settings_body
 
     payload = urlencode(

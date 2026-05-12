@@ -80,27 +80,28 @@ python -m pytest
 
 ## Client Install
 
-For a non-technical Windows client, use the bootstrap installer:
+For a non-technical Windows client:
 
-```powershell
-irm https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.ps1 | iex
-```
+1. Download or unzip the project folder.
+2. Open the folder.
+3. Double-click `Install The Matrix.cmd`.
+4. Follow the browser setup.
 
 The installer runs for the current Windows user and does not require admin rights. It installs
-`uv` if needed, installs The Matrix as an isolated command-line tool, then opens the guided setup
-with `the-matrix start`.
+`uv` if needed, installs The Matrix as an isolated command-line tool, creates Desktop and Start
+Menu shortcuts, then opens the guided setup with `the-matrix start`.
 
-After setup, the user only needs:
+After setup, the user can start The Matrix from:
 
-```powershell
-the-matrix start
-the-matrix ask "Create a reusable research agent"
-```
+- the Desktop shortcut
+- the Start Menu shortcut
+- `Start The Matrix.cmd` inside the project folder
 
 Advanced install options:
 
 ```powershell
 .\install.ps1 -SkipStart
+.\install.ps1 -NoShortcuts
 .\install.ps1 -Python 3.12
 .\install.ps1 -Source "https://github.com/anupa-perera/the-matrix-agent-system/archive/refs/heads/main.zip"
 ```

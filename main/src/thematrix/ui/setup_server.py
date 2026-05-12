@@ -283,12 +283,14 @@ def render_setup_form(
     providers = provider_catalog()
     detection_by_id = {detection.provider_id: detection for detection in detections or []}
     provider_options = "\n".join(
-        f'<option value="{escape(profile.provider_id)}">{escape(profile.display_name)}'
-        f" ({escape(profile.kind.value)})</option>"
+        f'<option value="{escape(profile.provider_id)}">'
+        f"{escape(_provider_choice_label(profile, detection_by_id.get(profile.provider_id)))}"
+        "</option>"
         for profile in providers
     )
     auth_options = "\n".join(
-        f'<option value="{mode.value}">{mode.value}</option>' for mode in AuthMode
+        f'<option value="{mode.value}">{escape(_auth_mode_label(mode.value))}</option>'
+        for mode in AuthMode
     )
     provider_notes = "".join(
         _provider_note(profile, detection_by_id.get(profile.provider_id))
@@ -461,6 +463,35 @@ def render_setup_form(
       color: var(--phosphor-title);
       letter-spacing: 0.3px;
     }}
+    .quick-start {{
+      position: relative;
+      background: rgba(0, 22, 8, 0.68);
+      border: 1px solid var(--line);
+      border-left: 2px solid var(--phosphor-bright);
+      padding: 22px;
+      margin-bottom: 22px;
+      animation: wake 700ms ease-out 720ms both;
+    }}
+    .quick-start h2 {{ margin-top: 0; }}
+    .quick-status {{
+      display: grid;
+      gap: 8px;
+      margin: 0 0 16px;
+      color: var(--phosphor-title);
+    }}
+    .quick-status strong {{
+      color: var(--phosphor-bright);
+      font-size: 17px;
+      font-weight: normal;
+    }}
+    .setup-steps {{
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding-left: 22px;
+      color: var(--phosphor);
+    }}
+    .setup-steps li {{ padding-left: 6px; }}
     /* SECTION HEADINGS */
     h2 {{
       margin: 28px 0 14px;
@@ -678,9 +709,11 @@ def render_setup_form(
       display: grid;
       gap: 14px;
     }}
+    .advanced-settings,
     .provider-registry {{
       margin-top: 28px;
     }}
+    .advanced-settings summary,
     .provider-registry summary {{
       cursor: pointer;
       list-style: none;
@@ -690,12 +723,20 @@ def render_setup_form(
       text-transform: uppercase;
       text-shadow: 0 0 6px rgba(0, 255, 65, 0.4);
     }}
+    .advanced-settings summary::-webkit-details-marker,
     .provider-registry summary::-webkit-details-marker {{ display: none; }}
+    .advanced-settings summary::before,
     .provider-registry summary::before {{
       content: '▸ ';
       color: var(--phosphor-title);
     }}
+    .advanced-settings[open] summary::before {{ content: '▾ '; }}
     .provider-registry[open] summary::before {{ content: '▾ '; }}
+    .advanced-settings .advanced-body {{
+      margin-top: 14px;
+      border-top: 1px dashed var(--line);
+      padding-top: 4px;
+    }}
     .provider-registry .provider-notes-list {{
       display: grid;
       gap: 14px;
@@ -743,15 +784,27 @@ def render_setup_form(
       <p class="lede">Configure the local memory vault, model link, and safety protocols. This session is bound to this node only.</p>
     </header>
     {error_html}
+    <section class="quick-start">
+      <h2>Start here</h2>
+      <div id="quick_status" class="quick-status">
+        <strong>Choose a model connection.</strong>
+        <span>The Matrix will use safe defaults for privacy, memory, and file changes.</span>
+      </div>
+      <ol class="setup-steps">
+        <li>Choose a provider. If a local model app is running, it is selected automatically.</li>
+        <li>Paste an API key only if the page asks for one.</li>
+        <li>Press Start The Matrix. Setup will continue to the dashboard.</li>
+      </ol>
+    </section>
     <form method="post" action="/save?token={escape(token)}">
-      <h2>01 / Model Interface</h2>
-      <label>Model provider
+      <h2>1 / Connect a model</h2>
+      <label>AI connection
         <select id="provider_id" name="provider_id" required>{provider_options}</select>
-        <span class="hint">If a local model app is already running, it will be selected for you.</span>
+        <span class="hint">Detected local model apps are selected automatically.</span>
       </label>
       <div id="provider_card" class="provider-card"></div>
       <div class="row">
-        <label>Model
+        <label>Model name
           <input id="model" name="model" placeholder="Enter a model id" required>
           <span id="model_hint" class="hint"></span>
         </label>
@@ -764,29 +817,34 @@ def render_setup_form(
         <input id="api_key" name="api_key" type="password" autocomplete="off" placeholder="Only stored through Keymaker">
         <span id="api_key_hint" class="hint"></span>
       </label>
-      <label>Provider address
-        <input id="base_url" name="base_url" placeholder="Use provider default unless you need a custom endpoint">
-        <span id="base_url_hint" class="hint"></span>
-      </label>
-      <h2>02 / Safety Protocols</h2>
-      <div class="row">
-        <label>Data sharing
-          <select name="privacy_mode">
-            <option value="ask_each_time">Ask me when cloud use matters</option>
-            <option value="cloud_allowed">Allow configured cloud provider</option>
-            <option value="local_only">Local models only</option>
-          </select>
-        </label>
-        <label>Changing files
-          <select name="file_change_consent">
-            <option value="ask_each_time">Ask before changing files</option>
-            <option value="allow_always">Allow approved agents to change files</option>
-          </select>
-        </label>
-      </div>
-      <label class="check"><input name="guarded_shell_enabled" type="checkbox" checked> Allow safe read/check commands automatically</label>
+      <details class="advanced-settings">
+        <summary>Advanced settings</summary>
+        <div class="advanced-body">
+          <label>Provider address
+            <input id="base_url" name="base_url" placeholder="Use provider default unless you need a custom endpoint">
+            <span id="base_url_hint" class="hint"></span>
+          </label>
+          <h2>Safety defaults</h2>
+          <div class="row">
+            <label>Data sharing
+              <select name="privacy_mode">
+                <option value="ask_each_time">Ask me when cloud use matters</option>
+                <option value="cloud_allowed">Allow configured cloud provider</option>
+                <option value="local_only">Local models only</option>
+              </select>
+            </label>
+            <label>Changing files
+              <select name="file_change_consent">
+                <option value="ask_each_time">Ask before changing files</option>
+                <option value="allow_always">Allow approved agents to change files</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input name="guarded_shell_enabled" type="checkbox" checked> Allow safe read/check commands automatically</label>
+        </div>
+      </details>
       <label class="check"><input name="test_provider" type="checkbox" checked> Test the connection before finishing</label>
-      <button type="submit">Initialize Connection</button>
+      <button type="submit">Start The Matrix</button>
     </form>
     <details class="notes provider-registry">
       <summary>Provider Registry</summary>
@@ -803,6 +861,12 @@ def render_setup_form(
       const providerSelect = document.getElementById("provider_id");
       const modelInput = document.getElementById("model");
       const authSelect = document.getElementById("auth_mode");
+      const authModeLabels = {{
+        api_key: "API key",
+        local_token: "Local token",
+        none: "No sign-in needed",
+        oauth: "OAuth"
+      }};
       const authModeRow = document.getElementById("auth_mode_row");
       const apiKeyRow = document.getElementById("api_key_row");
       const apiKeyInput = document.getElementById("api_key");
@@ -812,6 +876,7 @@ def render_setup_form(
       const authHint = document.getElementById("auth_hint");
       const apiKeyHint = document.getElementById("api_key_hint");
       const baseUrlHint = document.getElementById("base_url_hint");
+      const quickStatus = document.getElementById("quick_status");
       const detectedProvider = providers.find((provider) => provider.detected_reachable);
       if (detectedProvider) providerSelect.value = detectedProvider.provider_id;
 
@@ -839,7 +904,7 @@ def render_setup_form(
         for (const mode of authModes) {{
           const option = document.createElement("option");
           option.value = mode;
-          option.textContent = mode;
+          option.textContent = authModeLabels[mode] || mode;
           authSelect.appendChild(option);
         }}
         authModeRow.classList.toggle("hidden", authModes.length <= 1);
@@ -854,8 +919,20 @@ def render_setup_form(
           ? `Detected on this PC. ${{provider.detected_message}}`
           : provider.setup_hint;
         providerCard.querySelector(".data-boundary").textContent = provider.data_boundary;
+        const auth = preferredAuth(provider);
+        const needsKey = auth === "api_key" || auth === "local_token";
+        quickStatus.querySelector("strong").textContent = provider.detected_reachable
+          ? `${{provider.display_name}} is ready on this PC.`
+          : needsKey
+            ? `Paste a key for ${{provider.display_name}}.`
+            : `Use ${{provider.display_name}}.`;
+        quickStatus.querySelector("span").textContent = provider.detected_reachable
+          ? "No sign-in is needed. Press Start The Matrix when ready."
+          : needsKey
+            ? "The key is stored by your operating system. It is not written to memory or logs."
+            : "Safe defaults are already selected below.";
         modelHint.textContent = models.length
-          ? `Examples: ${{models.join(", ")}}`
+          ? `Available or common names: ${{models.join(", ")}}`
           : "Enter the model id expected by this endpoint.";
         baseUrlHint.textContent = provider.default_base_url
           ? `Default: ${{provider.default_base_url}}`
@@ -873,7 +950,7 @@ def render_setup_form(
           : "No secret is needed for this provider mode.";
         authHint.textContent = mode === "oauth"
           ? "OAuth is listed as provider capability, but setup is not wired in this version."
-          : "The Python backend validates this choice before saving.";
+          : "This will be checked before saving.";
       }}
 
       providerSelect.addEventListener("change", syncProvider);
@@ -942,6 +1019,24 @@ def _provider_note(profile: ProviderProfile, detection: ProviderDetection | None
         f"<p>{escape(profile.data_boundary)}</p>"
         "</div>"
     )
+
+
+def _provider_choice_label(
+    profile: ProviderProfile,
+    detection: ProviderDetection | None = None,
+) -> str:
+    location = "this PC" if profile.kind.value == "local" else "cloud"
+    detected = " - detected" if detection is not None and detection.reachable else ""
+    return f"{profile.display_name} ({location}){detected}"
+
+
+def _auth_mode_label(mode: str) -> str:
+    return {
+        "api_key": "API key",
+        "local_token": "Local token",
+        "none": "No sign-in needed",
+        "oauth": "OAuth",
+    }.get(mode, mode)
 
 
 def _provider_setup_json(
