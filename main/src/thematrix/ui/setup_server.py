@@ -279,6 +279,7 @@ def render_setup_form(
     token: str,
     error: str | None = None,
     detections: list[ProviderDetection] | None = None,
+    dashboard_url: str | None = None,
 ) -> str:
     providers = provider_catalog()
     detection_by_id = {detection.provider_id: detection for detection in detections or []}
@@ -298,6 +299,15 @@ def render_setup_form(
     )
     provider_json = _provider_setup_json(providers, detection_by_id)
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
+    back_html = ""
+    if dashboard_url:
+        back_html = (
+            '<div class="setup-nav">'
+            f'<a class="back-link" href="{escape(dashboard_url, quote=True)}">'
+            "Back to Dashboard"
+            "</a>"
+            "</div>"
+        )
     detected_count = sum(1 for d in (detections or []) if d.reachable)
     if detections is None:
         detected_line = "skipping local provider scan"
@@ -463,6 +473,27 @@ def render_setup_form(
       color: var(--phosphor-title);
       letter-spacing: 0.3px;
     }}
+    .setup-nav {{
+      display: flex;
+      justify-content: flex-start;
+      margin: 0 0 18px;
+      animation: wake 700ms ease-out 680ms both;
+    }}
+    .back-link {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 38px;
+      border: 1px solid var(--phosphor-bright);
+      padding: 8px 13px;
+      color: var(--phosphor-bright);
+      text-decoration: none;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      font-size: 13px;
+      background: rgba(0, 255, 65, 0.035);
+    }}
+    .back-link::before {{ content: '‹ '; font-size: 18px; margin-right: 6px; }}
+    .back-link:hover {{ background: rgba(0, 255, 65, 0.1); }}
     .quick-start {{
       position: relative;
       background: rgba(0, 22, 8, 0.68);
@@ -783,6 +814,7 @@ def render_setup_form(
       </div>
       <p class="lede">Configure the local memory vault, model link, and safety protocols. This session is bound to this node only.</p>
     </header>
+    {back_html}
     {error_html}
     <section class="quick-start">
       <h2>Start here</h2>

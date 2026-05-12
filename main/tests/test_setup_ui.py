@@ -90,10 +90,15 @@ def test_setup_ui_form_contains_session_token() -> None:
     assert "<datalist" not in html
     assert 'id="auth_mode_row"' in html
     assert "No sign-in needed" in html
+    assert "Back to Dashboard" not in html
     assert 'mode !== "oauth"' in html
     assert 'authModes.length <= 1' in html
     assert '<details class="notes provider-registry">' in html
     assert "<summary>Provider Registry</summary>" in html
+
+    settings_html = render_setup_form("token-123", dashboard_url="/dashboard?token=token-123")
+    assert "Back to Dashboard" in settings_html
+    assert "/dashboard?token=token-123" in settings_html
 
 
 def test_setup_ui_form_embeds_provider_defaults() -> None:

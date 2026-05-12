@@ -90,6 +90,7 @@ def _handler_factory(
                     render_setup_form(
                         token,
                         detections=detect_local_providers(timeout_seconds=0.5),
+                        dashboard_url=f"/dashboard?token={token}",
                     ),
                 )
                 return
@@ -129,6 +130,7 @@ def _handler_factory(
                             token,
                             error=result.message,
                             detections=detect_local_providers(timeout_seconds=0.5),
+                            dashboard_url=f"/dashboard?token={token}",
                         ),
                     )
                     return
@@ -471,8 +473,8 @@ def render_app_page(
         </label>
         <div class="actions">
           <button type="submit">Run Mission</button>
+          <a class="button-link" href="/dashboard?token={escape(token)}">Back to Dashboard</a>
           <a class="button-link" href="/settings?token={escape(token)}">Provider Settings</a>
-          <a class="button-link" href="/dashboard?token={escape(token)}">Refresh Dashboard</a>
         </div>
       </form>
     </section>
@@ -676,7 +678,7 @@ def _utility_page(title: str, token: str, intro: str, content: str) -> str:
       <h1>{escape(title)}</h1>
       <p>{escape(intro)}</p>
       <div class="actions">
-        <a class="button-link" href="{dashboard_url}">Dashboard</a>
+        <a class="button-link" href="{dashboard_url}">Back to Dashboard</a>
         <a class="button-link" href="{ask_url}">Ask Agent</a>
         <a class="button-link" href="{settings_url}">Change Model</a>
       </div>

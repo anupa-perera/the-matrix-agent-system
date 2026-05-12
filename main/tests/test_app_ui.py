@@ -36,6 +36,8 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     html = render_app_page(paths, store, "token-123")
 
     assert "/ask?token=token-123" in html
+    assert "/dashboard?token=token-123" in html
+    assert "Back to Dashboard" in html
     assert "/settings?token=token-123" in html
     assert "Transmit Request" in html
     assert "Help / Commands" in html
@@ -95,6 +97,8 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
         settings_body = response.read().decode("utf-8")
     assert "Connect a model" in settings_body
     assert "Start here" in settings_body
+    assert "Back to Dashboard" in settings_body
+    assert f"/dashboard?{parsed.query}" in settings_body
     assert "/save?" in settings_body
 
     payload = urlencode(
@@ -127,10 +131,12 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     with urlopen(f"http://{parsed.netloc}/diagnostics?{parsed.query}", timeout=5) as response:
         diagnostics_body = response.read().decode("utf-8")
     assert "System Check" in diagnostics_body
+    assert "Back to Dashboard" in diagnostics_body
     assert "Secrets backend" in diagnostics_body
 
     with urlopen(f"http://{parsed.netloc}/memory?{parsed.query}", timeout=5) as response:
         memory_body = response.read().decode("utf-8")
+    assert "Back to Dashboard" in memory_body
     assert "The Matrix stores readable memory" in memory_body
     assert str(paths.vault) in memory_body
 
