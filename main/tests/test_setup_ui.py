@@ -2,12 +2,13 @@ import json
 import re
 from threading import Event, Thread
 from urllib.error import HTTPError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.providers import ProviderDetection
+from thematrix.schemas import AuthMode
 from thematrix.security import InMemorySecretStore, Keymaker
 from thematrix.ui.setup_server import (
     MAX_SETUP_BODY_BYTES,
@@ -51,6 +52,40 @@ def test_setup_ui_applies_form_without_storing_raw_secret(tmp_path) -> None:
     assert "sk-test" not in (paths.vault / "log.md").read_text(encoding="utf-8")
 
 
+def test_setup_ui_applies_openrouter_oauth_without_storing_raw_secret(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    keymaker = Keymaker(InMemorySecretStore())
+
+    result = apply_setup_form(
+        {
+            "provider_id": "openrouter",
+            "model": "openai/gpt-5-mini",
+            "auth_mode": "oauth",
+            "oauth_api_key": "sk-oauth-test",
+            "privacy_mode": "ask_each_time",
+            "file_change_consent": "ask_each_time",
+            "guarded_shell_enabled": "on",
+        },
+        paths,
+        vault,
+        store,
+        keymaker,
+    )
+
+    config = store.get_default_provider_config()
+    assert result.ok
+    assert config is not None
+    assert config.provider_id == "openrouter"
+    assert config.auth_mode == AuthMode.OAUTH
+    assert config.secret_ref == "keyring:provider:openrouter:api_key"
+    assert keymaker.resolve_api_key(config.secret_ref) == "sk-oauth-test"
+    assert "sk-oauth-test" not in (paths.vault / "log.md").read_text(encoding="utf-8")
+
+
 def test_setup_ui_rejects_oauth_until_flow_exists(tmp_path) -> None:
     paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
     vault = MemoryVault(paths.vault)
@@ -73,7 +108,25 @@ def test_setup_ui_rejects_oauth_until_flow_exists(tmp_path) -> None:
     )
 
     assert not result.ok
-    assert "OAuth setup is not wired yet" in result.message
+    assert "Use Sign in with OpenRouter" in result.message
+    assert store.get_default_provider_config() is None
+
+    result = apply_setup_form(
+        {
+            "provider_id": "gemini",
+            "model": "gemini-2.5-pro",
+            "auth_mode": "oauth",
+            "privacy_mode": "ask_each_time",
+            "file_change_consent": "ask_each_time",
+        },
+        paths,
+        vault,
+        store,
+        Keymaker(InMemorySecretStore()),
+    )
+
+    assert not result.ok
+    assert "OAuth setup for Gemini is not automated yet" in result.message
     assert store.get_default_provider_config() is None
 
 
@@ -91,7 +144,8 @@ def test_setup_ui_form_contains_session_token() -> None:
     assert 'id="auth_mode_row"' in html
     assert "No sign-in needed" in html
     assert "Back to Dashboard" not in html
-    assert 'mode !== "oauth"' in html
+    assert 'provider.oauth_automated' in html
+    assert "Sign in with OpenRouter" in html
     assert 'authModes.length <= 1' in html
     assert '<details class="notes provider-registry">' in html
     assert "<summary>Provider Registry</summary>" in html
@@ -132,6 +186,8 @@ def test_setup_ui_form_embeds_provider_defaults() -> None:
     assert ollama["detected_reachable"] is True
     assert ollama["detected_models"] == ["llama3.2:latest"]
     assert openrouter["suggested_models"][0] == "openai/gpt-5-mini"
+    assert openrouter["oauth_automated"] is True
+    assert openrouter["oauth_label"] == "Sign in with OpenRouter"
 
 
 def test_setup_ui_server_binds_localhost_and_saves_form(tmp_path) -> None:
@@ -204,6 +260,91 @@ def test_setup_ui_server_binds_localhost_and_saves_form(tmp_path) -> None:
     thread.join(timeout=5)
     assert not thread.is_alive()
     assert "The Matrix Dashboard" in dashboard_body
+
+
+def test_setup_ui_server_openrouter_oauth_callback_saves_form(tmp_path, monkeypatch) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    keymaker = Keymaker(InMemorySecretStore())
+    captured_url: list[str] = []
+    ready = Event()
+
+    monkeypatch.setattr(
+        "thematrix.ui.setup_server.exchange_openrouter_code",
+        lambda code, verifier: "sk-oauth-callback",
+    )
+
+    def run_server() -> None:
+        serve_setup_ui(
+            paths,
+            vault,
+            store,
+            port=0,
+            open_browser=False,
+            keymaker_factory=lambda: keymaker,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+    token = parse_qs(parsed.query)["token"][0]
+
+    import http.client
+
+    start_query = urlencode(
+        {
+            "token": token,
+            "provider_id": "openrouter",
+            "model": "openai/gpt-5-mini",
+            "auth_mode": "oauth",
+            "privacy_mode": "ask_each_time",
+            "file_change_consent": "ask_each_time",
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+    )
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    conn.request("GET", f"/oauth/openrouter/start?{start_query}")
+    response = conn.getresponse()
+    assert response.status == 302
+    location = response.getheader("Location")
+    assert response.getheader("Referrer-Policy") == "no-referrer"
+    response.read()
+    conn.close()
+    assert location is not None
+
+    auth_query = parse_qs(urlparse(location).query)
+    callback_url = auth_query["callback_url"][0]
+    callback_query = parse_qs(urlparse(callback_url).query)
+    flow_id = callback_query["flow"][0]
+    assert "token" not in callback_query
+
+    callback_query_text = urlencode({"flow": flow_id, "code": "provider-code"})
+    with urlopen(
+        f"http://{parsed.netloc}/oauth/openrouter/callback?{callback_query_text}",
+        timeout=5,
+    ) as response:
+        body = response.read().decode("utf-8")
+
+    config = store.get_default_provider_config()
+    assert "OAuth connected" in body
+    assert "Open Dashboard" in body
+    assert config is not None
+    assert config.auth_mode == AuthMode.OAUTH
+    assert config.provider_id == "openrouter"
+    assert config.secret_ref is not None
+    assert keymaker.resolve_api_key(config.secret_ref) == "sk-oauth-callback"
+    assert "sk-oauth-callback" not in (paths.vault / "log.md").read_text(encoding="utf-8")
+
+    with urlopen(f"http://{parsed.netloc}/dashboard?token={token}", timeout=5):
+        pass
+    thread.join(timeout=5)
+    assert not thread.is_alive()
 
 
 def test_setup_ui_rejects_oversized_body(tmp_path) -> None:

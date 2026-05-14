@@ -98,6 +98,7 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     assert "Connect a model" in settings_body
     assert "Start here" in settings_body
     assert "Back to Dashboard" in settings_body
+    assert "Sign in with OpenRouter" in settings_body
     assert f"/dashboard?{parsed.query}" in settings_body
     assert "/save?" in settings_body
 

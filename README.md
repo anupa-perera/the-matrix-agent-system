@@ -215,8 +215,8 @@ URL token. It lets users choose a provider, model, privacy mode, and file-change
 browser while Python still owns all writes to SQLite and Keymaker. The form uses plain-language
 safe defaults, detects running local providers such as Ollama and LM Studio, auto-fills provider
 defaults such as suggested model, base URL, and supported auth modes, and can test the connection
-before finishing. OAuth choices are shown as provider capability, but browser OAuth setup is not
-wired in this version.
+before finishing. OpenRouter supports browser sign-in during onboarding; other cloud providers
+use API keys until they expose a compatible local app OAuth flow.
 
 ## Model Gateway
 

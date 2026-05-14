@@ -8,12 +8,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 from secrets import token_urlsafe
 from threading import Lock, Thread, Timer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 import webbrowser
 
 from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.providers import detect_local_providers
+from thematrix.providers.oauth import (
+    OAuthPendingSetup,
+    OAuthProviderError,
+    build_openrouter_oauth_setup,
+    exchange_openrouter_code,
+    setup_form_from_oauth,
+)
 from thematrix.schemas import MatrixRunResult
 from thematrix.security import Keymaker
 from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
@@ -75,12 +82,21 @@ def _handler_factory(
     request_runner: Callable[[str], MatrixRunResult],
     run_lock: Lock,
 ):
+    oauth_flows: dict[str, OAuthPendingSetup] = {}
+    oauth_lock = Lock()
+
     class AppHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path == "/oauth/openrouter/callback":
+                self._complete_openrouter_oauth(parsed)
+                return
             if not self._token_ok():
                 self._send_html(HTTPStatus.FORBIDDEN, _message_page("Forbidden", "Invalid token."))
                 return
-            parsed = urlparse(self.path)
+            if parsed.path == "/oauth/openrouter/start":
+                self._start_openrouter_oauth(parsed)
+                return
             if parsed.path == "/":
                 self._send_html(HTTPStatus.OK, render_app_page(paths, store, token))
                 return
@@ -178,6 +194,73 @@ def _handler_factory(
                 run_lock.release()
             self._send_html(HTTPStatus.OK, render_app_page(paths, store, token, response))
 
+        def _start_openrouter_oauth(self, parsed) -> None:
+            form = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+            host, port = self.server.server_address[:2]
+
+            def callback_url_for_flow(flow_id: str) -> str:
+                return (
+                    f"http://{host}:{port}/oauth/openrouter/callback?"
+                    + urlencode({"flow": flow_id})
+                )
+
+            try:
+                start, pending = build_openrouter_oauth_setup(form, callback_url_for_flow)
+            except OAuthProviderError as exc:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    _message_page("OAuth unavailable", str(exc)),
+                )
+                return
+            with oauth_lock:
+                oauth_flows[start.flow_id] = pending
+            self._send_redirect(start.authorization_url)
+
+        def _complete_openrouter_oauth(self, parsed) -> None:
+            query = parse_qs(parsed.query)
+            flow_id = query.get("flow", [""])[-1]
+            code = query.get("code", [""])[-1]
+            if not flow_id or not code:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    _message_page("OAuth incomplete", "The provider did not return a usable code."),
+                )
+                return
+            with oauth_lock:
+                pending = oauth_flows.pop(flow_id, None)
+            if pending is None:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    _message_page("OAuth expired", "Start provider sign-in again from settings."),
+                )
+                return
+            try:
+                api_key = exchange_openrouter_code(code, pending.code_verifier)
+            except (OAuthProviderError, OSError, ValueError) as exc:
+                self._send_html(
+                    HTTPStatus.BAD_GATEWAY,
+                    _message_page("OAuth failed", f"OpenRouter sign-in failed: {exc}"),
+                )
+                return
+            form = setup_form_from_oauth(pending, api_key)
+            result = apply_setup_form(form, paths, vault, store, Keymaker())
+            if not result.ok:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    render_setup_form(
+                        token,
+                        error=result.message,
+                        detections=detect_local_providers(timeout_seconds=0.5),
+                        dashboard_url=f"/dashboard?token={token}",
+                    ),
+                )
+                return
+            write_dashboard(paths, store)
+            self._send_html(
+                HTTPStatus.OK,
+                render_app_page(paths, store, token, AppUiResponse(message=result.message)),
+            )
+
         def _read_form(
             self,
             paths: MatrixPaths,
@@ -219,6 +302,14 @@ def _handler_factory(
             query = parse_qs(urlparse(self.path).query)
             supplied = query.get("token", [""])[-1]
             return hmac.compare_digest(supplied, token)
+
+        def _send_redirect(self, location: str) -> None:
+            self.send_response(HTTPStatus.FOUND.value)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
 
         def _send_html(self, status: HTTPStatus, body: str) -> None:
             payload = body.encode("utf-8")

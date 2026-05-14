@@ -7,9 +7,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
 from secrets import token_urlsafe
-from threading import Thread, Timer
+from threading import Lock, Thread, Timer
 from typing import Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 import webbrowser
 
 from thematrix.config import MatrixPaths
@@ -20,6 +20,14 @@ from thematrix.providers import (
     default_model_gateway,
     detect_local_providers,
     provider_catalog,
+)
+from thematrix.providers.oauth import (
+    OAuthPendingSetup,
+    OAuthProviderError,
+    build_openrouter_oauth_setup,
+    exchange_openrouter_code,
+    oauth_is_automated,
+    setup_form_from_oauth,
 )
 from thematrix.schemas import (
     AuthMode,
@@ -98,10 +106,13 @@ def apply_setup_form(
             ok=False,
             message=f"{profile.display_name} does not support auth mode `{auth_mode.value}`.",
         )
-    if auth_mode == AuthMode.OAUTH:
+    if auth_mode == AuthMode.OAUTH and not oauth_is_automated(provider_id):
         return SetupUiResult(
             ok=False,
-            message="OAuth setup is not wired yet. Use API key or local auth for this version.",
+            message=(
+                f"OAuth setup for {profile.display_name} is not automated yet. "
+                "Use API key setup for this provider."
+            ),
         )
 
     selected_model = form.get("model", "").strip()
@@ -111,7 +122,18 @@ def apply_setup_form(
 
     secret_ref = None
     api_key = form.get("api_key", "").strip()
-    if auth_mode in {AuthMode.API_KEY, AuthMode.LOCAL_TOKEN}:
+    oauth_api_key = form.get("oauth_api_key", "").strip()
+    if auth_mode == AuthMode.OAUTH:
+        if not oauth_api_key:
+            return SetupUiResult(
+                ok=False,
+                message=f"Use Sign in with {profile.display_name} to continue.",
+            )
+        try:
+            secret_ref = keymaker.store_api_key(provider_id, oauth_api_key).secret_ref
+        except SecretStoreError as exc:
+            return SetupUiResult(ok=False, message=str(exc))
+    elif auth_mode in {AuthMode.API_KEY, AuthMode.LOCAL_TOKEN}:
         if not api_key:
             return SetupUiResult(ok=False, message="Enter an API key or token for this provider.")
         try:
@@ -189,12 +211,21 @@ def _handler_factory(
     token: str,
     keymaker_factory: Callable[[], Keymaker],
 ):
+    oauth_flows: dict[str, OAuthPendingSetup] = {}
+    oauth_lock = Lock()
+
     class SetupHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path == "/oauth/openrouter/callback":
+                self._complete_openrouter_oauth(parsed)
+                return
             if not self._token_ok():
                 self._send_html(HTTPStatus.FORBIDDEN, _message_page("Forbidden", "Invalid token."))
                 return
-            parsed = urlparse(self.path)
+            if parsed.path == "/oauth/openrouter/start":
+                self._start_openrouter_oauth(parsed)
+                return
             if parsed.path == "/dashboard":
                 write_dashboard(paths, store)
                 self._send_html(HTTPStatus.OK, render_dashboard_html(paths, store))
@@ -255,6 +286,78 @@ def _handler_factory(
                 ),
             )
 
+        def _start_openrouter_oauth(self, parsed) -> None:
+            form = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
+            host, port = self.server.server_address[:2]
+
+            def callback_url_for_flow(flow_id: str) -> str:
+                return (
+                    f"http://{host}:{port}/oauth/openrouter/callback?"
+                    + urlencode({"flow": flow_id})
+                )
+
+            try:
+                start, pending = build_openrouter_oauth_setup(form, callback_url_for_flow)
+            except OAuthProviderError as exc:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    _message_page("OAuth unavailable", str(exc)),
+                )
+                return
+            with oauth_lock:
+                oauth_flows[start.flow_id] = pending
+            self._send_redirect(start.authorization_url)
+
+        def _complete_openrouter_oauth(self, parsed) -> None:
+            query = parse_qs(parsed.query)
+            flow_id = query.get("flow", [""])[-1]
+            code = query.get("code", [""])[-1]
+            if not flow_id or not code:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    _message_page("OAuth incomplete", "The provider did not return a usable code."),
+                )
+                return
+            with oauth_lock:
+                pending = oauth_flows.pop(flow_id, None)
+            if pending is None:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    _message_page("OAuth expired", "Start provider sign-in again from setup."),
+                )
+                return
+            try:
+                api_key = exchange_openrouter_code(code, pending.code_verifier)
+            except (OAuthProviderError, OSError, ValueError) as exc:
+                self._send_html(
+                    HTTPStatus.BAD_GATEWAY,
+                    _message_page("OAuth failed", f"OpenRouter sign-in failed: {exc}"),
+                )
+                return
+            form = setup_form_from_oauth(pending, api_key)
+            result = apply_setup_form(form, paths, vault, store, keymaker_factory())
+            if not result.ok:
+                self._send_html(
+                    HTTPStatus.BAD_REQUEST,
+                    render_setup_form(
+                        token,
+                        error=result.message,
+                        detections=detect_local_providers(timeout_seconds=0.5),
+                    ),
+                )
+                return
+            write_dashboard(paths, store)
+            dashboard_url = f"/dashboard?token={token}"
+            self._send_html(
+                HTTPStatus.OK,
+                _message_page(
+                    "OAuth connected",
+                    result.message,
+                    actions=[("Open Dashboard", dashboard_url)],
+                    continue_url=dashboard_url,
+                ),
+            )
+
         def log_message(self, format: str, *args: object) -> None:
             return
 
@@ -262,6 +365,14 @@ def _handler_factory(
             query = parse_qs(urlparse(self.path).query)
             supplied = query.get("token", [""])[-1]
             return hmac.compare_digest(supplied, token)
+
+        def _send_redirect(self, location: str) -> None:
+            self.send_response(HTTPStatus.FOUND.value)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
 
         def _send_html(self, status: HTTPStatus, body: str) -> None:
             payload = body.encode("utf-8")
@@ -298,6 +409,7 @@ def render_setup_form(
         for profile in providers
     )
     provider_json = _provider_setup_json(providers, detection_by_id)
+    session_token_json = json.dumps(token)
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
     back_html = ""
     if dashboard_url:
@@ -665,6 +777,16 @@ def render_setup_form(
       accent-color: var(--phosphor-bright);
       cursor: pointer;
     }}
+    .oauth-row {{
+      margin: 12px 0 18px;
+      border: 1px dashed var(--line);
+      padding: 16px;
+      background: rgba(0, 255, 65, 0.025);
+    }}
+    .oauth-row .hint {{
+      display: block;
+      margin-top: 10px;
+    }}
     /* SUBMIT BUTTON — chunky HUD action */
     button {{
       display: inline-flex;
@@ -828,7 +950,7 @@ def render_setup_form(
         <li>Press Start The Matrix. Setup will continue to the dashboard.</li>
       </ol>
     </section>
-    <form method="post" action="/save?token={escape(token)}">
+    <form id="setup_form" method="post" action="/save?token={escape(token)}">
       <h2>1 / Connect a model</h2>
       <label>AI connection
         <select id="provider_id" name="provider_id" required>{provider_options}</select>
@@ -849,6 +971,10 @@ def render_setup_form(
         <input id="api_key" name="api_key" type="password" autocomplete="off" placeholder="Only stored through Keymaker">
         <span id="api_key_hint" class="hint"></span>
       </label>
+      <div id="oauth_row" class="oauth-row hidden">
+        <button type="button" id="oauth_button">Sign in with provider</button>
+        <span id="oauth_hint" class="hint"></span>
+      </div>
       <details class="advanced-settings">
         <summary>Advanced settings</summary>
         <div class="advanced-body">
@@ -888,8 +1014,10 @@ def render_setup_form(
     </div>
     <script id="provider-data" type="application/json">{provider_json}</script>
     <script>
+      const sessionToken = {session_token_json};
       const providers = JSON.parse(document.getElementById("provider-data").textContent);
       const byId = Object.fromEntries(providers.map((provider) => [provider.provider_id, provider]));
+      const setupForm = document.getElementById("setup_form");
       const providerSelect = document.getElementById("provider_id");
       const modelInput = document.getElementById("model");
       const authSelect = document.getElementById("auth_mode");
@@ -902,6 +1030,9 @@ def render_setup_form(
       const authModeRow = document.getElementById("auth_mode_row");
       const apiKeyRow = document.getElementById("api_key_row");
       const apiKeyInput = document.getElementById("api_key");
+      const oauthRow = document.getElementById("oauth_row");
+      const oauthButton = document.getElementById("oauth_button");
+      const oauthHint = document.getElementById("oauth_hint");
       const baseUrlInput = document.getElementById("base_url");
       const providerCard = document.getElementById("provider_card");
       const modelHint = document.getElementById("model_hint");
@@ -914,15 +1045,42 @@ def render_setup_form(
 
       function preferredAuth(provider) {{
         const modes = setupAuthModes(provider);
-        if (modes.includes("api_key")) return "api_key";
         if (modes.includes("none")) return "none";
+        if (modes.includes("oauth")) return "oauth";
+        if (modes.includes("api_key")) return "api_key";
         if (modes.includes("local_token")) return "local_token";
         return modes[0] || "none";
       }}
 
       function setupAuthModes(provider) {{
-        const modes = provider.auth_modes.filter((mode) => mode !== "oauth");
+        const modes = provider.auth_modes.filter((mode) => mode !== "oauth" || provider.oauth_automated);
         return modes.length ? modes : provider.auth_modes;
+      }}
+
+      function oauthStartUrl() {{
+        const params = new URLSearchParams(new FormData(setupForm));
+        params.set("token", sessionToken);
+        params.set("provider_id", providerSelect.value);
+        params.set("auth_mode", "oauth");
+        return `/oauth/openrouter/start?${{params.toString()}}`;
+      }}
+
+      function updateQuickStatus(provider, mode) {{
+        const needsKey = mode === "api_key" || mode === "local_token";
+        quickStatus.querySelector("strong").textContent = provider.detected_reachable
+          ? `${{provider.display_name}} is ready on this PC.`
+          : mode === "oauth"
+            ? `Sign in with ${{provider.display_name}}.`
+            : needsKey
+              ? `Paste a key for ${{provider.display_name}}.`
+              : `Use ${{provider.display_name}}.`;
+        quickStatus.querySelector("span").textContent = provider.detected_reachable
+          ? "No sign-in is needed. Press Start The Matrix when ready."
+          : mode === "oauth"
+            ? "Your browser will open the provider. The returned key is stored by your operating system."
+            : needsKey
+              ? "The key is stored by your operating system. It is not written to memory or logs."
+              : "Safe defaults are already selected below.";
       }}
 
       function syncProvider() {{
@@ -951,18 +1109,6 @@ def render_setup_form(
           ? `Detected on this PC. ${{provider.detected_message}}`
           : provider.setup_hint;
         providerCard.querySelector(".data-boundary").textContent = provider.data_boundary;
-        const auth = preferredAuth(provider);
-        const needsKey = auth === "api_key" || auth === "local_token";
-        quickStatus.querySelector("strong").textContent = provider.detected_reachable
-          ? `${{provider.display_name}} is ready on this PC.`
-          : needsKey
-            ? `Paste a key for ${{provider.display_name}}.`
-            : `Use ${{provider.display_name}}.`;
-        quickStatus.querySelector("span").textContent = provider.detected_reachable
-          ? "No sign-in is needed. Press Start The Matrix when ready."
-          : needsKey
-            ? "The key is stored by your operating system. It is not written to memory or logs."
-            : "Safe defaults are already selected below.";
         modelHint.textContent = models.length
           ? `Available or common names: ${{models.join(", ")}}`
           : "Enter the model id expected by this endpoint.";
@@ -973,20 +1119,40 @@ def render_setup_form(
       }}
 
       function syncAuth() {{
+        const provider = byId[providerSelect.value];
         const mode = authSelect.value;
         const needsSecret = mode === "api_key" || mode === "local_token";
+        const usesOauth = mode === "oauth";
         apiKeyRow.classList.toggle("hidden", !needsSecret);
+        oauthRow.classList.toggle("hidden", !usesOauth);
         apiKeyInput.required = needsSecret;
         apiKeyHint.textContent = needsSecret
           ? "Stored in your operating system credential store. It is not written to memory notes or logs."
           : "No secret is needed for this provider mode.";
-        authHint.textContent = mode === "oauth"
-          ? "OAuth is listed as provider capability, but setup is not wired in this version."
+        if (provider) {{
+          oauthButton.textContent = provider.oauth_label || `Sign in with ${{provider.display_name}}`;
+          oauthButton.disabled = !provider.oauth_automated;
+          oauthHint.textContent = provider.oauth_automated
+            ? "This opens a provider page, then returns here to finish setup."
+            : "This provider does not expose an automated local sign-in flow yet.";
+          updateQuickStatus(provider, mode);
+        }}
+        authHint.textContent = usesOauth
+          ? "Browser sign-in will be checked before saving."
           : "This will be checked before saving.";
       }}
 
       providerSelect.addEventListener("change", syncProvider);
       authSelect.addEventListener("change", syncAuth);
+      oauthButton.addEventListener("click", function () {{
+        window.location.href = oauthStartUrl();
+      }});
+      setupForm.addEventListener("submit", function (event) {{
+        if (authSelect.value === "oauth") {{
+          event.preventDefault();
+          window.location.href = oauthStartUrl();
+        }}
+      }});
       syncProvider();
     </script>
   </main>
@@ -1089,6 +1255,12 @@ def _provider_setup_json(
             "default_base_url": profile.default_base_url,
             "setup_hint": profile.setup_hint,
             "data_boundary": profile.data_boundary,
+            "oauth_automated": oauth_is_automated(profile.provider_id),
+            "oauth_label": (
+                f"Sign in with {profile.display_name}"
+                if oauth_is_automated(profile.provider_id)
+                else ""
+            ),
         }
         for profile in profiles
     ]
