@@ -8,8 +8,8 @@ The release workflow builds and uploads:
 
 - `the-matrix-agent-system-<version>-py3-none-any.whl`
 - `the_matrix_agent_system-<version>.tar.gz`
-- `the-matrix-agent-system-v<version>-windows.zip`
-- `the-matrix-agent-system-v<version>-mac-linux.tar.gz`
+- `the-matrix-agent-system-windows.zip`
+- `the-matrix-agent-system-mac-linux.tar.gz`
 - `SHA256SUMS.txt`
 - generated release notes
 
@@ -68,6 +68,26 @@ git push origin v0.1.0
 ```
 
 GitHub Actions will run the `Release` workflow and create the GitHub Release automatically.
+
+The `Pages` workflow publishes the friendly download page from `site/`.
+
+If Pages has not been enabled yet, go to:
+
+```text
+GitHub repo -> Settings -> Pages -> Build and deployment -> Source
+```
+
+Select:
+
+```text
+GitHub Actions
+```
+
+After the workflow finishes, the download page should be available at:
+
+```text
+https://anupa-perera.github.io/the-matrix-agent-system/
+```
 
 ## Manual Checks After GitHub Publishes
 

@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Matrix Agent System</title>
+  <meta name="description" content="Download The Matrix Agent System, a local-first Matrix-inspired agent framework.">
+  <style>
+    :root {
+      color-scheme: dark;
+      --void: #000;
+      --panel: rgba(0, 18, 6, 0.82);
+      --panel-strong: rgba(0, 30, 10, 0.92);
+      --edge: rgba(0, 255, 65, 0.18);
+      --line: rgba(0, 255, 65, 0.14);
+      --green: #00ff41;
+      --green-soft: #7cff9d;
+      --green-mid: #00b341;
+      --green-dim: #1f5530;
+      --text: #d4ffe2;
+      --warn: #ffcb66;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--void);
+      color: var(--text);
+      font: 16px/1.6 "Cascadia Mono", "Courier New", monospace;
+    }
+
+    body {
+      overflow-x: hidden;
+    }
+
+    #matrix-rain {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 0;
+      opacity: 0.36;
+      pointer-events: none;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      background:
+        radial-gradient(ellipse 75% 70% at 50% 36%, rgba(0, 28, 9, 0.34), transparent 62%),
+        linear-gradient(180deg, rgba(0, 0, 0, 0.05), #000 88%);
+      pointer-events: none;
+    }
+
+    main {
+      position: relative;
+      z-index: 2;
+    }
+
+    .hero {
+      min-height: 86vh;
+      display: grid;
+      align-items: center;
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 72px 0 44px;
+    }
+
+    .hero-inner {
+      max-width: 760px;
+    }
+
+    .kicker {
+      color: var(--green-soft);
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      font-size: 13px;
+      margin: 0 0 18px;
+    }
+
+    h1 {
+      margin: 0;
+      color: var(--green);
+      font-size: clamp(48px, 8vw, 96px);
+      line-height: 0.92;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      text-shadow: 0 0 8px rgba(0, 255, 65, 0.92), 0 0 30px rgba(0, 255, 65, 0.42);
+    }
+
+    .lede {
+      max-width: 680px;
+      margin: 22px 0 0;
+      color: var(--green-soft);
+      font-size: 18px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 32px;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      padding: 12px 18px;
+      border: 1px solid var(--green);
+      color: #001405;
+      background: var(--green);
+      text-decoration: none;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      font-weight: 700;
+      box-shadow: 0 0 22px rgba(0, 255, 65, 0.28);
+    }
+
+    .button.secondary {
+      color: var(--green);
+      background: rgba(0, 255, 65, 0.04);
+    }
+
+    .button:hover {
+      filter: brightness(1.12);
+    }
+
+    .trust {
+      margin-top: 26px;
+      display: grid;
+      gap: 8px;
+      color: var(--green-mid);
+      font-size: 14px;
+    }
+
+    .content {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 0 0 64px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel {
+      border: 1px solid var(--edge);
+      border-left: 2px solid var(--green);
+      background: var(--panel);
+      padding: 24px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      color: var(--green);
+      font-size: 18px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      color: var(--green-soft);
+      font-size: 16px;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+    }
+
+    p {
+      margin: 0;
+    }
+
+    p + p {
+      margin-top: 10px;
+    }
+
+    ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    code {
+      color: var(--green);
+      overflow-wrap: anywhere;
+    }
+
+    .note {
+      color: var(--green-soft);
+    }
+
+    .warning {
+      color: var(--warn);
+    }
+
+    footer {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 0 0 36px;
+      color: var(--green-dim);
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      font-size: 12px;
+    }
+
+    @media (max-width: 860px) {
+      .hero {
+        min-height: auto;
+        padding-top: 56px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="matrix-rain" aria-hidden="true"></canvas>
+  <main>
+    <section class="hero">
+      <div class="hero-inner">
+        <p class="kicker">Local-first agent framework</p>
+        <h1>The Matrix Agent System</h1>
+        <p class="lede">
+          A Matrix-inspired local agent operating layer for your own computer, with browser onboarding,
+          Obsidian-readable memory, provider setup, and guarded tool access.
+        </p>
+        <div class="actions">
+          <a class="button" href="https://github.com/anupa-perera/the-matrix-agent-system/releases/latest/download/the-matrix-agent-system-windows.zip">Download for Windows</a>
+          <a class="button secondary" href="https://github.com/anupa-perera/the-matrix-agent-system/releases/latest">All Downloads</a>
+          <a class="button secondary" href="https://github.com/anupa-perera/the-matrix-agent-system">View Source</a>
+        </div>
+        <div class="trust">
+          <span>Runs locally on 127.0.0.1 during setup.</span>
+          <span>Secrets are stored through the operating system credential store.</span>
+          <span class="warning">Preview release: installers are not code-signed yet.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="content">
+      <div class="grid">
+        <div class="panel">
+          <h2>Windows</h2>
+          <ol>
+            <li>Download the Windows ZIP.</li>
+            <li>Right-click it and choose <strong>Extract All</strong>.</li>
+            <li>Open the extracted folder.</li>
+            <li>Double-click <code>Install The Matrix.cmd</code>.</li>
+          </ol>
+        </div>
+        <div class="panel">
+          <h2>macOS / Linux</h2>
+          <ol>
+            <li>Open the latest release.</li>
+            <li>Download the macOS/Linux archive.</li>
+            <li>Extract it.</li>
+            <li>Run <code>sh install.sh</code>.</li>
+          </ol>
+        </div>
+        <div class="panel">
+          <h2>One Command</h2>
+          <p class="note">For users comfortable with PowerShell:</p>
+          <p><code>irm https://raw.githubusercontent.com/anupa-perera/the-matrix-agent-system/main/install.ps1 | iex</code></p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Why This Page Is Safe To Use</h2>
+        <p>
+          Downloads come from the project's official GitHub Release assets. The release also includes
+          <code>SHA256SUMS.txt</code> so advanced users can verify file checksums.
+        </p>
+        <p>
+          During setup, the app opens a browser page on <code>127.0.0.1</code>, which means the setup
+          page is served from your own computer.
+        </p>
+      </div>
+    </section>
+  </main>
+  <footer>// the matrix has you</footer>
+  <script>
+    (function () {
+      const canvas = document.getElementById("matrix-rain");
+      if (!canvas || !canvas.getContext) return;
+      const ctx = canvas.getContext("2d");
+      const glyphs = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<>/\\\\|=+-*";
+      const fontSize = 16;
+      let cols = 0;
+      let drops = [];
+
+      function setup() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        cols = Math.floor(canvas.width / fontSize);
+        drops = Array.from({ length: cols }, function () {
+          return Math.random() * -80;
+        });
+      }
+
+      function draw() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.045)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.font = fontSize + "px Cascadia Mono, Courier New, monospace";
+        for (let i = 0; i < cols; i += 1) {
+          const ch = glyphs.charAt(Math.floor(Math.random() * glyphs.length));
+          const y = drops[i] * fontSize;
+          ctx.fillStyle = Math.random() > 0.975 ? "#d4ffe2" : "#00b341";
+          ctx.fillText(ch, i * fontSize, y);
+          if (y > canvas.height && Math.random() > 0.972) drops[i] = 0;
+          drops[i] += 1;
+        }
+      }
+
+      setup();
+      window.addEventListener("resize", setup);
+      window.setInterval(draw, 60);
+    })();
+  </script>
+</body>
+</html>

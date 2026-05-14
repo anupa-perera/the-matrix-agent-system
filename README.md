@@ -86,6 +86,7 @@ uses local folders under the current user account, and opens a browser UI on `12
 For normal users, download the latest release from:
 
 ```text
+https://anupa-perera.github.io/the-matrix-agent-system/
 https://github.com/anupa-perera/the-matrix-agent-system/releases/latest
 ```
 

@@ -52,8 +52,8 @@ def main() -> None:
         COMMON_FILES + POSIX_FILES,
     )
 
-    windows_zip = ASSETS / f"the-matrix-agent-system-{tag}-windows.zip"
-    posix_tgz = ASSETS / f"the-matrix-agent-system-{tag}-mac-linux.tar.gz"
+    windows_zip = ASSETS / "the-matrix-agent-system-windows.zip"
+    posix_tgz = ASSETS / "the-matrix-agent-system-mac-linux.tar.gz"
 
     _zip_dir(windows_root, windows_zip)
     _tar_gz_dir(posix_root, posix_tgz)
