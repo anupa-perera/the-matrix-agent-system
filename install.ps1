@@ -22,6 +22,10 @@ function Resolve-InstallSource {
         return $RequestedSource
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($env:MATRIX_SOURCE)) {
+        return $env:MATRIX_SOURCE
+    }
+
     $scriptRoot = $PSScriptRoot
     if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
         $scriptRoot = (Get-Location).Path

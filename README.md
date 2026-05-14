@@ -83,6 +83,12 @@ python -m pytest
 The framework is designed to run on Windows, macOS, and Linux. The runtime is Python,
 uses local folders under the current user account, and opens a browser UI on `127.0.0.1`.
 
+For normal users, download the latest release from:
+
+```text
+https://github.com/anupa-perera/the-matrix-agent-system/releases/latest
+```
+
 For a non-technical Windows client:
 
 1. Open `START_HERE_WINDOWS.txt`.

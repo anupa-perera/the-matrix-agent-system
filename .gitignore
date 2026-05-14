@@ -8,10 +8,12 @@ __pycache__/
 .coverage
 dist/
 build/
+release-assets/
+.release-build/
+uv.lock
 .env
 .env.*
 .thematrix/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
-
