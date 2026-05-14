@@ -78,12 +78,10 @@
        HERO
     ══════════════════════════════════════════════ */
     .hero {
-      min-height: 90vh;
-      display: grid;
-      align-items: center;
+      display: block;
       width: min(1120px, calc(100% - 48px));
       margin: 0 auto;
-      padding: 80px 0 52px;
+      padding: 100px 0 64px;
     }
 
     .hero-inner { max-width: 800px; }
@@ -455,7 +453,7 @@
        RESPONSIVE
     ══════════════════════════════════════════════ */
     @media (max-width: 900px) {
-      .hero { min-height: auto; padding-top: 64px; }
+      .hero { padding-top: 64px; }
       .grid, .grid-4 { grid-template-columns: 1fr; }
     }
 
