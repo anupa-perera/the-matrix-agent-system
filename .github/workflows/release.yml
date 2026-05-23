@@ -36,6 +36,9 @@ jobs:
       - name: Build release bundles
         run: python scripts/build_release_assets.py
 
+      - name: Check release, installer, and Pages readiness
+        run: python scripts/check_release_readiness.py
+
       - name: Publish GitHub release
         shell: pwsh
         env:
@@ -45,6 +48,6 @@ jobs:
           $assets += Get-ChildItem -Path dist -File | ForEach-Object { $_.FullName }
           $assets += Get-ChildItem -Path release-assets -File | ForEach-Object { $_.FullName }
           gh release create "${{ github.ref_name }}" $assets `
-            --title "The Matrix Agent System ${{ github.ref_name }}" `
+            --title "${{ github.ref_name }}" `
             --notes-file release-assets\RELEASE_NOTES.md `
             --verify-tag

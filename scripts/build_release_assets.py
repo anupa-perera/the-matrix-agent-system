@@ -131,7 +131,7 @@ def _release_notes(tag: str, repo: str, windows_zip: str, posix_tgz: str) -> str
         f"curl -fsSL {raw_base}/install.sh | "
         f'MATRIX_SOURCE="{source_zip}" sh'
     )
-    return f"""## The Matrix Agent System {tag}
+    return f"""## {tag}
 
 This release packages the local-first Matrix-inspired agent framework for normal users and developers.
 
