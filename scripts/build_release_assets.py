@@ -61,7 +61,7 @@ def main() -> None:
     notes = ASSETS / "RELEASE_NOTES.md"
     notes.write_text(_release_notes(tag, repo, windows_zip.name, posix_tgz.name), encoding="utf-8")
 
-    checksum_targets = sorted(DIST.glob("*")) + sorted(
+    checksum_targets = sorted(DIST.glob(f"*{version}*")) + sorted(
         path for path in ASSETS.glob("*") if path.name != "SHA256SUMS.txt"
     )
     _write_checksums(checksum_targets, ASSETS / "SHA256SUMS.txt")
@@ -134,6 +134,12 @@ def _release_notes(tag: str, repo: str, windows_zip: str, posix_tgz: str) -> str
     return f"""## The Matrix Agent System {tag}
 
 This release packages the local-first Matrix-inspired agent framework for normal users and developers.
+
+### What's New
+
+- OpenAI Codex provider support for users signed in through the official Codex app or CLI.
+- OpenAI API remains API-key based, while Codex subscription access stays in the Codex client.
+- Onboarding and setup guides now explain OpenAI Codex, browser sign-in, API-key, and local model options more clearly.
 
 ### Easiest Windows Install
 

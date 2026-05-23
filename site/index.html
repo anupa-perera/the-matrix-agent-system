@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>The Matrix Agent System</title>
-  <meta name="description" content="Download The Matrix Agent System, a local-first Matrix-inspired agent framework.">
+  <meta name="description" content="Download The Matrix Agent System, a local-first Matrix-inspired agent framework with OpenAI Codex support.">
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <style>
     :root {
@@ -468,7 +468,8 @@
         <h1 data-text="The Matrix Agent System">The Matrix Agent System</h1>
         <p class="lede">
           A Matrix-inspired local agent operating layer for your own computer, with browser onboarding,
-          Obsidian-readable memory, provider setup, and guarded tool access.
+          Obsidian-readable memory, provider setup, guarded tool access, and OpenAI Codex sign-in
+          through the official Codex app.
         </p>
         <div class="actions">
           <a class="button" href="https://github.com/anupa-perera/the-matrix-agent-system/releases/latest/download/the-matrix-agent-system-windows.zip">
@@ -487,6 +488,7 @@
         <div class="trust">
           <span class="trust-line">Runs locally on 127.0.0.1 during setup.</span>
           <span class="trust-line">Secrets are stored through the OS credential store.</span>
+          <span class="trust-line">OpenAI Codex sign-in stays inside the official Codex app.</span>
           <span class="trust-line warn">Preview release: installers are not code-signed yet.</span>
         </div>
       </div>
@@ -515,6 +517,34 @@
           <div class="agent-badge">Runner</div>
           <h3>Nebuchadnezzar</h3>
           <p>Runs the mission.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── AI CONNECTIONS ─────────────────────────── -->
+    <div class="section-divider">AI Connections</div>
+    <section class="content">
+      <div class="grid">
+        <div class="panel featured">
+          <h2>OpenAI Codex</h2>
+          <p>
+            Use an eligible ChatGPT/Codex subscription through the official Codex app or CLI.
+            The Matrix does not copy or store Codex OAuth tokens.
+          </p>
+        </div>
+        <div class="panel">
+          <h2>Browser Sign-In</h2>
+          <p>
+            OpenRouter can connect from the setup screen with browser sign-in, then stores the
+            returned key through the operating system credential store.
+          </p>
+        </div>
+        <div class="panel">
+          <h2>Local Or API Key</h2>
+          <p>
+            Ollama and LM Studio can run on this computer. OpenAI API, Anthropic, Gemini, Mistral,
+            and custom endpoints can use API keys where required.
+          </p>
         </div>
       </div>
     </section>

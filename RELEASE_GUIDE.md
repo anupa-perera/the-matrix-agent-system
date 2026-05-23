@@ -63,8 +63,8 @@ notepad release-assets\RELEASE_NOTES.md
 git add .
 git commit -m "Prepare GitHub release publishing"
 git push origin main
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 GitHub Actions will run the `Release` workflow and create the GitHub Release automatically.
