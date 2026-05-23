@@ -94,7 +94,7 @@ class ModelGateway:
         return ProviderHealth(provider_id=provider_id, ok=True, message=response.text)
 
     def _resolve_credential(self, config: ProviderConfig) -> str | None:
-        if config.auth_mode == AuthMode.NONE:
+        if config.auth_mode in {AuthMode.NONE, AuthMode.EXTERNAL}:
             return None
         if config.secret_ref is None:
             raise ModelGatewayError(
@@ -115,4 +115,3 @@ def default_model_gateway(store: RuntimeStore) -> ModelGateway:
         keymaker=Keymaker(),
         adapters=ProviderAdapterRegistry.default(),
     )
-

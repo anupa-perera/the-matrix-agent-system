@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -30,6 +34,23 @@ class JsonTransport(Protocol):
         payload: dict[str, Any],
         timeout_seconds: int,
     ) -> dict[str, Any]: ...
+
+
+@dataclass(frozen=True)
+class CodexExecResult:
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+class CodexExecRunner(Protocol):
+    def run(
+        self,
+        args: list[str],
+        prompt: str,
+        timeout_seconds: int,
+        cwd: Path,
+    ) -> CodexExecResult: ...
 
 
 class UrlLibJsonTransport:
@@ -61,6 +82,46 @@ class UrlLibJsonTransport:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ProviderAdapterError("Provider returned invalid JSON.") from exc
+
+
+@dataclass
+class SubprocessCodexExecRunner:
+    command: str | None = None
+
+    def run(
+        self,
+        args: list[str],
+        prompt: str,
+        timeout_seconds: int,
+        cwd: Path,
+    ) -> CodexExecResult:
+        command = self.command or shutil.which("codex")
+        if not command:
+            raise ProviderAdapterError(
+                "OpenAI Codex CLI is not installed. Install Codex, run `codex`, "
+                "and choose Sign in with ChatGPT."
+            )
+        try:
+            completed = subprocess.run(
+                [command, *args],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(cwd),
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ProviderAdapterError("Codex CLI timed out.") from exc
+        except OSError as exc:
+            raise ProviderAdapterError(f"Codex CLI could not start: {exc}") from exc
+        return CodexExecResult(
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            returncode=completed.returncode,
+        )
 
 
 @dataclass
@@ -98,6 +159,53 @@ class OpenAICompatibleAdapter:
             text=text,
             raw=raw,
             usage=raw.get("usage", {}),
+        )
+
+
+@dataclass
+class CodexExecAdapter:
+    runner: CodexExecRunner
+    timeout_seconds: int = 180
+
+    def generate(
+        self,
+        request: ModelRequest,
+        profile: ProviderProfile,
+        config: ProviderConfig,
+        credential: str | None,
+    ) -> ModelResponse:
+        if credential:
+            raise ProviderAdapterError("OpenAI Codex sign-in is managed by the Codex CLI.")
+        prompt = _codex_prompt(request.messages)
+        args = [
+            "exec",
+            "--sandbox",
+            "read-only",
+            "--ephemeral",
+            "--skip-git-repo-check",
+        ]
+        selected_model = config.selected_model.strip()
+        if selected_model and selected_model not in {"auto", "default"}:
+            args.extend(["--model", selected_model])
+        with tempfile.TemporaryDirectory(prefix="thematrix-codex-") as workdir:
+            args.extend(["--cd", workdir, "-"])
+            result = self.runner.run(
+                args=args,
+                prompt=prompt,
+                timeout_seconds=self.timeout_seconds,
+                cwd=Path(workdir),
+            )
+        if result.returncode != 0:
+            raise ProviderAdapterError(_codex_error_message(result.stderr, result.stdout))
+        text = result.stdout.strip()
+        if not text:
+            raise ProviderAdapterError("Codex CLI returned an empty response.")
+        return ModelResponse(
+            provider_id=profile.provider_id,
+            model=config.selected_model,
+            text=text,
+            raw={"stderr_tail": result.stderr[-4000:]},
+            usage={},
         )
 
 
@@ -203,6 +311,7 @@ class ProviderAdapterRegistry:
                 ProviderAdapterKind.GEMINI_GENERATE_CONTENT: GeminiGenerateContentAdapter(
                     transport
                 ),
+                ProviderAdapterKind.CODEX_EXEC: CodexExecAdapter(SubprocessCodexExecRunner()),
             }
         )
 
@@ -263,3 +372,20 @@ def _gemini_content(message: ModelMessage) -> dict[str, Any]:
     role = "model" if message.role == "assistant" else "user"
     return {"role": role, "parts": [{"text": message.content}]}
 
+
+def _codex_prompt(messages: list[ModelMessage]) -> str:
+    blocks = [
+        "You are serving as the model layer for The Matrix agent system.",
+        "Answer only from the messages below. Do not inspect files, run commands, or make changes.",
+    ]
+    for message in messages:
+        role = message.role.upper()
+        blocks.append(f"{role}:\n{message.content}")
+    return "\n\n".join(blocks)
+
+
+def _codex_error_message(stderr: str, stdout: str) -> str:
+    detail = (stderr or stdout).strip()
+    if not detail:
+        return "Codex CLI failed without returning details."
+    return f"Codex CLI failed: {detail[-1000:]}"

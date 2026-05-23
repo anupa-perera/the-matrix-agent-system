@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import shutil
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -20,6 +21,7 @@ def detect_local_providers(timeout_seconds: float = 1.0) -> list[ProviderDetecti
     return [
         _detect_ollama(timeout_seconds),
         _detect_lm_studio(timeout_seconds),
+        _detect_codex_cli(),
     ]
 
 
@@ -78,6 +80,23 @@ def _detect_lm_studio(timeout_seconds: float) -> ProviderDetection:
         base_url=base_url,
         models=models,
         message="LM Studio is reachable.",
+    )
+
+
+def _detect_codex_cli() -> ProviderDetection:
+    command = shutil.which("codex")
+    reachable = command is not None
+    return ProviderDetection(
+        provider_id="openai-codex",
+        display_name="OpenAI Codex",
+        reachable=reachable,
+        base_url="",
+        models=["auto"] if reachable else [],
+        message=(
+            "Codex CLI is installed. Sign-in is handled by the official Codex app."
+            if reachable
+            else "Codex CLI is not installed."
+        ),
     )
 
 

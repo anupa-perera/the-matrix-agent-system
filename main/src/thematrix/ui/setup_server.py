@@ -424,11 +424,11 @@ def render_setup_form(
     if detections is None:
         detected_line = "skipping local provider scan"
     elif detected_count == 0:
-        detected_line = "no local providers detected"
+        detected_line = "no local providers or official app integrations detected"
     elif detected_count == 1:
-        detected_line = "1 local provider detected"
+        detected_line = "1 provider helper detected"
     else:
-        detected_line = f"{detected_count} local providers detected"
+        detected_line = f"{detected_count} provider helpers detected"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1023,6 +1023,7 @@ def render_setup_form(
       const authSelect = document.getElementById("auth_mode");
       const authModeLabels = {{
         api_key: "API key",
+        external: "Official app sign-in",
         local_token: "Local token",
         none: "No sign-in needed",
         oauth: "OAuth"
@@ -1040,12 +1041,15 @@ def render_setup_form(
       const apiKeyHint = document.getElementById("api_key_hint");
       const baseUrlHint = document.getElementById("base_url_hint");
       const quickStatus = document.getElementById("quick_status");
-      const detectedProvider = providers.find((provider) => provider.detected_reachable);
+      const detectedProvider =
+        providers.find((provider) => provider.kind === "local" && provider.detected_reachable) ||
+        providers.find((provider) => provider.detected_reachable);
       if (detectedProvider) providerSelect.value = detectedProvider.provider_id;
 
       function preferredAuth(provider) {{
         const modes = setupAuthModes(provider);
         if (modes.includes("none")) return "none";
+        if (modes.includes("external")) return "external";
         if (modes.includes("oauth")) return "oauth";
         if (modes.includes("api_key")) return "api_key";
         if (modes.includes("local_token")) return "local_token";
@@ -1067,10 +1071,13 @@ def render_setup_form(
 
       function updateQuickStatus(provider, mode) {{
         const needsKey = mode === "api_key" || mode === "local_token";
+        const usesExternal = mode === "external";
         quickStatus.querySelector("strong").textContent = provider.detected_reachable
           ? `${{provider.display_name}} is ready on this PC.`
           : mode === "oauth"
             ? `Sign in with ${{provider.display_name}}.`
+            : usesExternal
+              ? `Use ${{provider.display_name}} through its official app.`
             : needsKey
               ? `Paste a key for ${{provider.display_name}}.`
               : `Use ${{provider.display_name}}.`;
@@ -1078,6 +1085,8 @@ def render_setup_form(
           ? "No sign-in is needed. Press Start The Matrix when ready."
           : mode === "oauth"
             ? "Your browser will open the provider. The returned key is stored by your operating system."
+            : usesExternal
+              ? "Sign in happens in the provider's own app. No token is stored by The Matrix."
             : needsKey
               ? "The key is stored by your operating system. It is not written to memory or logs."
               : "Safe defaults are already selected below.";
@@ -1231,6 +1240,7 @@ def _provider_choice_label(
 def _auth_mode_label(mode: str) -> str:
     return {
         "api_key": "API key",
+        "external": "Official app sign-in",
         "local_token": "Local token",
         "none": "No sign-in needed",
         "oauth": "OAuth",

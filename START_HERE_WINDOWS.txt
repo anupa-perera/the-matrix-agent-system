@@ -111,7 +111,10 @@ WHAT TO DO IN THE BROWSER SETUP
    If Ollama or LM Studio is already running on your computer,
    The Matrix may select it automatically.
 
-   If you use a cloud provider such as OpenRouter or OpenAI,
+   If you use OpenAI Codex with your ChatGPT subscription,
+   choose OpenAI Codex. The sign-in happens in the official Codex app.
+
+   If you use a cloud API provider such as OpenRouter or OpenAI,
    choose that provider and paste your API key when asked.
 
 3. Leave Advanced settings closed unless someone told you to change them.

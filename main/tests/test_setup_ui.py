@@ -86,6 +86,37 @@ def test_setup_ui_applies_openrouter_oauth_without_storing_raw_secret(tmp_path) 
     assert "sk-oauth-test" not in (paths.vault / "log.md").read_text(encoding="utf-8")
 
 
+def test_setup_ui_applies_codex_external_auth_without_secret(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+
+    result = apply_setup_form(
+        {
+            "provider_id": "openai-codex",
+            "model": "auto",
+            "auth_mode": "external",
+            "privacy_mode": "ask_each_time",
+            "file_change_consent": "ask_each_time",
+            "guarded_shell_enabled": "on",
+        },
+        paths,
+        vault,
+        store,
+        Keymaker(InMemorySecretStore()),
+    )
+
+    config = store.get_default_provider_config()
+    assert result.ok
+    assert config is not None
+    assert config.provider_id == "openai-codex"
+    assert config.auth_mode == AuthMode.EXTERNAL
+    assert config.secret_ref is None
+    assert store.get_preference("onboarding_complete") is True
+
+
 def test_setup_ui_rejects_oauth_until_flow_exists(tmp_path) -> None:
     paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
     vault = MemoryVault(paths.vault)
@@ -143,6 +174,7 @@ def test_setup_ui_form_contains_session_token() -> None:
     assert "<datalist" not in html
     assert 'id="auth_mode_row"' in html
     assert "No sign-in needed" in html
+    assert "Official app sign-in" in html
     assert "Back to Dashboard" not in html
     assert 'provider.oauth_automated' in html
     assert "Sign in with OpenRouter" in html
@@ -181,10 +213,13 @@ def test_setup_ui_form_embeds_provider_defaults() -> None:
     openrouter = next(
         provider for provider in providers if provider["provider_id"] == "openrouter"
     )
+    codex = next(provider for provider in providers if provider["provider_id"] == "openai-codex")
     assert ollama["auth_modes"] == ["none"]
     assert ollama["default_base_url"] == "http://localhost:11434/v1"
     assert ollama["detected_reachable"] is True
     assert ollama["detected_models"] == ["llama3.2:latest"]
+    assert codex["auth_modes"] == ["external"]
+    assert codex["oauth_automated"] is False
     assert openrouter["suggested_models"][0] == "openai/gpt-5-mini"
     assert openrouter["oauth_automated"] is True
     assert openrouter["oauth_label"] == "Sign in with OpenRouter"

@@ -27,3 +27,13 @@ def test_detect_lm_studio_reports_models(monkeypatch) -> None:
     assert result.provider_id == "lmstudio"
     assert result.reachable is True
     assert result.models == ["local-model"]
+
+
+def test_detect_codex_cli_reports_external_integration(monkeypatch) -> None:
+    monkeypatch.setattr(detect.shutil, "which", lambda command: "codex" if command == "codex" else None)
+
+    result = detect._detect_codex_cli()
+
+    assert result.provider_id == "openai-codex"
+    assert result.reachable is True
+    assert result.models == ["auto"]

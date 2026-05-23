@@ -36,7 +36,30 @@ def provider_catalog() -> list[ProviderProfile]:
             supports_structured_output=True,
             supports_prompt_cache=True,
             data_boundary="cloud: requests are sent to OpenAI",
-            setup_hint="Use an OpenAI API key.",
+            setup_hint=(
+                "Use an OpenAI API key. ChatGPT/Codex subscription sign-in is available "
+                "through the separate OpenAI Codex provider."
+            ),
+        ),
+        ProviderProfile(
+            provider_id="openai-codex",
+            display_name="OpenAI Codex",
+            kind=ProviderKind.CLOUD,
+            adapter_kind=ProviderAdapterKind.CODEX_EXEC,
+            auth_modes=[AuthMode.EXTERNAL],
+            suggested_models=["auto"],
+            supports_model_selection=True,
+            supports_tools=False,
+            supports_structured_output=False,
+            supports_prompt_cache=False,
+            data_boundary=(
+                "cloud: requests are sent through the official Codex client using the "
+                "user's Codex sign-in"
+            ),
+            setup_hint=(
+                "Uses the official Codex CLI. Install Codex, run it once, and choose "
+                "Sign in with ChatGPT to use an eligible ChatGPT/Codex subscription."
+            ),
         ),
         ProviderProfile(
             provider_id="anthropic",

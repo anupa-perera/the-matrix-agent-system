@@ -1038,13 +1038,16 @@ def _resolve_base_url(profile: ProviderProfile, base_url: str | None) -> str | N
 
 
 def _resolve_auth_choice(profile: ProviderProfile) -> AuthMode:
-    if profile.auth_modes == [AuthMode.NONE]:
-        return AuthMode.NONE
+    if len(profile.auth_modes) == 1 and profile.auth_modes[0] in {
+        AuthMode.NONE,
+        AuthMode.EXTERNAL,
+    }:
+        return profile.auth_modes[0]
 
     supported_modes = [
         mode
         for mode in profile.auth_modes
-        if mode in {AuthMode.API_KEY, AuthMode.LOCAL_TOKEN, AuthMode.NONE}
+        if mode in {AuthMode.API_KEY, AuthMode.LOCAL_TOKEN, AuthMode.NONE, AuthMode.EXTERNAL}
     ]
     if not supported_modes:
         raise typer.BadParameter("This provider does not have a supported v1 auth mode yet.")
@@ -1068,7 +1071,7 @@ def _resolve_secret_ref(
     auth_mode: AuthMode,
     allow_skip: bool = False,
 ) -> str | None:
-    if auth_mode == AuthMode.NONE:
+    if auth_mode in {AuthMode.NONE, AuthMode.EXTERNAL}:
         return None
 
     keymaker = Keymaker()

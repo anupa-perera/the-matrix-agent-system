@@ -41,6 +41,7 @@ class ProviderAdapterKind(StrEnum):
     OPENAI_COMPATIBLE = "openai_compatible"
     ANTHROPIC_MESSAGES = "anthropic_messages"
     GEMINI_GENERATE_CONTENT = "gemini_generate_content"
+    CODEX_EXEC = "codex_exec"
 
 
 class AuthMode(StrEnum):
@@ -48,6 +49,7 @@ class AuthMode(StrEnum):
     API_KEY = "api_key"
     OAUTH = "oauth"
     LOCAL_TOKEN = "local_token"
+    EXTERNAL = "external"
 
 
 class OracleBrief(BaseModel):

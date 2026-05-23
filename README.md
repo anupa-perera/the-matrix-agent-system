@@ -55,6 +55,7 @@ You need:
 An AI connection can be:
 
 - OpenRouter browser sign-in.
+- OpenAI Codex sign-in through the official Codex app or CLI, if you have an eligible ChatGPT/Codex subscription.
 - An API key from a provider such as OpenAI, Anthropic, Gemini, Mistral, or OpenRouter.
 - A local model app such as Ollama or LM Studio.
 
@@ -307,10 +308,11 @@ SQLite is not the long-term memory. It is the runtime index for exact lookups su
 The model gateway supports:
 
 - OpenAI-compatible APIs: OpenRouter, OpenAI, Mistral, Ollama, LM Studio, and custom endpoints.
+- OpenAI Codex through the official Codex CLI using the user's existing Codex sign-in.
 - Anthropic Messages API.
 - Gemini `generateContent` API.
 
-OpenRouter supports browser sign-in during onboarding. Other cloud providers use API keys until they expose a compatible local app OAuth flow.
+OpenRouter supports browser sign-in during onboarding. OpenAI API access still uses API keys. ChatGPT/Codex subscription access is handled through the separate OpenAI Codex provider so The Matrix does not copy or store Codex OAuth tokens.
 
 ## Project Status
 
