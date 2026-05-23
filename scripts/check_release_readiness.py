@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 ASSETS = ROOT / "release-assets"
 SITE_INDEX = ROOT / "site" / "index.html"
+INSTALLER = ROOT / "install.ps1"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 
 
@@ -29,6 +30,7 @@ def main() -> None:
     _check_dist(version, problems)
     _check_release_assets(version, tag, problems)
     _check_pages(problems)
+    _check_windows_installer(problems)
     _check_release_workflow(problems)
 
     if problems:
@@ -102,6 +104,18 @@ def _check_pages(problems: list[str]) -> None:
     for text in required:
         if text not in html:
             problems.append(f"site/index.html must include `{text}`.")
+
+
+def _check_windows_installer(problems: list[str]) -> None:
+    installer = INSTALLER.read_text(encoding="utf-8")
+    required = [
+        "function New-MatrixIcon",
+        "the-matrix.ico",
+        "$shortcut.IconLocation",
+    ]
+    for text in required:
+        if text not in installer:
+            problems.append(f"install.ps1 must include `{text}`.")
 
 
 def _check_release_workflow(problems: list[str]) -> None:

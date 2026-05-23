@@ -148,6 +148,7 @@ This release packages the local-first Matrix-inspired agent framework for normal
 - OpenAI Codex provider support for users signed in through the official Codex app or CLI.
 - OpenAI API remains API-key based, while Codex subscription access stays in the Codex client.
 - Onboarding and setup guides now explain OpenAI Codex, browser sign-in, API-key, and local model options more clearly.
+- Windows shortcuts now use a branded Matrix icon instead of the default command-window icon.
 
 ### Easiest Windows Install
 
