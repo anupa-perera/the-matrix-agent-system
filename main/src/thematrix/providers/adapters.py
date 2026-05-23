@@ -16,6 +16,7 @@ from thematrix.schemas import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    ProviderHealth,
     ProviderAdapterKind,
     ProviderConfig,
     ProviderProfile,
@@ -166,6 +167,67 @@ class OpenAICompatibleAdapter:
 class CodexExecAdapter:
     runner: CodexExecRunner
     timeout_seconds: int = 180
+    status_timeout_seconds: int = 30
+
+    def health_check(
+        self,
+        profile: ProviderProfile,
+        config: ProviderConfig,
+        credential: str | None,
+    ) -> ProviderHealth:
+        if credential:
+            return ProviderHealth(
+                provider_id=profile.provider_id,
+                ok=False,
+                message="OpenAI Codex sign-in is managed by the Codex CLI.",
+            )
+        cwd = Path.cwd()
+        try:
+            version = self.runner.run(
+                args=["--version"],
+                prompt="",
+                timeout_seconds=self.status_timeout_seconds,
+                cwd=cwd,
+            )
+            status = self.runner.run(
+                args=["login", "status"],
+                prompt="",
+                timeout_seconds=self.status_timeout_seconds,
+                cwd=cwd,
+            )
+        except ProviderAdapterError as exc:
+            return ProviderHealth(provider_id=profile.provider_id, ok=False, message=str(exc))
+        if version.returncode != 0:
+            return ProviderHealth(
+                provider_id=profile.provider_id,
+                ok=False,
+                message=_codex_error_message(version.stderr, version.stdout),
+            )
+        if status.returncode != 0:
+            return ProviderHealth(
+                provider_id=profile.provider_id,
+                ok=False,
+                message=(
+                    "Codex CLI is installed, but it is not signed in. Run `codex login` "
+                    "and choose Sign in with ChatGPT."
+                ),
+            )
+        status_text = f"{status.stdout}\n{status.stderr}".lower()
+        if "logged in" not in status_text:
+            return ProviderHealth(
+                provider_id=profile.provider_id,
+                ok=False,
+                message=(
+                    "Codex CLI did not report an active sign-in. Run `codex login` "
+                    "and choose Sign in with ChatGPT."
+                ),
+            )
+        version_text = _first_non_empty_line(version.stdout, version.stderr) or "Codex CLI"
+        return ProviderHealth(
+            provider_id=profile.provider_id,
+            ok=True,
+            message=f"{version_text} is installed and signed in.",
+        )
 
     def generate(
         self,
@@ -385,7 +447,34 @@ def _codex_prompt(messages: list[ModelMessage]) -> str:
 
 
 def _codex_error_message(stderr: str, stdout: str) -> str:
-    detail = (stderr or stdout).strip()
+    detail = "\n".join(value for value in [stderr, stdout] if value.strip()).strip()
     if not detail:
         return "Codex CLI failed without returning details."
-    return f"Codex CLI failed: {detail[-1000:]}"
+    lowered = detail.lower()
+    if "requires a newer version of codex" in lowered:
+        return (
+            "Codex CLI is too old for its configured model. Update the Codex app or CLI, "
+            "then try again."
+        )
+    if "not supported when using codex with a chatgpt account" in lowered:
+        return (
+            "The configured Codex model is not available for this ChatGPT sign-in. "
+            "Open Codex and choose a supported model, then try again."
+        )
+    important_lines = [
+        line.strip()
+        for line in detail.splitlines()
+        if line.strip().startswith("ERROR") or "AuthRequired" in line
+    ]
+    if important_lines:
+        return f"Codex CLI failed: {' '.join(important_lines)[-800:]}"
+    return f"Codex CLI failed: {detail[-800:]}"
+
+
+def _first_non_empty_line(*values: str) -> str:
+    for value in values:
+        for line in value.splitlines():
+            text = line.strip()
+            if text:
+                return text
+    return ""

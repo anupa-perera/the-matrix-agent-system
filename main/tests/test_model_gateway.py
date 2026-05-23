@@ -164,6 +164,83 @@ def test_codex_exec_adapter_runs_read_only_ephemeral_without_secret() -> None:
     assert "USER:\ntest" in call["prompt"]
 
 
+def test_codex_health_check_uses_cli_status_instead_of_exec() -> None:
+    class StatusRunner(FakeCodexRunner):
+        def run(self, args, prompt, timeout_seconds, cwd) -> CodexExecResult:
+            self.calls.append(
+                {
+                    "args": args,
+                    "prompt": prompt,
+                    "timeout_seconds": timeout_seconds,
+                    "cwd": cwd,
+                }
+            )
+            if args == ["--version"]:
+                return CodexExecResult(stdout="codex-cli 0.121.0\n", stderr="", returncode=0)
+            if args == ["login", "status"]:
+                return CodexExecResult(stdout="Logged in using ChatGPT\n", stderr="", returncode=0)
+            raise AssertionError(f"unexpected args: {args}")
+
+    runner = StatusRunner(CodexExecResult(stdout="", stderr="", returncode=0))
+    profile = _profile("openai-codex")
+    config = ProviderConfig(
+        provider_id="openai-codex",
+        selected_model="auto",
+        auth_mode=AuthMode.EXTERNAL,
+    )
+
+    health = CodexExecAdapter(runner).health_check(profile, config, None)
+
+    assert health.ok
+    assert health.message == "codex-cli 0.121.0 is installed and signed in."
+    assert [call["args"] for call in runner.calls] == [
+        ["--version"],
+        ["login", "status"],
+    ]
+
+
+def test_codex_error_message_hides_prompt_noise(tmp_path) -> None:
+    runner = FakeCodexRunner(
+        CodexExecResult(
+            stdout=(
+                "USER:\n"
+                "Reply with one short sentence saying the provider is ready.\n"
+                "ERROR: {\"error\":{\"message\":\"The 'gpt-5.5' model requires a "
+                "newer version of Codex. Please upgrade to the latest app or CLI.\"}}\n"
+            ),
+            stderr=(
+                "AuthRequired(AuthRequiredError { www_authenticate_header: "
+                '"Bearer realm=\\"MCP Server\\"" })'
+            ),
+            returncode=1,
+        )
+    )
+    config = ProviderConfig(
+        provider_id="openai-codex",
+        selected_model="auto",
+        auth_mode=AuthMode.EXTERNAL,
+    )
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    for profile in provider_catalog():
+        store.upsert_provider(profile)
+    store.configure_provider(config)
+
+    with pytest.raises(ModelGatewayError) as exc_info:
+        gateway = ModelGateway(
+            store=store,
+            keymaker=Keymaker(InMemorySecretStore()),
+            adapters=ProviderAdapterRegistry(
+                adapters={ProviderAdapterKind.CODEX_EXEC: CodexExecAdapter(runner)}
+            ),
+        )
+        gateway.generate(ModelRequest.from_prompt("test"))
+
+    message = str(exc_info.value)
+    assert "too old" in message
+    assert "Reply with one short sentence" not in message
+
+
 def test_gateway_uses_registered_adapter_and_records_metadata(tmp_path) -> None:
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     store.initialize()
@@ -250,6 +327,48 @@ def test_gateway_allows_external_auth_without_stored_secret(tmp_path) -> None:
 
     assert response.provider_id == "openai-codex"
     assert response.text == "ready"
+
+
+def test_gateway_uses_adapter_specific_health_check_for_codex(tmp_path) -> None:
+    class StatusRunner(FakeCodexRunner):
+        def run(self, args, prompt, timeout_seconds, cwd) -> CodexExecResult:
+            self.calls.append({"args": args, "prompt": prompt})
+            if args == ["--version"]:
+                return CodexExecResult(stdout="codex-cli 0.121.0", stderr="", returncode=0)
+            if args == ["login", "status"]:
+                return CodexExecResult(stdout="Logged in using ChatGPT", stderr="", returncode=0)
+            raise AssertionError(f"unexpected args: {args}")
+
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    for profile in provider_catalog():
+        store.upsert_provider(profile)
+    store.configure_provider(
+        ProviderConfig(
+            provider_id="openai-codex",
+            selected_model="auto",
+            auth_mode=AuthMode.EXTERNAL,
+        )
+    )
+    runner = StatusRunner(CodexExecResult(stdout="", stderr="", returncode=0))
+    gateway = ModelGateway(
+        store=store,
+        keymaker=Keymaker(InMemorySecretStore()),
+        adapters=ProviderAdapterRegistry(
+            adapters={ProviderAdapterKind.CODEX_EXEC: CodexExecAdapter(runner)}
+        ),
+    )
+
+    health = gateway.health_check()
+
+    assert health.ok
+    assert [call["args"] for call in runner.calls] == [
+        ["--version"],
+        ["login", "status"],
+    ]
+    with store.connect() as conn:
+        rows = conn.execute("SELECT * FROM model_calls").fetchall()
+    assert rows == []
 
 
 def _profile(provider_id: str):

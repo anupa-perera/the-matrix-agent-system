@@ -85,6 +85,14 @@ class ModelGateway:
         provider_config = config or self.store.get_default_provider_config()
         provider_id = provider_config.provider_id if provider_config else "unconfigured"
         try:
+            if provider_config is not None:
+                profile = self.store.get_provider_profile(provider_config.provider_id)
+                if profile is not None:
+                    adapter = self.adapters.for_profile(profile)
+                    adapter_health_check = getattr(adapter, "health_check", None)
+                    if callable(adapter_health_check):
+                        credential = self._resolve_credential(provider_config)
+                        return adapter_health_check(profile, provider_config, credential)
             response = self.generate(
                 ModelRequest.from_prompt("Reply with one short sentence saying the provider is ready."),
                 config=provider_config,
