@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import tarfile
 import tomllib
@@ -37,7 +38,7 @@ POSIX_FILES = [
 
 def main() -> None:
     version = _project_version()
-    tag = os.environ.get("GITHUB_REF_NAME") or f"v{version}"
+    tag = _release_tag(version)
     repo = os.environ.get("GITHUB_REPOSITORY", "anupa-perera/the-matrix-agent-system")
 
     _reset_dir(ASSETS)
@@ -70,6 +71,13 @@ def main() -> None:
 def _project_version() -> str:
     with (ROOT / "pyproject.toml").open("rb") as handle:
         return tomllib.load(handle)["project"]["version"]
+
+
+def _release_tag(version: str) -> str:
+    ref_name = os.environ.get("GITHUB_REF_NAME", "")
+    if re.fullmatch(r"v\d+\.\d+\.\d+", ref_name):
+        return ref_name
+    return f"v{version}"
 
 
 def _reset_dir(path: Path) -> None:
