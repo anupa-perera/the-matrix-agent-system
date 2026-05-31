@@ -147,6 +147,8 @@ This release packages the local-first Matrix-inspired agent framework for normal
 
 - Browser missions now open a live status cockpit instead of leaving users on a waiting form.
 - Mission detail pages show the timeline, task ledger, final result, and links from recent missions.
+- Completed mission pages now route `Ask This Agent` back to the reusable agent that handled the mission.
+- Browser help stays focused on app actions instead of terminal commands.
 - Reusable agents can be run, edited in plain language, paused, resumed, and excluded from future reuse.
 - OpenAI Codex provider support for users signed in through the official Codex app or CLI.
 - OpenAI API remains API-key based, while Codex subscription access stays in the Codex client.

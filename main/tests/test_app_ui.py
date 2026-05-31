@@ -46,7 +46,8 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "data-mission-form" in html
     assert "Mission accepted. Keep this tab open." in html
     assert "Help / Commands" in html
-    assert "the-matrix providers current" in html
+    assert "Useful terminal commands" not in html
+    assert "the-matrix providers current" not in html
     assert "Recent Missions" in html
 
 
@@ -240,6 +241,7 @@ def test_app_ui_exposes_pollable_mission_status(tmp_path) -> None:
     store = RuntimeStore(paths.runtime_db)
     vault.initialize()
     store.initialize()
+    store.upsert_agent(AgentSpec(agent_id="test-agent", agent_type="guide", purpose="Test"))
     captured_url: list[str] = []
     ready = Event()
     running = Event()
@@ -317,6 +319,9 @@ def test_app_ui_exposes_pollable_mission_status(tmp_path) -> None:
 
     assert "Mission Status" in detail_body
     assert "Mission complete." in detail_body
+    assert "Ask This Agent" in detail_body
+    assert "/agent?" in detail_body
+    assert "agent_id=test-agent" in detail_body
 
     shutdown_request = Request(
         f"http://{parsed.netloc}/shutdown?{parsed.query}",

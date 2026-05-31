@@ -687,6 +687,13 @@ def _mission_page(
             "",
         )
 
+    primary_action_label = "New Mission"
+    primary_action_url = _token_url("/", token)
+    agent_id = payload.get("agent_id")
+    if isinstance(agent_id, str) and agent_id and payload.get("agent_available"):
+        primary_action_label = "Ask This Agent"
+        primary_action_url = _token_url("/agent", token, agent_id=agent_id)
+
     query = {"token": token}
     if job is not None:
         query["job_id"] = job.job_id
@@ -719,7 +726,9 @@ def _mission_page(
         token,
         "Track what the agents are doing and open the result when it is ready.",
         content,
-        extra_script=_mission_status_script(status_url, payload),
+        extra_script=_mission_status_script(status_url, payload, _token_url("/agent", token)),
+        primary_action_label=primary_action_label,
+        primary_action_url=primary_action_url,
     )
 
 
@@ -732,6 +741,7 @@ def _mission_payload(
         with job.lock:
             result = job.result
             resolved_run_id = result.run_id if result is not None else ""
+            resolved_agent_id = job.agent_id or _result_agent_id(result)
             return {
                 "found": True,
                 "job_id": job.job_id,
@@ -740,7 +750,8 @@ def _mission_payload(
                 "stage": job.stage,
                 "message": job.message,
                 "request": job.request,
-                "agent_id": job.agent_id,
+                "agent_id": resolved_agent_id,
+                "agent_available": _agent_available(store, resolved_agent_id),
                 "created_at": job.created_at,
                 "started_at": job.started_at,
                 "completed_at": job.completed_at,
@@ -755,6 +766,7 @@ def _mission_payload(
         result = store.get_run(run_id)
         if result is None:
             return {"found": False}
+        agent_id = _result_agent_id(result)
         return {
             "found": True,
             "job_id": "",
@@ -763,7 +775,8 @@ def _mission_payload(
             "stage": "recorded",
             "message": "This mission is recorded in local memory.",
             "request": result.request,
-            "agent_id": result.agent_spec.agent_id if result.agent_spec else None,
+            "agent_id": agent_id,
+            "agent_available": _agent_available(store, agent_id),
             "created_at": result.created_at.isoformat(),
             "started_at": None,
             "completed_at": result.created_at.isoformat(),
@@ -774,6 +787,16 @@ def _mission_payload(
             "error": result.metadata.get("agent_execution_error"),
         }
     return {"found": False}
+
+
+def _result_agent_id(result: MatrixRunResult | None) -> str | None:
+    if result is None or result.agent_spec is None:
+        return None
+    return result.agent_spec.agent_id
+
+
+def _agent_available(store: RuntimeStore, agent_id: str | None) -> bool:
+    return bool(agent_id and store.get_agent(agent_id) is not None)
 
 
 def _event_payload(event: MissionStatusEvent) -> dict[str, object]:
@@ -849,12 +872,18 @@ def _run_status(result: MatrixRunResult) -> str:
     return "recorded"
 
 
-def _mission_status_script(status_url: str, payload: dict[str, object]) -> str:
+def _mission_status_script(
+    status_url: str,
+    payload: dict[str, object],
+    agent_action_base_url: str,
+) -> str:
     return f"""
   <script>
     (function () {{
       const statusUrl = {json.dumps(status_url)};
+      const agentActionBaseUrl = {json.dumps(agent_action_base_url)};
       let payload = {_script_json(payload)};
+      const primaryAction = document.getElementById('primary-action-link');
       const state = document.getElementById('mission-state');
       const message = document.getElementById('mission-message');
       const request = document.getElementById('mission-request');
@@ -886,8 +915,19 @@ def _mission_status_script(status_url: str, payload: dict[str, object]) -> str:
         return item;
       }}
 
+      function agentUrl(agentId) {{
+        return agentActionBaseUrl + '&agent_id=' + encodeURIComponent(agentId);
+      }}
+
+      function updatePrimaryAction() {{
+        if (!primaryAction || !payload.agent_id || !payload.agent_available) return;
+        primaryAction.href = agentUrl(payload.agent_id);
+        primaryAction.textContent = 'Ask This Agent';
+      }}
+
       function render(next) {{
         payload = next;
+        updatePrimaryAction();
         state.textContent = String(payload.status || 'unknown').toUpperCase();
         message.textContent = payload.message || '';
         request.textContent = payload.request || '';
@@ -924,6 +964,16 @@ def _mission_status_script(status_url: str, payload: dict[str, object]) -> str:
           box.appendChild(title);
           box.appendChild(run);
           box.appendChild(response);
+          if (payload.agent_id && payload.agent_available) {{
+            const actions = document.createElement('div');
+            actions.className = 'result-actions';
+            const agentLink = document.createElement('a');
+            agentLink.className = 'button-link';
+            agentLink.href = agentUrl(payload.agent_id);
+            agentLink.textContent = 'Ask This Agent';
+            actions.appendChild(agentLink);
+            box.appendChild(actions);
+          }}
           result.appendChild(box);
         }} else if (payload.error) {{
           const box = document.createElement('div');
@@ -1349,15 +1399,6 @@ def _help_panel() -> str:
           <p><strong>Change provider</strong></p>
           <p class="muted">Open Provider Settings in this page, choose provider/model, then save and test.</p>
         </div>
-        <div class="item">
-          <p><strong>Useful terminal commands</strong></p>
-          <p><code>the-matrix start</code></p>
-          <p><code>the-matrix ask "your request"</code></p>
-          <p><code>the-matrix providers current</code></p>
-          <p><code>the-matrix doctor</code></p>
-          <p><code>the-matrix ui --open</code></p>
-          <p><code>the-matrix memory summary</code></p>
-        </div>
       </div>
     </details>
 """
@@ -1686,10 +1727,12 @@ def _utility_page(
     intro: str,
     content: str,
     extra_script: str = "",
+    primary_action_label: str = "New Mission",
+    primary_action_url: str | None = None,
 ) -> str:
-    dashboard_url = f"/dashboard?token={escape(token, quote=True)}"
-    ask_url = f"/?token={escape(token, quote=True)}"
-    settings_url = f"/settings?token={escape(token, quote=True)}"
+    dashboard_url = escape(_token_url("/dashboard", token), quote=True)
+    ask_url = escape(primary_action_url or _token_url("/", token), quote=True)
+    settings_url = escape(_token_url("/settings", token), quote=True)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1719,6 +1762,7 @@ def _utility_page(
     .notice {{ border-top: 1px dashed rgba(0,255,65,0.16); margin-top: 18px; padding-top: 14px; }}
     .notice.error {{ color: #ff003c; }}
     .notice.busy {{ color: #7cff9d; }}
+    .result-actions {{ margin-top: 14px; }}
     .mission-summary {{ border-bottom: 1px dashed rgba(0,255,65,0.16); margin-bottom: 18px; padding-bottom: 16px; }}
     .mission-summary h2 {{ border: 0; margin: 0 0 8px; padding: 0; color: #00ff41; font-size: 24px; }}
     .kicker {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; }}
@@ -1744,7 +1788,7 @@ def _utility_page(
       <p>{escape(intro)}</p>
       <div class="actions">
         <a class="button-link" href="{dashboard_url}">Back to Dashboard</a>
-        <a class="button-link" href="{ask_url}">Ask Agent</a>
+        <a id="primary-action-link" class="button-link" href="{ask_url}">{escape(primary_action_label)}</a>
         <a class="button-link" href="{settings_url}">Change Model</a>
       </div>
       {content}
@@ -1754,6 +1798,12 @@ def _utility_page(
 </body>
 </html>
 """
+
+
+def _token_url(path: str, token: str, **params: str) -> str:
+    query = {"token": token}
+    query.update({key: value for key, value in params.items() if value})
+    return f"{path}?{urlencode(query)}"
 
 
 def _rows_html(rows: list[tuple[str, str, str]]) -> str:
