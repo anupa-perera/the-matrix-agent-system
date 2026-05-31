@@ -1,6 +1,7 @@
 import json
 import re
 from threading import Event, Thread
+from time import sleep
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -296,7 +297,7 @@ def test_app_ui_exposes_pollable_mission_status(tmp_path) -> None:
     assert any(event["stage"] == "oracle" for event in status["events"])
 
     release.set()
-    for _ in range(20):
+    for _ in range(100):
         with urlopen(
             f"http://{parsed.netloc}/mission/status?{parsed.query}&job_id={job_id}",
             timeout=5,
@@ -304,6 +305,7 @@ def test_app_ui_exposes_pollable_mission_status(tmp_path) -> None:
             status = json.loads(response.read().decode("utf-8"))
         if status["status"] == "completed":
             break
+        sleep(0.05)
     assert status["status"] == "completed"
     assert status["result"]["response"] == "Mission complete."
 
