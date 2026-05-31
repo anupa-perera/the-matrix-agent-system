@@ -1,5 +1,5 @@
 from thematrix.memory import RuntimeStore
-from thematrix.schemas import AuthMode, MatrixRunResult, OracleBrief, ProviderConfig
+from thematrix.schemas import AgentSpec, AuthMode, MatrixRunResult, OracleBrief, ProviderConfig
 from thematrix.ui.dashboard import render_dashboard_html
 from thematrix.config import MatrixPaths
 
@@ -51,6 +51,7 @@ def test_dashboard_renders_live_app_actions(tmp_path) -> None:
     paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
     store = RuntimeStore(paths.runtime_db)
     store.initialize()
+    store.upsert_agent(AgentSpec(agent_id="test-agent", agent_type="guide", purpose="Test"))
 
     html = render_dashboard_html(paths, store, app_token="token-123")
 
@@ -60,3 +61,5 @@ def test_dashboard_renders_live_app_actions(tmp_path) -> None:
     assert "/diagnostics?token=token-123" in html
     assert "/memory?token=token-123" in html
     assert "/shutdown?token=token-123" in html
+    assert "/agent?token=token-123&amp;agent_id=test-agent" in html
+    assert "run this agent" in html

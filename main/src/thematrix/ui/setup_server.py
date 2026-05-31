@@ -36,6 +36,7 @@ from thematrix.schemas import (
     PrivacyMode,
     ProviderConfig,
     ProviderProfile,
+    ReasoningEffort,
 )
 from thematrix.security import Keymaker, SecretStoreError
 from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
@@ -118,6 +119,24 @@ def apply_setup_form(
     selected_model = form.get("model", "").strip()
     if not selected_model:
         selected_model = profile.suggested_models[0] if profile.suggested_models else "default"
+    reasoning_effort: ReasoningEffort | None = None
+    reasoning_value = form.get("reasoning_effort", "").strip()
+    if reasoning_value:
+        supported_reasoning_efforts = {
+            effort.value for effort in profile.supported_reasoning_efforts
+        }
+        if not supported_reasoning_efforts:
+            return SetupUiResult(
+                ok=False,
+                message=f"{profile.display_name} does not support a reasoning effort setting.",
+            )
+        if reasoning_value not in supported_reasoning_efforts:
+            valid = ", ".join(sorted(supported_reasoning_efforts))
+            return SetupUiResult(
+                ok=False,
+                message=f"Choose a valid reasoning effort for {profile.display_name}: {valid}.",
+            )
+        reasoning_effort = ReasoningEffort(reasoning_value)
     base_url = form.get("base_url", "").strip() or profile.default_base_url
 
     secret_ref = None
@@ -153,6 +172,7 @@ def apply_setup_form(
         auth_mode=auth_mode,
         secret_ref=secret_ref,
         base_url=base_url,
+        reasoning_effort=reasoning_effort,
         is_default=True,
         file_change_consent=file_consent,
     )
@@ -161,6 +181,7 @@ def apply_setup_form(
         default_model=selected_model,
         auth_mode=auth_mode,
         base_url=base_url,
+        reasoning_effort=reasoning_effort,
         privacy_mode=privacy_mode,
         file_change_consent=file_consent,
         guarded_shell_enabled=guarded_shell_enabled,
@@ -236,7 +257,11 @@ def _handler_factory(
                 return
             self._send_html(
                 HTTPStatus.OK,
-                render_setup_form(token, detections=detect_local_providers(timeout_seconds=0.5)),
+                render_setup_form(
+                    token,
+                    detections=detect_local_providers(timeout_seconds=0.5),
+                    current_config=store.get_default_provider_config(),
+                ),
             )
 
         def do_POST(self) -> None:
@@ -271,6 +296,7 @@ def _handler_factory(
                         token,
                         error=result.message,
                         detections=detect_local_providers(timeout_seconds=0.5),
+                        current_config=store.get_default_provider_config(),
                     ),
                 )
                 return
@@ -343,6 +369,7 @@ def _handler_factory(
                         token,
                         error=result.message,
                         detections=detect_local_providers(timeout_seconds=0.5),
+                        current_config=store.get_default_provider_config(),
                     ),
                 )
                 return
@@ -391,6 +418,7 @@ def render_setup_form(
     error: str | None = None,
     detections: list[ProviderDetection] | None = None,
     dashboard_url: str | None = None,
+    current_config: ProviderConfig | None = None,
 ) -> str:
     providers = provider_catalog()
     detection_by_id = {detection.provider_id: detection for detection in detections or []}
@@ -409,6 +437,7 @@ def render_setup_form(
         for profile in providers
     )
     provider_json = _provider_setup_json(providers, detection_by_id)
+    current_config_json = _provider_config_json(current_config)
     session_token_json = json.dumps(token)
     error_html = f'<div class="error">{escape(error)}</div>' if error else ""
     back_html = ""
@@ -958,7 +987,17 @@ def render_setup_form(
       </label>
       <div id="provider_card" class="provider-card"></div>
       <div class="row">
-        <label>Model name
+        <label id="model_preset_row">Model choice
+          <select id="model_preset"></select>
+          <span id="model_preset_hint" class="hint"></span>
+        </label>
+        <label id="reasoning_effort_row">Reasoning effort
+          <select id="reasoning_effort" name="reasoning_effort"></select>
+          <span id="reasoning_effort_hint" class="hint"></span>
+        </label>
+      </div>
+      <div class="row">
+        <label>Exact model id
           <input id="model" name="model" placeholder="Enter a model id" required>
           <span id="model_hint" class="hint"></span>
         </label>
@@ -1013,13 +1052,21 @@ def render_setup_form(
       <span>// follow the white rabbit &nbsp;▌</span>
     </div>
     <script id="provider-data" type="application/json">{provider_json}</script>
+    <script id="current-config" type="application/json">{current_config_json}</script>
     <script>
       const sessionToken = {session_token_json};
       const providers = JSON.parse(document.getElementById("provider-data").textContent);
+      const currentConfig = JSON.parse(document.getElementById("current-config").textContent);
       const byId = Object.fromEntries(providers.map((provider) => [provider.provider_id, provider]));
       const setupForm = document.getElementById("setup_form");
       const providerSelect = document.getElementById("provider_id");
+      const modelPresetRow = document.getElementById("model_preset_row");
+      const modelPresetSelect = document.getElementById("model_preset");
+      const modelPresetHint = document.getElementById("model_preset_hint");
       const modelInput = document.getElementById("model");
+      const reasoningEffortRow = document.getElementById("reasoning_effort_row");
+      const reasoningEffortSelect = document.getElementById("reasoning_effort");
+      const reasoningEffortHint = document.getElementById("reasoning_effort_hint");
       const authSelect = document.getElementById("auth_mode");
       const authModeLabels = {{
         api_key: "API key",
@@ -1044,7 +1091,11 @@ def render_setup_form(
       const detectedProvider =
         providers.find((provider) => provider.kind === "local" && provider.detected_reachable) ||
         providers.find((provider) => provider.detected_reachable);
-      if (detectedProvider) providerSelect.value = detectedProvider.provider_id;
+      if (currentConfig && byId[currentConfig.provider_id]) {{
+        providerSelect.value = currentConfig.provider_id;
+      }} else if (detectedProvider) {{
+        providerSelect.value = detectedProvider.provider_id;
+      }}
 
       function preferredAuth(provider) {{
         const modes = setupAuthModes(provider);
@@ -1092,12 +1143,74 @@ def render_setup_form(
               : "Safe defaults are already selected below.";
       }}
 
+      function modelOptionLabel(provider, model) {{
+        if (provider.provider_id === "openai-codex" && model === "auto") {{
+          return "Auto (Codex default)";
+        }}
+        return model;
+      }}
+
+      function reasoningOptionLabel(effort) {{
+        return {{
+          low: "Low",
+          medium: "Medium",
+          high: "High",
+          xhigh: "Extra high"
+        }}[effort] || effort;
+      }}
+
+      function syncModelPresetFromInput() {{
+        const matchingOption = Array.from(modelPresetSelect.options).find(
+          (option) => option.value === modelInput.value
+        );
+        modelPresetSelect.value = matchingOption ? matchingOption.value : "";
+      }}
+
       function syncProvider() {{
         const provider = byId[providerSelect.value];
         if (!provider) return;
         const models = provider.detected_models.length ? provider.detected_models : provider.suggested_models;
+        const isCurrentProvider = currentConfig && currentConfig.provider_id === provider.provider_id;
         const authModes = setupAuthModes(provider);
-        modelInput.value = models[0] || "default";
+        modelInput.value = isCurrentProvider
+          ? currentConfig.selected_model
+          : models[0] || "default";
+        modelPresetSelect.innerHTML = "";
+        if (models.length) {{
+          for (const model of models) {{
+            const option = document.createElement("option");
+            option.value = model;
+            option.textContent = modelOptionLabel(provider, model);
+            modelPresetSelect.appendChild(option);
+          }}
+          const customOption = document.createElement("option");
+          customOption.value = "";
+          customOption.textContent = "Custom model id";
+          modelPresetSelect.appendChild(customOption);
+        }}
+        modelPresetRow.classList.toggle("hidden", models.length === 0);
+        syncModelPresetFromInput();
+        modelPresetHint.textContent = provider.provider_id === "openai-codex"
+          ? "Auto follows the official Codex app. Pick GPT-5.5 to pin The Matrix to that model."
+          : "Pick a common model or enter a custom id below.";
+        reasoningEffortSelect.innerHTML = "";
+        const defaultReasoning = document.createElement("option");
+        defaultReasoning.value = "";
+        defaultReasoning.textContent = "Provider default";
+        reasoningEffortSelect.appendChild(defaultReasoning);
+        for (const effort of provider.supported_reasoning_efforts) {{
+          const option = document.createElement("option");
+          option.value = effort;
+          option.textContent = reasoningOptionLabel(effort);
+          reasoningEffortSelect.appendChild(option);
+        }}
+        reasoningEffortRow.classList.toggle("hidden", provider.supported_reasoning_efforts.length === 0);
+        reasoningEffortSelect.value = isCurrentProvider && currentConfig.reasoning_effort
+          ? currentConfig.reasoning_effort
+          : "";
+        reasoningEffortHint.textContent = provider.provider_id === "openai-codex"
+          ? "High gives Codex more time to reason. Extra high is slower."
+          : "Use the provider default unless a task needs deeper reasoning.";
         baseUrlInput.value = provider.default_base_url || "";
         authSelect.innerHTML = "";
         for (const mode of authModes) {{
@@ -1152,6 +1265,10 @@ def render_setup_form(
       }}
 
       providerSelect.addEventListener("change", syncProvider);
+      modelPresetSelect.addEventListener("change", function () {{
+        if (modelPresetSelect.value) modelInput.value = modelPresetSelect.value;
+      }});
+      modelInput.addEventListener("input", syncModelPresetFromInput);
       authSelect.addEventListener("change", syncAuth);
       oauthButton.addEventListener("click", function () {{
         window.location.href = oauthStartUrl();
@@ -1265,6 +1382,9 @@ def _provider_setup_json(
             "default_base_url": profile.default_base_url,
             "setup_hint": profile.setup_hint,
             "data_boundary": profile.data_boundary,
+            "supported_reasoning_efforts": [
+                effort.value for effort in profile.supported_reasoning_efforts
+            ],
             "oauth_automated": oauth_is_automated(profile.provider_id),
             "oauth_label": (
                 f"Sign in with {profile.display_name}"
@@ -1274,6 +1394,24 @@ def _provider_setup_json(
         }
         for profile in profiles
     ]
+    return (
+        json.dumps(payload)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+
+
+def _provider_config_json(config: ProviderConfig | None) -> str:
+    if config is None:
+        return "null"
+    payload = {
+        "provider_id": config.provider_id,
+        "selected_model": config.selected_model,
+        "reasoning_effort": (
+            config.reasoning_effort.value if config.reasoning_effort else None
+        ),
+    }
     return (
         json.dumps(payload)
         .replace("&", "\\u0026")

@@ -35,6 +35,7 @@ class AppUiResponse:
     result: MatrixRunResult | None = None
     error: str | None = None
     message: str | None = None
+    busy: bool = False
 
 
 def serve_app_ui(
@@ -42,6 +43,7 @@ def serve_app_ui(
     vault: MemoryVault,
     store: RuntimeStore,
     request_runner: Callable[[str], MatrixRunResult],
+    agent_request_runner: Callable[[str, str], MatrixRunResult] | None = None,
     port: int = 0,
     open_browser: bool = True,
     url_callback: Callable[[str], None] | None = None,
@@ -51,7 +53,15 @@ def serve_app_ui(
     run_lock = Lock()
     server = _AppServer(
         ("127.0.0.1", port),
-        _handler_factory(paths, vault, store, token, request_runner, run_lock),
+        _handler_factory(
+            paths,
+            vault,
+            store,
+            token,
+            request_runner,
+            agent_request_runner,
+            run_lock,
+        ),
     )
     host, bound_port = server.server_address
     url = f"http://{host}:{bound_port}/dashboard?token={token}"
@@ -80,6 +90,7 @@ def _handler_factory(
     store: RuntimeStore,
     token: str,
     request_runner: Callable[[str], MatrixRunResult],
+    agent_request_runner: Callable[[str, str], MatrixRunResult] | None,
     run_lock: Lock,
 ):
     oauth_flows: dict[str, OAuthPendingSetup] = {}
@@ -107,12 +118,24 @@ def _handler_factory(
                         token,
                         detections=detect_local_providers(timeout_seconds=0.5),
                         dashboard_url=f"/dashboard?token={token}",
+                        current_config=store.get_default_provider_config(),
                     ),
                 )
                 return
             if parsed.path == "/dashboard":
                 write_dashboard(paths, store)
                 self._send_html(HTTPStatus.OK, render_dashboard_html(paths, store, token))
+                return
+            if parsed.path == "/agent":
+                agent_id = parse_qs(parsed.query).get("agent_id", [""])[-1].strip()
+                if not agent_id:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _message_page("Agent missing", "Choose an agent from the dashboard."),
+                    )
+                    return
+                status = HTTPStatus.OK if store.get_agent(agent_id) is not None else HTTPStatus.NOT_FOUND
+                self._send_html(status, _agent_page(paths, store, token, agent_id))
                 return
             if parsed.path == "/diagnostics":
                 self._send_html(HTTPStatus.OK, _diagnostics_page(paths, store, token))
@@ -147,6 +170,7 @@ def _handler_factory(
                             error=result.message,
                             detections=detect_local_providers(timeout_seconds=0.5),
                             dashboard_url=f"/dashboard?token={token}",
+                            current_config=store.get_default_provider_config(),
                         ),
                     )
                     return
@@ -155,44 +179,116 @@ def _handler_factory(
                     render_app_page(paths, store, token, AppUiResponse(message=result.message)),
                 )
                 return
-            if parsed.path != "/ask":
-                self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not Found", "Unknown route."))
+            if parsed.path == "/ask":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                user_request = form.get("request", "").strip()
+                if not user_request:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        render_app_page(
+                            paths,
+                            store,
+                            token,
+                            AppUiResponse(error="Enter a request before transmitting."),
+                        ),
+                    )
+                    return
+                if not run_lock.acquire(blocking=False):
+                    self._send_html(
+                        HTTPStatus.CONFLICT,
+                        render_app_page(
+                            paths,
+                            store,
+                            token,
+                            AppUiResponse(
+                                busy=True,
+                                message=(
+                                    "A mission is already running. This click did not start "
+                                    "a duplicate mission."
+                                ),
+                            ),
+                        ),
+                    )
+                    return
+                try:
+                    result = request_runner(user_request)
+                except Exception as exc:
+                    response = AppUiResponse(error=f"Mission failed: {exc}")
+                else:
+                    response = AppUiResponse(result=result)
+                finally:
+                    run_lock.release()
+                self._send_html(HTTPStatus.OK, render_app_page(paths, store, token, response))
                 return
-            form = self._read_form(paths, store, token)
-            if form is None:
+            if parsed.path == "/agent/run":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                agent_id = form.get("agent_id", "").strip()
+                user_request = form.get("request", "").strip()
+                if not agent_id:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _message_page("Agent missing", "Choose an agent from the dashboard."),
+                    )
+                    return
+                if not user_request:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _agent_page(
+                            paths,
+                            store,
+                            token,
+                            agent_id,
+                            AppUiResponse(error="Enter a mission for this agent."),
+                        ),
+                    )
+                    return
+                if agent_request_runner is None:
+                    self._send_html(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        _agent_page(
+                            paths,
+                            store,
+                            token,
+                            agent_id,
+                            AppUiResponse(
+                                error="Manual agent runs are not available in this session."
+                            ),
+                        ),
+                    )
+                    return
+                if not run_lock.acquire(blocking=False):
+                    self._send_html(
+                        HTTPStatus.CONFLICT,
+                        _agent_page(
+                            paths,
+                            store,
+                            token,
+                            agent_id,
+                            AppUiResponse(
+                                busy=True,
+                                message=(
+                                    "A mission is already running. This click did not start "
+                                    "a duplicate agent run."
+                                ),
+                            ),
+                        ),
+                    )
+                    return
+                try:
+                    result = agent_request_runner(agent_id, user_request)
+                except Exception as exc:
+                    response = AppUiResponse(error=f"Agent run failed: {exc}")
+                else:
+                    response = AppUiResponse(result=result)
+                finally:
+                    run_lock.release()
+                self._send_html(HTTPStatus.OK, _agent_page(paths, store, token, agent_id, response))
                 return
-            user_request = form.get("request", "").strip()
-            if not user_request:
-                self._send_html(
-                    HTTPStatus.BAD_REQUEST,
-                    render_app_page(
-                        paths,
-                        store,
-                        token,
-                        AppUiResponse(error="Enter a request before transmitting."),
-                    ),
-                )
-                return
-            if not run_lock.acquire(blocking=False):
-                self._send_html(
-                    HTTPStatus.CONFLICT,
-                    render_app_page(
-                        paths,
-                        store,
-                        token,
-                        AppUiResponse(error="A mission is already running. Try again in a moment."),
-                    ),
-                )
-                return
-            try:
-                result = request_runner(user_request)
-            except Exception as exc:
-                response = AppUiResponse(error=f"Mission failed: {exc}")
-            else:
-                response = AppUiResponse(result=result)
-            finally:
-                run_lock.release()
-            self._send_html(HTTPStatus.OK, render_app_page(paths, store, token, response))
+            self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not Found", "Unknown route."))
 
         def _start_openrouter_oauth(self, parsed) -> None:
             form = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
@@ -252,6 +348,7 @@ def _handler_factory(
                         error=result.message,
                         detections=detect_local_providers(timeout_seconds=0.5),
                         dashboard_url=f"/dashboard?token={token}",
+                        current_config=store.get_default_provider_config(),
                     ),
                 )
                 return
@@ -334,6 +431,8 @@ def render_app_page(
     provider_label = "unconfigured"
     if provider_config is not None:
         provider_label = f"{provider_config.provider_id} / {provider_config.selected_model}"
+        if provider_config.reasoning_effort:
+            provider_label += f" / {provider_config.reasoning_effort}"
     result_html = _result_panel(response)
     recent_html = _recent_runs_panel(store)
     help_html = _help_panel()
@@ -510,6 +609,18 @@ def render_app_page(
     }}
     button::before, .button-link::before {{ content: '▸'; font-size: 18px; }}
     button:hover, .button-link:hover {{ background: rgba(0,255,65,0.1); }}
+    button:disabled {{
+      cursor: wait;
+      opacity: 0.68;
+      border-color: var(--phosphor-title);
+      color: var(--phosphor-title);
+    }}
+    .submit-status {{
+      color: var(--phosphor-title);
+      font-size: 12px;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+    }}
     .result {{
       white-space: pre-wrap;
       color: var(--phosphor-bright);
@@ -558,14 +669,17 @@ def render_app_page(
     </header>
     <section class="panel">
       <h2>Transmit Request</h2>
-      <form method="post" action="/ask?token={escape(token)}">
+      <form method="post" action="/ask?token={escape(token)}" data-mission-form>
         <label>What do you want the agents to do?
           <textarea name="request" placeholder="Create a reusable research agent for comparing AI tools" required></textarea>
         </label>
         <div class="actions">
-          <button type="submit">Run Mission</button>
+          <button type="submit" data-running-label="Mission Running">Run Mission</button>
           <a class="button-link" href="/dashboard?token={escape(token)}">Back to Dashboard</a>
           <a class="button-link" href="/settings?token={escape(token)}">Provider Settings</a>
+          <span class="submit-status" hidden aria-live="polite">
+            Mission accepted. Keep this tab open.
+          </span>
         </div>
       </form>
     </section>
@@ -604,6 +718,24 @@ def render_app_page(
       }}
       setInterval(draw, 60);
     }})();
+    (function () {{
+      document.querySelectorAll('[data-mission-form]').forEach((form) => {{
+        form.addEventListener('submit', (event) => {{
+          if (form.dataset.submitted === 'true') {{
+            event.preventDefault();
+            return;
+          }}
+          form.dataset.submitted = 'true';
+          const button = form.querySelector('button[type="submit"]');
+          if (button) {{
+            button.disabled = true;
+            button.textContent = button.dataset.runningLabel || 'Running';
+          }}
+          const status = form.querySelector('.submit-status');
+          if (status) status.hidden = false;
+        }});
+      }});
+    }})();
   </script>
 </body>
 </html>
@@ -611,6 +743,13 @@ def render_app_page(
 
 
 def _result_panel(response: AppUiResponse) -> str:
+    if response.busy:
+        return f"""
+    <section class="panel">
+      <h2>Mission Running</h2>
+      <p class="muted">{escape(response.message or "A mission is already running.")}</p>
+    </section>
+"""
     if response.message:
         return f"""
     <section class="panel">
@@ -685,6 +824,119 @@ def _help_panel() -> str:
 """
 
 
+def _agent_page(
+    paths: MatrixPaths,
+    store: RuntimeStore,
+    token: str,
+    agent_id: str,
+    response: AppUiResponse | None = None,
+) -> str:
+    spec = store.get_agent(agent_id)
+    if spec is None:
+        return _utility_page(
+            "Agent Not Found",
+            token,
+            f"No reusable agent exists with id `{agent_id}`.",
+            "",
+        )
+
+    tools = ", ".join(spec.tools_allowed) or "none"
+    memory = ", ".join(spec.memory_scope) or "none"
+    rows = _rows_html(
+        [
+            ("Agent", spec.agent_id, ""),
+            ("Type", spec.agent_type, ""),
+            ("Purpose", spec.purpose, ""),
+            ("Risk", spec.risk_level.value, ""),
+            ("Provider", spec.provider_id, spec.model_id),
+            ("Tools", tools, ""),
+            ("Memory", memory, ""),
+        ]
+    )
+    action = f"/agent/run?token={escape(token, quote=True)}"
+    content = f"""
+      {rows}
+      {_inline_response(response or AppUiResponse())}
+      <form method="post" action="{action}" data-mission-form>
+        <input type="hidden" name="agent_id" value="{escape(spec.agent_id, quote=True)}">
+        <label>Mission for this agent
+          <textarea name="request" placeholder="Run this agent on a specific task" required></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit" data-running-label="Agent Running">Run Agent</button>
+          <span class="submit-status" hidden aria-live="polite">
+            Agent mission accepted. Keep this tab open.
+          </span>
+        </div>
+      </form>
+"""
+    return _utility_page(
+        "Run Agent",
+        token,
+        f"Run `{spec.agent_id}` directly while keeping the normal safety and memory flow.",
+        content,
+        extra_script=_mission_submit_script(),
+    )
+
+
+def _inline_response(response: AppUiResponse) -> str:
+    if response.busy:
+        return f"""
+      <div class="notice busy">
+        <strong>Mission Running</strong>
+        <p>{escape(response.message or "A mission is already running.")}</p>
+      </div>
+"""
+    if response.error:
+        return f"""
+      <div class="notice error">
+        <strong>Run Error</strong>
+        <p>{escape(response.error)}</p>
+      </div>
+"""
+    if response.message:
+        return f"""
+      <div class="notice">
+        <strong>System Message</strong>
+        <p>{escape(response.message)}</p>
+      </div>
+"""
+    if response.result is None:
+        return ""
+    return f"""
+      <div class="notice">
+        <strong>Mission Result</strong>
+        <p>Run <code>{escape(response.result.run_id)}</code></p>
+        <div class="result">{escape(response.result.response)}</div>
+      </div>
+"""
+
+
+def _mission_submit_script() -> str:
+    return """
+  <script>
+    (function () {
+      document.querySelectorAll('[data-mission-form]').forEach((form) => {
+        form.addEventListener('submit', (event) => {
+          if (form.dataset.submitted === 'true') {
+            event.preventDefault();
+            return;
+          }
+          form.dataset.submitted = 'true';
+          const button = form.querySelector('button[type="submit"]');
+          if (button) {
+            button.disabled = true;
+            button.textContent = button.dataset.runningLabel || 'Running';
+          }
+          const status = form.querySelector('.submit-status');
+          if (status) status.hidden = false;
+        });
+      });
+    })();
+  </script>
+"""
+
+
 def _diagnostics_page(paths: MatrixPaths, store: RuntimeStore, token: str) -> str:
     provider_config = store.get_default_provider_config()
     keymaker = Keymaker()
@@ -693,6 +945,8 @@ def _diagnostics_page(paths: MatrixPaths, store: RuntimeStore, token: str) -> st
     verification_label = "not checked"
     if provider_config is not None:
         provider_label = f"{provider_config.provider_id} / {provider_config.selected_model}"
+        if provider_config.reasoning_effort:
+            provider_label += f" / {provider_config.reasoning_effort}"
         verification = store.get_provider_verification(provider_config.provider_id)
         if verification is not None:
             verification_label = (
@@ -735,7 +989,13 @@ def _memory_page(paths: MatrixPaths, store: RuntimeStore, token: str) -> str:
     )
 
 
-def _utility_page(title: str, token: str, intro: str, content: str) -> str:
+def _utility_page(
+    title: str,
+    token: str,
+    intro: str,
+    content: str,
+    extra_script: str = "",
+) -> str:
     dashboard_url = f"/dashboard?token={escape(token, quote=True)}"
     ask_url = f"/?token={escape(token, quote=True)}"
     settings_url = f"/settings?token={escape(token, quote=True)}"
@@ -755,6 +1015,18 @@ def _utility_page(title: str, token: str, intro: str, content: str) -> str:
     a {{ color: #00ff41; }}
     .button-link {{ border: 1px solid #00ff41; padding: 10px 13px; text-decoration: none; text-transform: uppercase; font-size: 13px; }}
     .button-link:hover {{ background: rgba(0,255,65,0.1); }}
+    form {{ margin-top: 22px; }}
+    label {{ display: grid; gap: 10px; color: #7cff9d; text-transform: uppercase; letter-spacing: 1.4px; font-size: 12px; }}
+    textarea {{ width: 100%; min-height: 140px; resize: vertical; border: 1px solid rgba(0,255,65,0.18); background: rgba(0,8,2,0.86); color: #00ff41; font: inherit; padding: 12px; outline: none; }}
+    textarea:focus {{ border-color: #00ff41; box-shadow: 0 0 0 1px #00ff41; }}
+    button {{ border: 1px solid #00ff41; background: transparent; color: #00ff41; cursor: pointer; font: inherit; padding: 10px 13px; text-transform: uppercase; }}
+    button:hover {{ background: rgba(0,255,65,0.1); }}
+    button:disabled {{ cursor: wait; opacity: 0.68; border-color: #7cff9d; color: #7cff9d; }}
+    .submit-status {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; }}
+    .notice {{ border-top: 1px dashed rgba(0,255,65,0.16); margin-top: 18px; padding-top: 14px; }}
+    .notice.error {{ color: #ff003c; }}
+    .notice.busy {{ color: #7cff9d; }}
+    .result {{ white-space: pre-wrap; color: #00ff41; }}
     .row {{ display: grid; grid-template-columns: 180px 1fr; gap: 12px; padding: 11px 0; border-top: 1px dashed rgba(0,255,65,0.16); }}
     .row:first-child {{ border-top: 0; }}
     .key {{ color: #7cff9d; text-transform: uppercase; letter-spacing: 1.4px; font-size: 12px; }}
@@ -776,6 +1048,7 @@ def _utility_page(title: str, token: str, intro: str, content: str) -> str:
       {content}
     </section>
   </main>
+  {extra_script}
 </body>
 </html>
 """

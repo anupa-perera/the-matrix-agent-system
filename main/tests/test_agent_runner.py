@@ -124,6 +124,55 @@ def test_runtime_continues_skipped_mission_with_current_provider(tmp_path) -> No
     assert len(gateway.requests) == 2
 
 
+def test_runtime_runs_selected_reusable_agent_directly(tmp_path) -> None:
+    vault = MemoryVault(tmp_path / "vault")
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    vault.initialize()
+    store.initialize()
+    prompt_library.install_defaults()
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent"),
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+    gateway = FakeGateway("manual agent completed")
+    runtime = Nebuchadnezzar(
+        oracle=Oracle(),
+        architect=Architect(store, prompt_library=prompt_library),
+        neo=Neo(),
+        vault=vault,
+        store=store,
+        agent_runner=AgentRunner(gateway, prompt_library),
+    )
+
+    result = runtime.run_agent(
+        spec.agent_id,
+        "Use this exact agent",
+        privacy_mode=PrivacyMode.ASK_EACH_TIME,
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+
+    assert result.metadata["manual_agent_run"] is True
+    assert result.metadata["selected_agent_id"] == spec.agent_id
+    assert result.metadata["mission_strategy"] == "manual_agent"
+    assert result.metadata["mission_task_count"] == 1
+    assert result.metadata["mission_completed_count"] == 1
+    assert "Manual agent run" in result.response
+    assert "manual agent completed" in result.response
+    tasks = store.list_mission_tasks(result.run_id)
+    assert len(tasks) == 1
+    assert tasks[0].agent_spec.agent_id == spec.agent_id
+    assert len(gateway.requests) == 1
+
+
 def test_agent_runner_executes_allowed_shell_tool_and_returns_final_answer(tmp_path) -> None:
     prompt_library = PromptLibrary(tmp_path / "prompts")
     prompt_library.install_defaults()

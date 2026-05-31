@@ -1,6 +1,6 @@
 from thematrix.memory import RuntimeStore
 from thematrix.providers import provider_catalog
-from thematrix.schemas import AuthMode, FileChangeConsent, ProviderConfig
+from thematrix.schemas import AuthMode, FileChangeConsent, ProviderConfig, ReasoningEffort
 
 
 def test_provider_config_stores_metadata_without_secret_value(tmp_path) -> None:
@@ -15,6 +15,7 @@ def test_provider_config_stores_metadata_without_secret_value(tmp_path) -> None:
         auth_mode=AuthMode.API_KEY,
         secret_ref="keyring:provider:openrouter:api_key",
         base_url="https://openrouter.ai/api/v1",
+        reasoning_effort=ReasoningEffort.HIGH,
         file_change_consent=FileChangeConsent.ASK_EACH_TIME,
     )
 
@@ -25,5 +26,6 @@ def test_provider_config_stores_metadata_without_secret_value(tmp_path) -> None:
     assert current.provider_id == "openrouter"
     assert current.selected_model == "openai/gpt-5-mini"
     assert current.base_url == "https://openrouter.ai/api/v1"
+    assert current.reasoning_effort == ReasoningEffort.HIGH
     assert current.secret_ref == "keyring:provider:openrouter:api_key"
     assert "sk-" not in current.model_dump_json()

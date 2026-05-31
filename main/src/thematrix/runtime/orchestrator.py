@@ -183,6 +183,95 @@ class Nebuchadnezzar:
         )
         return result
 
+    def run_agent(
+        self,
+        agent_id: str,
+        user_request: str,
+        privacy_mode: PrivacyMode,
+        provider_config: ProviderConfig | None = None,
+    ) -> MatrixRunResult:
+        spec = self.store.get_agent(agent_id)
+        if spec is None:
+            raise ValueError(f"No agent found for id: {agent_id}")
+
+        brief = self.oracle.assess(user_request)
+        agent_spec = spec.model_copy(deep=True)
+        agent_spec.privacy_mode = privacy_mode
+        if provider_config is None:
+            agent_spec.provider_id = "unconfigured"
+            agent_spec.model_id = "unconfigured"
+        else:
+            agent_spec.provider_id = provider_config.provider_id
+            agent_spec.model_id = provider_config.selected_model
+
+        plan = MissionPlan(
+            strategy="manual_agent",
+            tasks=[
+                MissionTask(
+                    sequence=1,
+                    title=f"Manual run: {agent_spec.agent_type}",
+                    description=user_request,
+                    agent_spec=agent_spec,
+                    architect_decision=(
+                        f"User selected reusable agent `{agent_spec.agent_id}` directly."
+                    ),
+                )
+            ],
+        )
+        human_layer = self.oracle.shape_human_layer(brief, agent_spec)
+        task_run = self._run_sequential_plan(
+            plan,
+            brief,
+            user_request,
+            provider_config=provider_config,
+        )
+        preflight = task_run["preflight_report"]
+        execution_status = task_run["execution_status"]
+        execution_error = task_run["execution_error"]
+        execution_tool_results = task_run["tool_results"]
+        response = self._render_response(plan, human_layer, provider_config)
+        output_report = self.neo.review_output(response)
+        agent_outcome_success = self._agent_outcome_success(
+            preflight_approved=preflight.approved if preflight else False,
+            output_approved=output_report.approved,
+            execution_status=execution_status,
+        )
+        result = MatrixRunResult(
+            run_id=plan.mission_id,
+            request=user_request,
+            oracle_brief=brief,
+            agent_spec=agent_spec,
+            human_layer=human_layer,
+            preflight_report=preflight,
+            output_report=output_report,
+            response=response,
+            metadata={
+                "runtime": "nebuchadnezzar",
+                "manual_agent_run": True,
+                "selected_agent_id": agent_spec.agent_id,
+                "oracle_assessment_source": getattr(
+                    self.oracle,
+                    "last_assessment_source",
+                    "unknown",
+                ),
+                "architect_design_source": "manual_agent_selection",
+                "architect_plan_source": "manual_agent_selection",
+                "agent_execution_status": execution_status,
+                "agent_execution_error": execution_error,
+                "tool_result_count": len(execution_tool_results),
+                "agent_outcome_recorded": agent_outcome_success is not None,
+                "agent_outcome_success": agent_outcome_success,
+                "mission_strategy": plan.strategy,
+                "mission_task_count": len(plan.tasks),
+                "mission_completed_count": sum(
+                    1 for task in plan.tasks if task.status == TaskStatus.COMPLETED
+                ),
+                "architect_decisions": self._architect_decision_metadata(plan),
+            },
+        )
+        self._persist_plan_result(plan, result, execution_tool_results)
+        return result
+
     def _run_sequential_plan(
         self,
         plan: MissionPlan,
@@ -348,6 +437,21 @@ class Nebuchadnezzar:
             if provider_config is None
             else f"Provider `{provider_config.provider_id}` with model `{provider_config.selected_model}` is configured."
         )
+        if plan.strategy == "manual_agent" and plan.tasks:
+            task = sorted(plan.tasks, key=lambda item: item.sequence)[0]
+            lines = [
+                f"Manual agent run via `{task.agent_spec.agent_id}`. {provider_text}",
+                f"Oracle shaped the mission as {human_layer.temperament}.",
+                f"Status: {task.status.value}.",
+            ]
+            if task.status == TaskStatus.COMPLETED and task.result_summary:
+                lines.extend(["", "Agent result:", "", task.result_summary])
+            elif provider_config is None:
+                lines.append("Configure a provider to execute this agent.")
+            elif task.result_summary:
+                lines.extend(["", task.result_summary])
+            return "\n".join(lines)
+
         lines = [
             f"Architect planned {len(plan.tasks)} sequential task(s). {provider_text}",
             f"Oracle shaped the mission as {human_layer.temperament}.",

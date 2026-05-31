@@ -23,6 +23,9 @@ from thematrix.schemas import (
 )
 
 
+CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
+
+
 class ProviderAdapterError(RuntimeError):
     """Raised when a provider adapter cannot complete a request."""
 
@@ -223,6 +226,29 @@ class CodexExecAdapter:
                 ),
             )
         version_text = _first_non_empty_line(version.stdout, version.stderr) or "Codex CLI"
+        selected_model = config.selected_model.strip()
+        model_is_pinned = selected_model and selected_model not in {"auto", "default"}
+        if config.reasoning_effort or model_is_pinned:
+            try:
+                response = self.generate(
+                    ModelRequest.from_prompt(
+                        "Reply with one short sentence saying the provider is ready."
+                    ),
+                    profile,
+                    config,
+                    credential,
+                )
+            except ProviderAdapterError as exc:
+                return ProviderHealth(
+                    provider_id=profile.provider_id,
+                    ok=False,
+                    message=str(exc),
+                )
+            return ProviderHealth(
+                provider_id=profile.provider_id,
+                ok=True,
+                message=response.text,
+            )
         return ProviderHealth(
             provider_id=profile.provider_id,
             ok=True,
@@ -249,6 +275,12 @@ class CodexExecAdapter:
         selected_model = config.selected_model.strip()
         if selected_model and selected_model not in {"auto", "default"}:
             args.extend(["--model", selected_model])
+        if config.reasoning_effort:
+            reasoning_effort = config.reasoning_effort.value
+            if reasoning_effort not in CODEX_REASONING_EFFORTS:
+                valid = ", ".join(sorted(CODEX_REASONING_EFFORTS))
+                raise ProviderAdapterError(f"Codex reasoning effort must be one of: {valid}.")
+            args.extend(["-c", f"model_reasoning_effort={json.dumps(reasoning_effort)}"])
         with tempfile.TemporaryDirectory(prefix="thematrix-codex-") as workdir:
             args.extend(["--cd", workdir, "-"])
             result = self.runner.run(

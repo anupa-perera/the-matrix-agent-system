@@ -66,6 +66,7 @@ class RuntimeStore:
                     auth_mode TEXT NOT NULL,
                     secret_ref TEXT,
                     base_url TEXT,
+                    reasoning_effort TEXT,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     is_default INTEGER NOT NULL DEFAULT 1,
                     file_change_consent TEXT NOT NULL,
@@ -123,6 +124,7 @@ class RuntimeStore:
                 """
             )
             self._ensure_column(conn, "provider_settings", "base_url", "TEXT")
+            self._ensure_column(conn, "provider_settings", "reasoning_effort", "TEXT")
 
     def upsert_agent(self, spec: AgentSpec) -> None:
         payload = spec.model_dump_json()
@@ -389,17 +391,19 @@ class RuntimeStore:
                     auth_mode,
                     secret_ref,
                     base_url,
+                    reasoning_effort,
                     enabled,
                     is_default,
                     file_change_consent,
                     configured_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(provider_id) DO UPDATE SET
                     selected_model = excluded.selected_model,
                     auth_mode = excluded.auth_mode,
                     secret_ref = excluded.secret_ref,
                     base_url = excluded.base_url,
+                    reasoning_effort = excluded.reasoning_effort,
                     enabled = excluded.enabled,
                     is_default = excluded.is_default,
                     file_change_consent = excluded.file_change_consent,
@@ -411,6 +415,7 @@ class RuntimeStore:
                     config.auth_mode.value,
                     config.secret_ref,
                     config.base_url,
+                    config.reasoning_effort.value if config.reasoning_effort else None,
                     int(config.enabled),
                     int(config.is_default),
                     config.file_change_consent.value,
@@ -612,6 +617,7 @@ class RuntimeStore:
             auth_mode=row["auth_mode"],
             secret_ref=row["secret_ref"],
             base_url=row["base_url"],
+            reasoning_effort=row["reasoning_effort"],
             enabled=bool(row["enabled"]),
             is_default=bool(row["is_default"]),
             file_change_consent=row["file_change_consent"],

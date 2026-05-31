@@ -24,6 +24,7 @@ class OnboardingService:
             body=(
                 f"Provider: {profile.default_provider_id}\n\n"
                 f"Model: {profile.default_model}\n\n"
+                f"Reasoning effort: {profile.reasoning_effort or 'provider default'}\n\n"
                 f"Base URL: {profile.base_url or 'provider default'}\n\n"
                 f"Auth mode: {profile.auth_mode.value}\n\n"
                 f"Privacy mode: {profile.privacy_mode.value}\n\n"

@@ -40,6 +40,8 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "Back to Dashboard" in html
     assert "/settings?token=token-123" in html
     assert "Transmit Request" in html
+    assert "data-mission-form" in html
+    assert "Mission accepted. Keep this tab open." in html
     assert "Help / Commands" in html
     assert "the-matrix providers current" in html
     assert "Recent Missions" in html
@@ -51,8 +53,10 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     store = RuntimeStore(paths.runtime_db)
     vault.initialize()
     store.initialize()
+    store.upsert_agent(AgentSpec(agent_id="test-agent", agent_type="guide", purpose="Test"))
     captured_url: list[str] = []
     requests: list[str] = []
+    agent_requests: list[tuple[str, str]] = []
     ready = Event()
 
     def run_server() -> None:
@@ -61,6 +65,9 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
             vault,
             store,
             request_runner=lambda request: requests.append(request) or _run_result(request),
+            agent_request_runner=lambda agent_id, request: (
+                agent_requests.append((agent_id, request)) or _run_result(request)
+            ),
             port=0,
             open_browser=False,
             url_callback=lambda url: (captured_url.append(url), ready.set()),
@@ -128,6 +135,31 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     assert "Control Center" in dashboard_body
     assert "/diagnostics?" in dashboard_body
     assert "/memory?" in dashboard_body
+    assert "/agent?" in dashboard_body
+
+    with urlopen(
+        f"http://{parsed.netloc}/agent?{parsed.query}&agent_id=test-agent",
+        timeout=5,
+    ) as response:
+        agent_body = response.read().decode("utf-8")
+    assert "Run Agent" in agent_body
+    assert "test-agent" in agent_body
+    assert "data-mission-form" in agent_body
+
+    payload = urlencode({"agent_id": "test-agent", "request": "Use this stored agent"}).encode(
+        "utf-8"
+    )
+    agent_run_request = Request(
+        f"http://{parsed.netloc}/agent/run?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(agent_run_request, timeout=5) as response:
+        agent_run_body = response.read().decode("utf-8")
+
+    assert "Mission complete." in agent_run_body
+    assert agent_requests == [("test-agent", "Use this stored agent")]
 
     with urlopen(f"http://{parsed.netloc}/diagnostics?{parsed.query}", timeout=5) as response:
         diagnostics_body = response.read().decode("utf-8")
@@ -152,3 +184,85 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     thread.join(timeout=5)
     assert "App stopped" in shutdown_body
     assert not thread.is_alive()
+
+
+def test_app_ui_duplicate_submit_reports_running_state(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    captured_url: list[str] = []
+    ready = Event()
+    running = Event()
+    release = Event()
+
+    def slow_result(request: str) -> MatrixRunResult:
+        running.set()
+        assert release.wait(timeout=5)
+        return _run_result(request)
+
+    def run_server() -> None:
+        serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=slow_result,
+            port=0,
+            open_browser=False,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    server_thread = Thread(target=run_server, daemon=True)
+    server_thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+
+    payload = urlencode({"request": "Long mission"}).encode("utf-8")
+    first_request = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    first_done = Event()
+
+    def send_first_request() -> None:
+        with urlopen(first_request, timeout=10) as response:
+            response.read()
+        first_done.set()
+
+    first_thread = Thread(target=send_first_request, daemon=True)
+    first_thread.start()
+    assert running.wait(timeout=5)
+
+    second_request = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        urlopen(second_request, timeout=5)
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        assert exc.code == 409
+    else:
+        raise AssertionError("Duplicate mission submit should return HTTP 409.")
+
+    assert "Mission Running" in body
+    assert "did not start a duplicate mission" in body
+
+    release.set()
+    assert first_done.wait(timeout=5)
+
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5):
+        pass
+    server_thread.join(timeout=5)
+    assert not server_thread.is_alive()

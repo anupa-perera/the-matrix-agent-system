@@ -15,7 +15,13 @@ from thematrix.providers.adapters import (
 )
 from thematrix.providers.gateway import ModelGateway, ModelGatewayError
 from thematrix.providers.models import provider_catalog
-from thematrix.schemas import AuthMode, ModelRequest, ProviderAdapterKind, ProviderConfig
+from thematrix.schemas import (
+    AuthMode,
+    ModelRequest,
+    ProviderAdapterKind,
+    ProviderConfig,
+    ReasoningEffort,
+)
 from thematrix.security import InMemorySecretStore, Keymaker
 
 
@@ -164,6 +170,25 @@ def test_codex_exec_adapter_runs_read_only_ephemeral_without_secret() -> None:
     assert "USER:\ntest" in call["prompt"]
 
 
+def test_codex_exec_adapter_passes_model_and_reasoning_effort() -> None:
+    runner = FakeCodexRunner(CodexExecResult(stdout="ready\n", stderr="", returncode=0))
+    profile = _profile("openai-codex")
+    config = ProviderConfig(
+        provider_id="openai-codex",
+        selected_model="gpt-5.5",
+        reasoning_effort=ReasoningEffort.HIGH,
+        auth_mode=AuthMode.EXTERNAL,
+    )
+
+    CodexExecAdapter(runner).generate(ModelRequest.from_prompt("test"), profile, config, None)
+
+    call = runner.calls[0]
+    assert "--model" in call["args"]
+    assert call["args"][call["args"].index("--model") + 1] == "gpt-5.5"
+    assert "-c" in call["args"]
+    assert call["args"][call["args"].index("-c") + 1] == 'model_reasoning_effort="high"'
+
+
 def test_codex_health_check_uses_cli_status_instead_of_exec() -> None:
     class StatusRunner(FakeCodexRunner):
         def run(self, args, prompt, timeout_seconds, cwd) -> CodexExecResult:
@@ -197,6 +222,48 @@ def test_codex_health_check_uses_cli_status_instead_of_exec() -> None:
         ["--version"],
         ["login", "status"],
     ]
+
+
+def test_codex_health_check_executes_when_model_is_pinned() -> None:
+    class StatusRunner(FakeCodexRunner):
+        def run(self, args, prompt, timeout_seconds, cwd) -> CodexExecResult:
+            self.calls.append(
+                {
+                    "args": args,
+                    "prompt": prompt,
+                    "timeout_seconds": timeout_seconds,
+                    "cwd": cwd,
+                }
+            )
+            if args == ["--version"]:
+                return CodexExecResult(stdout="codex-cli 0.121.0\n", stderr="", returncode=0)
+            if args == ["login", "status"]:
+                return CodexExecResult(stdout="Logged in using ChatGPT\n", stderr="", returncode=0)
+            return CodexExecResult(stdout="ready\n", stderr="", returncode=0)
+
+    runner = StatusRunner(CodexExecResult(stdout="", stderr="", returncode=0))
+    profile = _profile("openai-codex")
+    config = ProviderConfig(
+        provider_id="openai-codex",
+        selected_model="gpt-5.5",
+        reasoning_effort=ReasoningEffort.HIGH,
+        auth_mode=AuthMode.EXTERNAL,
+    )
+
+    health = CodexExecAdapter(runner).health_check(profile, config, None)
+
+    assert health.ok
+    assert health.message == "ready"
+    exec_args = runner.calls[-1]["args"]
+    assert exec_args[:5] == [
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--ephemeral",
+        "--skip-git-repo-check",
+    ]
+    assert exec_args[exec_args.index("--model") + 1] == "gpt-5.5"
+    assert exec_args[exec_args.index("-c") + 1] == 'model_reasoning_effort="high"'
 
 
 def test_codex_error_message_hides_prompt_noise(tmp_path) -> None:

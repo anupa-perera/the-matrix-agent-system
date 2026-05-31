@@ -31,6 +31,7 @@ from thematrix.schemas import (
     PrivacyMode,
     ProviderConfig,
     ProviderProfile,
+    ReasoningEffort,
 )
 from thematrix.security import Keymaker, SecretStoreError
 from thematrix.tools import FileExecutor, ShellExecutor
@@ -201,6 +202,13 @@ def start(
             vault,
             store,
             request_runner=lambda request: _run_browser_request(paths, vault, store, request),
+            agent_request_runner=lambda agent_id, request: _run_browser_agent_request(
+                paths,
+                vault,
+                store,
+                agent_id,
+                request,
+            ),
             open_browser=open_browser,
             url_callback=lambda value: typer.echo(f"App UI: {value}"),
             timeout_seconds=app_timeout,
@@ -440,6 +448,30 @@ def _run_browser_request(
     )
 
 
+def _run_browser_agent_request(
+    paths: MatrixPaths,
+    vault: MemoryVault,
+    store: RuntimeStore,
+    agent_id: str,
+    request: str,
+) -> MatrixRunResult:
+    provider_config = store.get_default_provider_config()
+    selected_privacy = _default_privacy_mode(store)
+    _, runtime = _build_runtime(
+        paths,
+        vault,
+        store,
+        provider_config,
+        approval_callback=_deny_browser_approval,
+    )
+    return runtime.run_agent(
+        agent_id,
+        request,
+        privacy_mode=selected_privacy,
+        provider_config=provider_config,
+    )
+
+
 def _deny_browser_approval(target: str, reason: str, purpose: str) -> bool:
     return False
 
@@ -542,6 +574,10 @@ def configure_provider(
         str | None,
         typer.Option(help="Model id. Omit to choose interactively."),
     ] = None,
+    reasoning_effort: Annotated[
+        str | None,
+        typer.Option(help="Reasoning effort for providers that support it."),
+    ] = None,
     base_url: Annotated[
         str | None,
         typer.Option(help="Provider base URL. Mostly useful for custom endpoints."),
@@ -556,6 +592,7 @@ def configure_provider(
     vault, store = bootstrap(paths)
     profile = _resolve_provider_choice(store, provider_id)
     selected_model = _resolve_model_choice(profile, model)
+    selected_reasoning_effort = _resolve_reasoning_effort(profile, reasoning_effort)
     selected_base_url = _resolve_base_url(profile, base_url)
     auth_mode = _resolve_auth_choice(profile)
     secret_ref = _resolve_secret_ref(profile, auth_mode)
@@ -567,6 +604,7 @@ def configure_provider(
         auth_mode=auth_mode,
         secret_ref=secret_ref,
         base_url=selected_base_url,
+        reasoning_effort=selected_reasoning_effort,
         is_default=make_default,
         file_change_consent=file_consent,
     )
@@ -577,6 +615,7 @@ def configure_provider(
         body=(
             f"Provider: {profile.display_name}\n\n"
             f"Model: {selected_model}\n\n"
+            f"Reasoning effort: {selected_reasoning_effort or 'provider default'}\n\n"
             f"Base URL: {selected_base_url or profile.default_base_url or 'not configured'}\n\n"
             f"Auth mode: {auth_mode.value}\n\n"
             f"File-change consent: {file_consent.value}\n\n"
@@ -604,6 +643,7 @@ def current_provider() -> None:
         secret_status = "configured" if config.secret_ref else "missing"
     typer.echo(f"Provider: {display_name}")
     typer.echo(f"Model:    {config.selected_model}")
+    typer.echo(f"Reason:   {config.reasoning_effort or 'provider default'}")
     typer.echo(f"Base URL: {config.base_url or (profile.default_base_url if profile else 'unknown')}")
     typer.echo(f"Auth:     {config.auth_mode.value}")
     typer.echo(f"Secrets:  {secret_status}")
@@ -1027,6 +1067,23 @@ def _resolve_model_choice(profile: ProviderProfile, model: str | None) -> str:
         if 1 <= selected_index <= len(profile.suggested_models):
             return profile.suggested_models[selected_index - 1]
     return choice
+
+
+def _resolve_reasoning_effort(
+    profile: ProviderProfile,
+    reasoning_effort: str | None,
+) -> ReasoningEffort | None:
+    if not reasoning_effort:
+        return None
+    supported = {effort.value for effort in profile.supported_reasoning_efforts}
+    if not supported:
+        raise typer.BadParameter(
+            f"{profile.display_name} does not support a reasoning effort setting."
+        )
+    if reasoning_effort not in supported:
+        valid = ", ".join(sorted(supported))
+        raise typer.BadParameter(f"Reasoning effort must be one of: {valid}.")
+    return ReasoningEffort(reasoning_effort)
 
 
 def _resolve_base_url(profile: ProviderProfile, base_url: str | None) -> str | None:

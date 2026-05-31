@@ -431,6 +431,28 @@ def render_dashboard_html(
     .row {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; }}
     .row h3 {{ min-width: 0; }}
     .row .tag {{ flex: 0 0 auto; }}
+    .agent-card {{
+      display: block;
+      color: inherit;
+      text-decoration: none;
+    }}
+    .agent-card:hover code,
+    .agent-card:focus-visible code {{
+      color: var(--phosphor-white);
+    }}
+    .agent-card:focus-visible {{
+      outline: 1px solid var(--phosphor-bright);
+      outline-offset: 6px;
+    }}
+    .agent-run {{
+      display: inline-flex;
+      margin-top: 8px;
+      color: var(--phosphor-bright);
+      font-size: 12px;
+      letter-spacing: 1.8px;
+      text-transform: uppercase;
+    }}
+    .agent-run::before {{ content: '> '; color: var(--phosphor-title); }}
     code {{
       font-family: "Share Tech Mono", "Cascadia Mono", monospace;
       font-size: 13px;
@@ -521,7 +543,7 @@ def render_dashboard_html(
       {metric_panel("Security Events", counts["security_events"])}
       {provider_panel(provider_config, provider_profile, provider_verification)}
       {runs_panel(runs, store)}
-      {agents_panel(agents)}
+      {agents_panel(agents, app_token)}
       {security_panel(security_events)}
       {prompt_blocks_panel(prompt_blocks)}
       {model_calls_panel(model_calls)}
@@ -669,11 +691,13 @@ def provider_panel(provider_config, provider_profile, provider_verification) -> 
             f"at {provider_verification.get('checked_at')}"
         )
         verification_class = "ok" if provider_verification.get("ok") else "risk"
+    reasoning = str(provider_config.reasoning_effort or "provider default")
     return f"""
       <section class="panel span-4">
         <div class="row"><h2>Provider</h2><span class="tag {verification_class}">configured</span></div>
         <p><strong>{escape(display)}</strong></p>
         <p class="muted">Model: <code>{escape(provider_config.selected_model)}</code></p>
+        <p class="muted">Reasoning: <code>{escape(reasoning)}</code></p>
         <p class="muted">Auth: {escape(provider_config.auth_mode.value)} ({secret})</p>
         <p class="muted">Verification: {escape(verification_text)}</p>
       </section>
@@ -706,25 +730,42 @@ def runs_panel(runs: list[dict], store: RuntimeStore) -> str:
 """
 
 
-def agents_panel(agents: list[dict]) -> str:
-    items = [
-        f"""
-          <div class="item">
+def agents_panel(agents: list[dict], app_token: str | None = None) -> str:
+    items = [_agent_item(agent, app_token) for agent in agents]
+    return f"""
+      <section class="panel span-6">
+        <h2>Active Agents</h2>
+        <div class="list">{''.join(items) or empty_text("No agents deployed yet.")}</div>
+      </section>
+"""
+
+
+def _agent_item(agent: dict, app_token: str | None) -> str:
+    body = f"""
             <div class="row">
               <h3><code>{escape(agent["agent_id"])}</code></h3>
               <span class="tag">{escape(agent["agent_type"])}/{escape(agent["risk_level"])}</span>
             </div>
             <p class="muted">{escape(_clip(agent["purpose"], 130))}</p>
             <p class="muted">success={agent["success_count"]} failure={agent["failure_count"]}</p>
+"""
+    if app_token is None:
+        return f"""
+          <div class="item">
+{body}
           </div>
 """
-        for agent in agents
-    ]
+    href = (
+        f"/agent?token={quote(app_token, safe='')}"
+        f"&agent_id={quote(str(agent['agent_id']), safe='')}"
+    )
     return f"""
-      <section class="panel span-6">
-        <h2>Active Agents</h2>
-        <div class="list">{''.join(items) or empty_text("No agents deployed yet.")}</div>
-      </section>
+          <div class="item">
+            <a class="agent-card" href="{escape(href, quote=True)}">
+{body}
+              <span class="agent-run">run this agent</span>
+            </a>
+          </div>
 """
 
 

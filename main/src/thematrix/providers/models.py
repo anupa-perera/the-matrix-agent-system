@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from thematrix.schemas import AuthMode, ProviderAdapterKind, ProviderKind, ProviderProfile
+from thematrix.schemas import (
+    AuthMode,
+    ProviderAdapterKind,
+    ProviderKind,
+    ProviderProfile,
+    ReasoningEffort,
+)
 
 
 def provider_catalog() -> list[ProviderProfile]:
@@ -47,11 +53,17 @@ def provider_catalog() -> list[ProviderProfile]:
             kind=ProviderKind.CLOUD,
             adapter_kind=ProviderAdapterKind.CODEX_EXEC,
             auth_modes=[AuthMode.EXTERNAL],
-            suggested_models=["auto"],
+            suggested_models=["auto", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
             supports_model_selection=True,
             supports_tools=False,
             supports_structured_output=False,
             supports_prompt_cache=False,
+            supported_reasoning_efforts=[
+                ReasoningEffort.LOW,
+                ReasoningEffort.MEDIUM,
+                ReasoningEffort.HIGH,
+                ReasoningEffort.XHIGH,
+            ],
             data_boundary=(
                 "cloud: requests are sent through the official Codex client using the "
                 "user's Codex sign-in"

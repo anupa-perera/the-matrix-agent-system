@@ -32,6 +32,13 @@ class FileChangeConsent(StrEnum):
     ALLOW_ALWAYS = "allow_always"
 
 
+class ReasoningEffort(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+
+
 class ProviderKind(StrEnum):
     LOCAL = "local"
     CLOUD = "cloud"
@@ -141,6 +148,7 @@ class ProviderProfile(BaseModel):
     supports_structured_output: bool = False
     supports_prompt_cache: bool = False
     supports_provider_routing: bool = False
+    supported_reasoning_efforts: list[ReasoningEffort] = Field(default_factory=list)
     data_boundary: str
     setup_hint: str
 
@@ -151,6 +159,7 @@ class ProviderConfig(BaseModel):
     auth_mode: AuthMode
     secret_ref: str | None = None
     base_url: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
     enabled: bool = True
     is_default: bool = True
     file_change_consent: FileChangeConsent = FileChangeConsent.ASK_EACH_TIME
@@ -163,6 +172,7 @@ class OnboardingProfile(BaseModel):
     default_model: str
     auth_mode: AuthMode
     base_url: str | None = None
+    reasoning_effort: ReasoningEffort | None = None
     privacy_mode: PrivacyMode = PrivacyMode.ASK_EACH_TIME
     file_change_consent: FileChangeConsent = FileChangeConsent.ASK_EACH_TIME
     guarded_shell_enabled: bool = True

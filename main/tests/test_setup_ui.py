@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.providers import ProviderDetection
-from thematrix.schemas import AuthMode
+from thematrix.schemas import AuthMode, ProviderConfig, ReasoningEffort
 from thematrix.security import InMemorySecretStore, Keymaker
 from thematrix.ui.setup_server import (
     MAX_SETUP_BODY_BYTES,
@@ -96,7 +96,8 @@ def test_setup_ui_applies_codex_external_auth_without_secret(tmp_path) -> None:
     result = apply_setup_form(
         {
             "provider_id": "openai-codex",
-            "model": "auto",
+            "model": "gpt-5.5",
+            "reasoning_effort": "high",
             "auth_mode": "external",
             "privacy_mode": "ask_each_time",
             "file_change_consent": "ask_each_time",
@@ -112,6 +113,8 @@ def test_setup_ui_applies_codex_external_auth_without_secret(tmp_path) -> None:
     assert result.ok
     assert config is not None
     assert config.provider_id == "openai-codex"
+    assert config.selected_model == "gpt-5.5"
+    assert config.reasoning_effort == ReasoningEffort.HIGH
     assert config.auth_mode == AuthMode.EXTERNAL
     assert config.secret_ref is None
     assert store.get_preference("onboarding_complete") is True
@@ -169,6 +172,8 @@ def test_setup_ui_form_contains_session_token() -> None:
     assert "Start here" in html
     assert "Start The Matrix" in html
     assert "Advanced settings" in html
+    assert "Model choice" in html
+    assert "Reasoning effort" in html
     assert "syncProvider()" in html
     assert 'list="models"' not in html
     assert "<datalist" not in html
@@ -219,10 +224,36 @@ def test_setup_ui_form_embeds_provider_defaults() -> None:
     assert ollama["detected_reachable"] is True
     assert ollama["detected_models"] == ["llama3.2:latest"]
     assert codex["auth_modes"] == ["external"]
+    assert "gpt-5.5" in codex["suggested_models"]
+    assert codex["supported_reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
     assert codex["oauth_automated"] is False
     assert openrouter["suggested_models"][0] == "openai/gpt-5-mini"
     assert openrouter["oauth_automated"] is True
     assert openrouter["oauth_label"] == "Sign in with OpenRouter"
+
+
+def test_setup_ui_prefills_current_provider_config() -> None:
+    current = ProviderConfig(
+        provider_id="openai-codex",
+        selected_model="gpt-5.5",
+        auth_mode=AuthMode.EXTERNAL,
+        reasoning_effort=ReasoningEffort.HIGH,
+    )
+
+    html = render_setup_form("token-123", current_config=current)
+    match = re.search(
+        r'<script id="current-config" type="application/json">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    payload = json.loads(match.group(1))
+    assert payload == {
+        "provider_id": "openai-codex",
+        "selected_model": "gpt-5.5",
+        "reasoning_effort": "high",
+    }
 
 
 def test_setup_ui_server_binds_localhost_and_saves_form(tmp_path) -> None:
