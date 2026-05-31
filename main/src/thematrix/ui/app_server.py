@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
+from inspect import Parameter, signature
+import json
 from secrets import token_urlsafe
 from threading import Lock, Thread, Timer
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -13,6 +16,7 @@ import webbrowser
 
 from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
+from thematrix.prompts import PromptLibrary
 from thematrix.providers import detect_local_providers
 from thematrix.providers.oauth import (
     OAuthPendingSetup,
@@ -21,7 +25,7 @@ from thematrix.providers.oauth import (
     exchange_openrouter_code,
     setup_form_from_oauth,
 )
-from thematrix.schemas import MatrixRunResult
+from thematrix.schemas import AgentSpec, MatrixRunResult
 from thematrix.security import Keymaker
 from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
 from thematrix.ui.setup_server import apply_setup_form, render_setup_form
@@ -38,12 +42,98 @@ class AppUiResponse:
     busy: bool = False
 
 
+@dataclass
+class MissionStatusEvent:
+    stage: str
+    message: str
+    details: dict[str, object] = field(default_factory=dict)
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+@dataclass
+class MissionJob:
+    job_id: str
+    kind: str
+    request: str
+    agent_id: str | None = None
+    status: str = "queued"
+    stage: str = "queued"
+    message: str = "Mission accepted. Waiting for the runtime."
+    result: MatrixRunResult | None = None
+    error: str | None = None
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    started_at: str | None = None
+    completed_at: str | None = None
+    events: list[MissionStatusEvent] = field(default_factory=list)
+    lock: Lock = field(default_factory=Lock)
+
+    def record(self, stage: str, message: str, details: dict[str, object] | None = None) -> None:
+        with self.lock:
+            self.stage = stage
+            self.message = message
+            self.events.append(MissionStatusEvent(stage, message, details or {}))
+
+    def start(self) -> None:
+        with self.lock:
+            self.status = "running"
+            self.stage = "starting"
+            self.message = "Mission is starting."
+            self.started_at = datetime.now(UTC).isoformat()
+            self.events.append(MissionStatusEvent("starting", "Mission is starting."))
+
+    def complete(self, result: MatrixRunResult) -> None:
+        with self.lock:
+            self.status = "completed"
+            self.stage = "completed"
+            self.message = "Mission completed."
+            self.result = result
+            self.completed_at = datetime.now(UTC).isoformat()
+            self.events.append(
+                MissionStatusEvent(
+                    "completed",
+                    "Mission completed.",
+                    {"run_id": result.run_id},
+                )
+            )
+
+    def fail(self, error: str) -> None:
+        with self.lock:
+            self.status = "failed"
+            self.stage = "failed"
+            self.message = "Mission failed."
+            self.error = error
+            self.completed_at = datetime.now(UTC).isoformat()
+            self.events.append(MissionStatusEvent("failed", "Mission failed.", {"error": error}))
+
+
+class MissionRegistry:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._jobs: dict[str, MissionJob] = {}
+
+    def create(self, kind: str, request: str, agent_id: str | None = None) -> MissionJob:
+        job = MissionJob(
+            job_id=token_urlsafe(12),
+            kind=kind,
+            request=request,
+            agent_id=agent_id,
+        )
+        job.record("queued", "Mission accepted. Waiting for the runtime.")
+        with self._lock:
+            self._jobs[job.job_id] = job
+        return job
+
+    def get(self, job_id: str) -> MissionJob | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+
 def serve_app_ui(
     paths: MatrixPaths,
     vault: MemoryVault,
     store: RuntimeStore,
-    request_runner: Callable[[str], MatrixRunResult],
-    agent_request_runner: Callable[[str, str], MatrixRunResult] | None = None,
+    request_runner: Callable[..., MatrixRunResult],
+    agent_request_runner: Callable[..., MatrixRunResult] | None = None,
     port: int = 0,
     open_browser: bool = True,
     url_callback: Callable[[str], None] | None = None,
@@ -51,6 +141,7 @@ def serve_app_ui(
 ) -> str:
     token = token_urlsafe(24)
     run_lock = Lock()
+    mission_registry = MissionRegistry()
     server = _AppServer(
         ("127.0.0.1", port),
         _handler_factory(
@@ -61,6 +152,7 @@ def serve_app_ui(
             request_runner,
             agent_request_runner,
             run_lock,
+            mission_registry,
         ),
     )
     host, bound_port = server.server_address
@@ -89,10 +181,11 @@ def _handler_factory(
     vault: MemoryVault,
     store: RuntimeStore,
     token: str,
-    request_runner: Callable[[str], MatrixRunResult],
-    agent_request_runner: Callable[[str, str], MatrixRunResult] | None,
+    request_runner: Callable[..., MatrixRunResult],
+    agent_request_runner: Callable[..., MatrixRunResult] | None,
     run_lock: Lock,
-):
+    mission_registry: MissionRegistry,
+) -> AgentSpec:
     oauth_flows: dict[str, OAuthPendingSetup] = {}
     oauth_lock = Lock()
 
@@ -125,6 +218,23 @@ def _handler_factory(
             if parsed.path == "/dashboard":
                 write_dashboard(paths, store)
                 self._send_html(HTTPStatus.OK, render_dashboard_html(paths, store, token))
+                return
+            if parsed.path == "/mission":
+                query = parse_qs(parsed.query)
+                job_id = query.get("job_id", [""])[-1].strip()
+                run_id = query.get("run_id", [""])[-1].strip()
+                self._send_html(
+                    HTTPStatus.OK,
+                    _mission_page(store, token, mission_registry.get(job_id), run_id=run_id),
+                )
+                return
+            if parsed.path == "/mission/status":
+                query = parse_qs(parsed.query)
+                job_id = query.get("job_id", [""])[-1].strip()
+                run_id = query.get("run_id", [""])[-1].strip()
+                payload = _mission_payload(store, mission_registry.get(job_id), run_id=run_id)
+                status = HTTPStatus.OK if payload["found"] else HTTPStatus.NOT_FOUND
+                self._send_json(status, payload)
                 return
             if parsed.path == "/agent":
                 agent_id = parse_qs(parsed.query).get("agent_id", [""])[-1].strip()
@@ -212,15 +322,68 @@ def _handler_factory(
                         ),
                     )
                     return
+                job = mission_registry.create("mission", user_request)
+                Thread(
+                    target=_run_background_mission,
+                    args=(job, request_runner, user_request, run_lock),
+                    daemon=True,
+                ).start()
+                self._send_html(HTTPStatus.ACCEPTED, _mission_page(store, token, job))
+                return
+            if parsed.path == "/agent/update":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                agent_id = form.get("agent_id", "").strip()
                 try:
-                    result = request_runner(user_request)
-                except Exception as exc:
-                    response = AppUiResponse(error=f"Mission failed: {exc}")
-                else:
-                    response = AppUiResponse(result=result)
-                finally:
-                    run_lock.release()
-                self._send_html(HTTPStatus.OK, render_app_page(paths, store, token, response))
+                    spec = _update_agent_from_form(paths, vault, store, form)
+                except ValueError as exc:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _agent_page(
+                            paths,
+                            store,
+                            token,
+                            agent_id,
+                            AppUiResponse(error=str(exc)),
+                        ),
+                    )
+                    return
+                self._send_html(
+                    HTTPStatus.OK,
+                    _agent_page(
+                        paths,
+                        store,
+                        token,
+                        spec.agent_id,
+                        AppUiResponse(message="Agent instructions updated."),
+                    ),
+                )
+                return
+            if parsed.path == "/agent/toggle":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                agent_id = form.get("agent_id", "").strip()
+                try:
+                    spec = _toggle_agent(paths, vault, store, agent_id)
+                except ValueError as exc:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _agent_page(
+                            paths,
+                            store,
+                            token,
+                            agent_id,
+                            AppUiResponse(error=str(exc)),
+                        ),
+                    )
+                    return
+                message = "Agent resumed." if spec.enabled else "Agent paused."
+                self._send_html(
+                    HTTPStatus.OK,
+                    _agent_page(paths, store, token, spec.agent_id, AppUiResponse(message=message)),
+                )
                 return
             if parsed.path == "/agent/run":
                 form = self._read_form(paths, store, token)
@@ -260,6 +423,19 @@ def _handler_factory(
                         ),
                     )
                     return
+                spec = store.get_agent(agent_id)
+                if spec is not None and not spec.enabled:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _agent_page(
+                            paths,
+                            store,
+                            token,
+                            agent_id,
+                            AppUiResponse(error="Resume this agent before running it."),
+                        ),
+                    )
+                    return
                 if not run_lock.acquire(blocking=False):
                     self._send_html(
                         HTTPStatus.CONFLICT,
@@ -278,15 +454,13 @@ def _handler_factory(
                         ),
                     )
                     return
-                try:
-                    result = agent_request_runner(agent_id, user_request)
-                except Exception as exc:
-                    response = AppUiResponse(error=f"Agent run failed: {exc}")
-                else:
-                    response = AppUiResponse(result=result)
-                finally:
-                    run_lock.release()
-                self._send_html(HTTPStatus.OK, _agent_page(paths, store, token, agent_id, response))
+                job = mission_registry.create("agent", user_request, agent_id=agent_id)
+                Thread(
+                    target=_run_background_agent_mission,
+                    args=(job, agent_request_runner, agent_id, user_request, run_lock),
+                    daemon=True,
+                ).start()
+                self._send_html(HTTPStatus.ACCEPTED, _mission_page(store, token, job))
                 return
             self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not Found", "Unknown route."))
 
@@ -417,7 +591,371 @@ def _handler_factory(
             self.end_headers()
             self.wfile.write(payload)
 
+        def _send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status.value)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
     return AppHandler
+
+
+def _run_background_mission(
+    job: MissionJob,
+    request_runner: Callable[..., MatrixRunResult],
+    request: str,
+    run_lock: Lock,
+) -> None:
+    job.start()
+    try:
+        result = _call_runner(request_runner, request, job.record)
+    except Exception as exc:
+        job.fail(f"Mission failed: {exc}")
+    else:
+        job.complete(result)
+    finally:
+        run_lock.release()
+
+
+def _run_background_agent_mission(
+    job: MissionJob,
+    agent_request_runner: Callable[..., MatrixRunResult],
+    agent_id: str,
+    request: str,
+    run_lock: Lock,
+) -> None:
+    job.start()
+    try:
+        result = _call_agent_runner(agent_request_runner, agent_id, request, job.record)
+    except Exception as exc:
+        job.fail(f"Agent run failed: {exc}")
+    else:
+        job.complete(result)
+    finally:
+        run_lock.release()
+
+
+def _call_runner(
+    runner: Callable[..., MatrixRunResult],
+    request: str,
+    progress_callback: Callable[[str, str, dict[str, object]], None],
+) -> MatrixRunResult:
+    if _accepts_progress_callback(runner):
+        return runner(request, progress_callback=progress_callback)
+    return runner(request)
+
+
+def _call_agent_runner(
+    runner: Callable[..., MatrixRunResult],
+    agent_id: str,
+    request: str,
+    progress_callback: Callable[[str, str, dict[str, object]], None],
+) -> MatrixRunResult:
+    if _accepts_progress_callback(runner):
+        return runner(agent_id, request, progress_callback=progress_callback)
+    return runner(agent_id, request)
+
+
+def _accepts_progress_callback(runner: Callable[..., MatrixRunResult]) -> bool:
+    try:
+        parameters = signature(runner).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    for parameter in parameters:
+        if parameter.kind == Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "progress_callback":
+            return True
+    return False
+
+
+def _mission_page(
+    store: RuntimeStore,
+    token: str,
+    job: MissionJob | None,
+    run_id: str = "",
+) -> str:
+    payload = _mission_payload(store, job, run_id=run_id)
+    if not payload["found"]:
+        return _utility_page(
+            "Mission Not Found",
+            token,
+            "No mission record exists for that id.",
+            "",
+        )
+
+    query = {"token": token}
+    if job is not None:
+        query["job_id"] = job.job_id
+    elif payload.get("run_id"):
+        query["run_id"] = str(payload["run_id"])
+    status_url = "/mission/status?" + urlencode(query)
+    content = """
+      <div class="mission-cockpit">
+        <div class="mission-summary">
+          <p class="kicker">Current status</p>
+          <h2 id="mission-state">Loading</h2>
+          <p id="mission-message" class="muted"></p>
+          <p id="mission-request" class="request-text"></p>
+        </div>
+        <div id="mission-result"></div>
+        <div class="mission-grid">
+          <div>
+            <h2>Mission Timeline</h2>
+            <div id="mission-events" class="timeline"></div>
+          </div>
+          <div>
+            <h2>Task Ledger</h2>
+            <div id="mission-tasks" class="timeline"></div>
+          </div>
+        </div>
+      </div>
+"""
+    return _utility_page(
+        "Mission Status",
+        token,
+        "Track what the agents are doing and open the result when it is ready.",
+        content,
+        extra_script=_mission_status_script(status_url, payload),
+    )
+
+
+def _mission_payload(
+    store: RuntimeStore,
+    job: MissionJob | None,
+    run_id: str = "",
+) -> dict[str, object]:
+    if job is not None:
+        with job.lock:
+            result = job.result
+            resolved_run_id = result.run_id if result is not None else ""
+            return {
+                "found": True,
+                "job_id": job.job_id,
+                "kind": job.kind,
+                "status": job.status,
+                "stage": job.stage,
+                "message": job.message,
+                "request": job.request,
+                "agent_id": job.agent_id,
+                "created_at": job.created_at,
+                "started_at": job.started_at,
+                "completed_at": job.completed_at,
+                "run_id": resolved_run_id,
+                "events": [_event_payload(event) for event in job.events],
+                "tasks": _task_payloads(store, resolved_run_id),
+                "result": _result_payload(result),
+                "error": job.error,
+            }
+
+    if run_id:
+        result = store.get_run(run_id)
+        if result is None:
+            return {"found": False}
+        return {
+            "found": True,
+            "job_id": "",
+            "kind": "recorded",
+            "status": _run_status(result),
+            "stage": "recorded",
+            "message": "This mission is recorded in local memory.",
+            "request": result.request,
+            "agent_id": result.agent_spec.agent_id if result.agent_spec else None,
+            "created_at": result.created_at.isoformat(),
+            "started_at": None,
+            "completed_at": result.created_at.isoformat(),
+            "run_id": result.run_id,
+            "events": _events_from_result(result),
+            "tasks": _task_payloads(store, result.run_id),
+            "result": _result_payload(result),
+            "error": result.metadata.get("agent_execution_error"),
+        }
+    return {"found": False}
+
+
+def _event_payload(event: MissionStatusEvent) -> dict[str, object]:
+    return {
+        "stage": event.stage,
+        "message": event.message,
+        "details": event.details,
+        "created_at": event.created_at,
+    }
+
+
+def _events_from_result(result: MatrixRunResult) -> list[dict[str, object]]:
+    events = [
+        {
+            "stage": "recorded",
+            "message": "Mission was recorded in the local vault.",
+            "details": {"run_id": result.run_id},
+            "created_at": result.created_at.isoformat(),
+        }
+    ]
+    decisions = result.metadata.get("architect_decisions") or []
+    for decision in decisions:
+        events.append(
+            {
+                "stage": "architect",
+                "message": str(decision.get("decision") or "Architect recorded a decision."),
+                "details": {
+                    "agent_id": decision.get("agent_id"),
+                    "agent_type": decision.get("agent_type"),
+                },
+                "created_at": result.created_at.isoformat(),
+            }
+        )
+    return events
+
+
+def _task_payloads(store: RuntimeStore, run_id: str) -> list[dict[str, object]]:
+    if not run_id:
+        return []
+    return [
+        {
+            "sequence": task.sequence,
+            "title": task.title,
+            "status": task.status.value,
+            "agent_id": task.agent_spec.agent_id,
+            "agent_type": task.agent_spec.agent_type,
+            "result_summary": task.result_summary,
+            "tool_result_count": task.tool_result_count,
+            "error": task.error,
+        }
+        for task in store.list_mission_tasks(run_id=run_id, limit=100)
+    ]
+
+
+def _result_payload(result: MatrixRunResult | None) -> dict[str, object] | None:
+    if result is None:
+        return None
+    return {
+        "run_id": result.run_id,
+        "response": result.response,
+        "completed_count": result.metadata.get("mission_completed_count"),
+        "task_count": result.metadata.get("mission_task_count"),
+    }
+
+
+def _run_status(result: MatrixRunResult) -> str:
+    task_count = result.metadata.get("mission_task_count")
+    completed_count = result.metadata.get("mission_completed_count")
+    if task_count and completed_count == task_count:
+        return "completed"
+    if result.metadata.get("agent_execution_status") == "error":
+        return "failed"
+    return "recorded"
+
+
+def _mission_status_script(status_url: str, payload: dict[str, object]) -> str:
+    return f"""
+  <script>
+    (function () {{
+      const statusUrl = {json.dumps(status_url)};
+      let payload = {_script_json(payload)};
+      const state = document.getElementById('mission-state');
+      const message = document.getElementById('mission-message');
+      const request = document.getElementById('mission-request');
+      const events = document.getElementById('mission-events');
+      const tasks = document.getElementById('mission-tasks');
+      const result = document.getElementById('mission-result');
+
+      function clear(node) {{
+        while (node && node.firstChild) node.removeChild(node.firstChild);
+      }}
+
+      function line(title, body, tag) {{
+        const item = document.createElement('div');
+        item.className = 'timeline-item';
+        const top = document.createElement('p');
+        top.className = 'timeline-title';
+        top.textContent = title;
+        const meta = document.createElement('p');
+        meta.className = 'muted';
+        meta.textContent = body || '';
+        item.appendChild(top);
+        if (tag) {{
+          const status = document.createElement('span');
+          status.className = 'pill';
+          status.textContent = tag;
+          item.appendChild(status);
+        }}
+        item.appendChild(meta);
+        return item;
+      }}
+
+      function render(next) {{
+        payload = next;
+        state.textContent = String(payload.status || 'unknown').toUpperCase();
+        message.textContent = payload.message || '';
+        request.textContent = payload.request || '';
+        clear(events);
+        (payload.events || []).forEach((event) => {{
+          events.appendChild(line(event.stage || 'event', event.message || '', event.created_at || ''));
+        }});
+        if (!(payload.events || []).length) {{
+          events.appendChild(line('waiting', 'The mission has been accepted.', 'now'));
+        }}
+        clear(tasks);
+        (payload.tasks || []).forEach((task) => {{
+          tasks.appendChild(line(
+            (task.sequence || '?') + '. ' + (task.title || 'Task'),
+            'Agent: ' + (task.agent_id || 'unknown'),
+            task.status || ''
+          ));
+        }});
+        if (!(payload.tasks || []).length) {{
+          tasks.appendChild(line('No task ledger yet', 'The planner has not produced visible tasks yet.', 'pending'));
+        }}
+        clear(result);
+        if (payload.result) {{
+          const box = document.createElement('div');
+          box.className = 'notice';
+          const title = document.createElement('strong');
+          title.textContent = 'Mission Result';
+          const run = document.createElement('p');
+          run.innerHTML = 'Run <code></code>';
+          run.querySelector('code').textContent = payload.result.run_id || '';
+          const response = document.createElement('div');
+          response.className = 'result';
+          response.textContent = payload.result.response || '';
+          box.appendChild(title);
+          box.appendChild(run);
+          box.appendChild(response);
+          result.appendChild(box);
+        }} else if (payload.error) {{
+          const box = document.createElement('div');
+          box.className = 'notice error';
+          box.textContent = payload.error;
+          result.appendChild(box);
+        }}
+      }}
+
+      async function refresh() {{
+        try {{
+          const response = await fetch(statusUrl, {{ cache: 'no-store' }});
+          if (response.ok) render(await response.json());
+        }} catch (error) {{
+          return;
+        }}
+        if (payload.status === 'queued' || payload.status === 'running') {{
+          window.setTimeout(refresh, 1200);
+        }}
+      }}
+
+      render(payload);
+      if (payload.status === 'queued' || payload.status === 'running') {{
+        window.setTimeout(refresh, 900);
+      }}
+    }})();
+  </script>
+"""
+
+
+def _script_json(payload: dict[str, object]) -> str:
+    return json.dumps(payload).replace("</", "<\\/")
 
 
 def render_app_page(
@@ -434,7 +972,7 @@ def render_app_page(
         if provider_config.reasoning_effort:
             provider_label += f" / {provider_config.reasoning_effort}"
     result_html = _result_panel(response)
-    recent_html = _recent_runs_panel(store)
+    recent_html = _recent_runs_panel(store, token)
     help_html = _help_panel()
     return f"""<!doctype html>
 <html lang="en">
@@ -776,14 +1314,15 @@ def _result_panel(response: AppUiResponse) -> str:
 """
 
 
-def _recent_runs_panel(store: RuntimeStore) -> str:
+def _recent_runs_panel(store: RuntimeStore, token: str) -> str:
     runs = store.list_run_records(limit=5)
     items = []
     for run in runs:
+        href = f"/mission?token={escape(token, quote=True)}&run_id={escape(run['run_id'], quote=True)}"
         items.append(
             f"""
         <div class="item">
-          <p><code>{escape(run["run_id"])}</code></p>
+          <p><a href="{href}"><code>{escape(run["run_id"])}</code></a></p>
           <p class="muted">{escape(_clip(run["request"], 180))}</p>
         </div>
 """
@@ -824,6 +1363,113 @@ def _help_panel() -> str:
 """
 
 
+def _update_agent_from_form(
+    paths: MatrixPaths,
+    vault: MemoryVault,
+    store: RuntimeStore,
+    form: dict[str, str],
+):
+    agent_id = form.get("agent_id", "").strip()
+    if not agent_id:
+        raise ValueError("Choose an agent before editing it.")
+    spec = store.get_agent(agent_id)
+    if spec is None:
+        raise ValueError(f"No reusable agent exists with id `{agent_id}`.")
+
+    purpose = " ".join(form.get("purpose", "").split())
+    if not purpose:
+        raise ValueError("Describe what this agent should do.")
+
+    updated = spec.model_copy(
+        update={
+            "purpose": purpose[:300],
+            "capabilities": _split_lines(form.get("capabilities", "")),
+            "constraints": _split_lines(form.get("constraints", "")),
+            "interaction_points": _split_lines(form.get("interaction_points", "")),
+            "reusable": form.get("reusable") == "on",
+            "enabled": form.get("enabled") == "on",
+        }
+    )
+    return _save_agent_update(paths, vault, store, updated)
+
+
+def _toggle_agent(
+    paths: MatrixPaths,
+    vault: MemoryVault,
+    store: RuntimeStore,
+    agent_id: str,
+) -> AgentSpec:
+    if not agent_id:
+        raise ValueError("Choose an agent before changing its status.")
+    spec = store.get_agent(agent_id)
+    if spec is None:
+        raise ValueError(f"No reusable agent exists with id `{agent_id}`.")
+    updated = spec.model_copy(update={"enabled": not spec.enabled})
+    return _save_agent_update(paths, vault, store, updated)
+
+
+def _save_agent_update(
+    paths: MatrixPaths,
+    vault: MemoryVault,
+    store: RuntimeStore,
+    spec: AgentSpec,
+) -> AgentSpec:
+    prompt_library = PromptLibrary(paths.prompts_dir)
+    prompt_ref = f"agent-blueprint-{spec.agent_id}"
+    if prompt_ref not in spec.prompt_block_refs:
+        spec = spec.model_copy(update={"prompt_block_refs": [*spec.prompt_block_refs, prompt_ref]})
+    blueprint = _render_agent_blueprint(spec)
+    prompt_library.write_agent_blueprint(spec.agent_id, blueprint)
+    store.upsert_agent(spec)
+    store.record_prompt_block(
+        block_ref=prompt_ref,
+        block_type="agent_blueprint",
+        content=blueprint,
+    )
+    vault.record_agent_spec(spec)
+    return spec
+
+
+def _render_agent_blueprint(spec) -> str:
+    return (
+        f"# Agent Blueprint: {spec.agent_id}\n\n"
+        f"You are a `{spec.agent_type}` sub-agent in The Matrix Agent System.\n\n"
+        f"## Purpose\n\n{spec.purpose}\n\n"
+        "## Operating Rules\n\n"
+        "- Stay inside the stated purpose.\n"
+        "- Use only the tools listed in this blueprint.\n"
+        "- Do not read or reveal raw secrets.\n"
+        "- Ask for user confirmation at the listed interaction points.\n"
+        "- Keep final answers clear, simple, and concise.\n\n"
+        f"## Capabilities\n\n{_markdown_list(spec.capabilities)}\n\n"
+        f"## Tools Allowed\n\n{_markdown_list(spec.tools_allowed)}\n\n"
+        f"## Memory Scope\n\n{_markdown_list(spec.memory_scope)}\n\n"
+        f"## Constraints\n\n{_markdown_list(spec.constraints)}\n\n"
+        f"## Interaction Points\n\n{_markdown_list(spec.interaction_points)}\n\n"
+        f"## Risk Level\n\n{spec.risk_level.value}\n\n"
+        f"## Enabled\n\n{spec.enabled}\n"
+    )
+
+
+def _split_lines(value: str) -> list[str]:
+    items = []
+    for line in value.replace(",", "\n").splitlines():
+        item = " ".join(line.split())
+        if item and item not in items:
+            items.append(item[:160])
+    return items[:12]
+
+
+def _markdown_list(values: list[str]) -> str:
+    if not values:
+        return "- None"
+    return "\n".join(f"- {value}" for value in values)
+
+
+def _textarea_lines(values: list[str]) -> str:
+    return "\n".join(values)
+
+
 def _agent_page(
     paths: MatrixPaths,
     store: RuntimeStore,
@@ -848,25 +1494,70 @@ def _agent_page(
             ("Type", spec.agent_type, ""),
             ("Purpose", spec.purpose, ""),
             ("Risk", spec.risk_level.value, ""),
+            ("Status", "active" if spec.enabled else "paused", ""),
+            ("Reusable", "yes" if spec.reusable else "no", ""),
             ("Provider", spec.provider_id, spec.model_id),
             ("Tools", tools, ""),
             ("Memory", memory, ""),
         ]
     )
     action = f"/agent/run?token={escape(token, quote=True)}"
+    update_action = f"/agent/update?token={escape(token, quote=True)}"
+    toggle_action = f"/agent/toggle?token={escape(token, quote=True)}"
+    enabled_checked = " checked" if spec.enabled else ""
+    reusable_checked = " checked" if spec.reusable else ""
+    run_disabled = " disabled" if not spec.enabled else ""
+    run_hint = (
+        "Agent mission accepted. Keep this tab open."
+        if spec.enabled
+        else "Resume this agent before running it."
+    )
     content = f"""
       {rows}
       {_inline_response(response or AppUiResponse())}
+      <form method="post" action="{toggle_action}">
+        <input type="hidden" name="agent_id" value="{escape(spec.agent_id, quote=True)}">
+        <div class="actions">
+          <button type="submit">{"Pause Agent" if spec.enabled else "Resume Agent"}</button>
+        </div>
+      </form>
       <form method="post" action="{action}" data-mission-form>
         <input type="hidden" name="agent_id" value="{escape(spec.agent_id, quote=True)}">
         <label>Mission for this agent
           <textarea name="request" placeholder="Run this agent on a specific task" required></textarea>
         </label>
         <div class="actions">
-          <button type="submit" data-running-label="Agent Running">Run Agent</button>
+          <button type="submit" data-running-label="Agent Running"{run_disabled}>Run Agent</button>
           <span class="submit-status" hidden aria-live="polite">
-            Agent mission accepted. Keep this tab open.
+            {escape(run_hint)}
           </span>
+        </div>
+      </form>
+      <form method="post" action="{update_action}">
+        <input type="hidden" name="agent_id" value="{escape(spec.agent_id, quote=True)}">
+        <h2>Alter Agent</h2>
+        <label>What this agent should do
+          <textarea name="purpose" required>{escape(spec.purpose)}</textarea>
+        </label>
+        <label>What it can do well
+          <textarea name="capabilities">{escape(_textarea_lines(spec.capabilities))}</textarea>
+        </label>
+        <label>Rules for this agent
+          <textarea name="constraints">{escape(_textarea_lines(spec.constraints))}</textarea>
+        </label>
+        <label>When it should ask you
+          <textarea name="interaction_points">{escape(_textarea_lines(spec.interaction_points))}</textarea>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" name="enabled"{enabled_checked}>
+          Agent is active
+        </label>
+        <label class="check-row">
+          <input type="checkbox" name="reusable"{reusable_checked}>
+          Reuse this agent for matching future missions
+        </label>
+        <div class="actions">
+          <button type="submit">Save Agent</button>
         </div>
       </form>
 """
@@ -1017,6 +1708,8 @@ def _utility_page(
     .button-link:hover {{ background: rgba(0,255,65,0.1); }}
     form {{ margin-top: 22px; }}
     label {{ display: grid; gap: 10px; color: #7cff9d; text-transform: uppercase; letter-spacing: 1.4px; font-size: 12px; }}
+    .check-row {{ display: flex; grid-template-columns: none; align-items: center; gap: 10px; }}
+    input[type="checkbox"] {{ accent-color: #00ff41; }}
     textarea {{ width: 100%; min-height: 140px; resize: vertical; border: 1px solid rgba(0,255,65,0.18); background: rgba(0,8,2,0.86); color: #00ff41; font: inherit; padding: 12px; outline: none; }}
     textarea:focus {{ border-color: #00ff41; box-shadow: 0 0 0 1px #00ff41; }}
     button {{ border: 1px solid #00ff41; background: transparent; color: #00ff41; cursor: pointer; font: inherit; padding: 10px 13px; text-transform: uppercase; }}
@@ -1026,13 +1719,22 @@ def _utility_page(
     .notice {{ border-top: 1px dashed rgba(0,255,65,0.16); margin-top: 18px; padding-top: 14px; }}
     .notice.error {{ color: #ff003c; }}
     .notice.busy {{ color: #7cff9d; }}
+    .mission-summary {{ border-bottom: 1px dashed rgba(0,255,65,0.16); margin-bottom: 18px; padding-bottom: 16px; }}
+    .mission-summary h2 {{ border: 0; margin: 0 0 8px; padding: 0; color: #00ff41; font-size: 24px; }}
+    .kicker {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; }}
+    .request-text {{ color: #00ff41; overflow-wrap: anywhere; }}
+    .mission-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }}
+    .timeline {{ display: grid; gap: 10px; }}
+    .timeline-item {{ border-top: 1px dashed rgba(0,255,65,0.16); padding-top: 10px; }}
+    .timeline-title {{ color: #00ff41; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }}
+    .pill {{ display: inline-flex; border: 1px solid rgba(0,255,65,0.22); color: #7cff9d; font-size: 11px; letter-spacing: 1.2px; padding: 2px 8px; text-transform: uppercase; }}
     .result {{ white-space: pre-wrap; color: #00ff41; }}
     .row {{ display: grid; grid-template-columns: 180px 1fr; gap: 12px; padding: 11px 0; border-top: 1px dashed rgba(0,255,65,0.16); }}
     .row:first-child {{ border-top: 0; }}
     .key {{ color: #7cff9d; text-transform: uppercase; letter-spacing: 1.4px; font-size: 12px; }}
     .value {{ color: #00ff41; overflow-wrap: anywhere; }}
     .note {{ color: #00b341; overflow-wrap: anywhere; }}
-    @media (max-width: 720px) {{ .row {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 720px) {{ .row, .mission-grid {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>

@@ -201,13 +201,20 @@ def start(
             paths,
             vault,
             store,
-            request_runner=lambda request: _run_browser_request(paths, vault, store, request),
-            agent_request_runner=lambda agent_id, request: _run_browser_agent_request(
+            request_runner=lambda request, progress_callback=None: _run_browser_request(
+                paths,
+                vault,
+                store,
+                request,
+                progress_callback=progress_callback,
+            ),
+            agent_request_runner=lambda agent_id, request, progress_callback=None: _run_browser_agent_request(
                 paths,
                 vault,
                 store,
                 agent_id,
                 request,
+                progress_callback=progress_callback,
             ),
             open_browser=open_browser,
             url_callback=lambda value: typer.echo(f"App UI: {value}"),
@@ -388,6 +395,7 @@ def _build_runtime(
     store: RuntimeStore,
     provider_config: ProviderConfig | None,
     approval_callback=None,
+    progress_callback=None,
 ) -> tuple[Oracle, Nebuchadnezzar]:
     prompt_library = PromptLibrary(paths.prompts_dir)
     gateway = default_model_gateway(store)
@@ -405,6 +413,7 @@ def _build_runtime(
         neo=Neo(),
         vault=vault,
         store=store,
+        progress_callback=progress_callback,
         agent_runner=AgentRunner(
             gateway,
             prompt_library,
@@ -431,6 +440,7 @@ def _run_browser_request(
     vault: MemoryVault,
     store: RuntimeStore,
     request: str,
+    progress_callback=None,
 ) -> MatrixRunResult:
     provider_config = store.get_default_provider_config()
     selected_privacy = _default_privacy_mode(store)
@@ -440,6 +450,7 @@ def _run_browser_request(
         store,
         provider_config,
         approval_callback=_deny_browser_approval,
+        progress_callback=progress_callback,
     )
     return runtime.run(
         request,
@@ -454,6 +465,7 @@ def _run_browser_agent_request(
     store: RuntimeStore,
     agent_id: str,
     request: str,
+    progress_callback=None,
 ) -> MatrixRunResult:
     provider_config = store.get_default_provider_config()
     selected_privacy = _default_privacy_mode(store)
@@ -463,6 +475,7 @@ def _run_browser_agent_request(
         store,
         provider_config,
         approval_callback=_deny_browser_approval,
+        progress_callback=progress_callback,
     )
     return runtime.run_agent(
         agent_id,

@@ -1,3 +1,5 @@
+import json
+import re
 from threading import Event, Thread
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlparse
@@ -98,6 +100,7 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
         body = response.read().decode("utf-8")
 
     assert "Mission complete." in body
+    assert "Mission Status" in body
     assert requests == ["Build a tiny helper"]
 
     with urlopen(f"http://{parsed.netloc}/settings?{parsed.query}", timeout=5) as response:
@@ -145,6 +148,45 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     assert "Run Agent" in agent_body
     assert "test-agent" in agent_body
     assert "data-mission-form" in agent_body
+    assert "Alter Agent" in agent_body
+
+    payload = urlencode(
+        {
+            "agent_id": "test-agent",
+            "purpose": "Guide a normal user through simple tasks.",
+            "capabilities": "explain steps\nsummarize results",
+            "constraints": "Use plain English",
+            "interaction_points": "final_user_handoff",
+            "enabled": "on",
+            "reusable": "on",
+        }
+    ).encode("utf-8")
+    update_request = Request(
+        f"http://{parsed.netloc}/agent/update?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(update_request, timeout=5) as response:
+        update_body = response.read().decode("utf-8")
+
+    assert "Agent instructions updated." in update_body
+    assert store.get_agent("test-agent").purpose == "Guide a normal user through simple tasks."
+    assert store.get_agent("test-agent").prompt_block_refs == ["agent-blueprint-test-agent"]
+    assert (paths.prompts_dir / "agents" / "test-agent.md").exists()
+
+    payload = urlencode({"agent_id": "test-agent"}).encode("utf-8")
+    toggle_request = Request(
+        f"http://{parsed.netloc}/agent/toggle?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(toggle_request, timeout=5) as response:
+        toggle_body = response.read().decode("utf-8")
+
+    assert "Agent paused." in toggle_body
+    assert store.get_agent("test-agent").enabled is False
 
     payload = urlencode({"agent_id": "test-agent", "request": "Use this stored agent"}).encode(
         "utf-8"
@@ -155,11 +197,16 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urlopen(agent_run_request, timeout=5) as response:
-        agent_run_body = response.read().decode("utf-8")
+    try:
+        urlopen(agent_run_request, timeout=5)
+    except HTTPError as exc:
+        assert exc.code == 400
+        agent_run_body = exc.read().decode("utf-8")
+    else:
+        raise AssertionError("Paused agent run should return HTTP 400.")
 
-    assert "Mission complete." in agent_run_body
-    assert agent_requests == [("test-agent", "Use this stored agent")]
+    assert "Resume this agent before running it." in agent_run_body
+    assert agent_requests == []
 
     with urlopen(f"http://{parsed.netloc}/diagnostics?{parsed.query}", timeout=5) as response:
         diagnostics_body = response.read().decode("utf-8")
@@ -184,6 +231,100 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     thread.join(timeout=5)
     assert "App stopped" in shutdown_body
     assert not thread.is_alive()
+
+
+def test_app_ui_exposes_pollable_mission_status(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    captured_url: list[str] = []
+    ready = Event()
+    running = Event()
+    release = Event()
+
+    def slow_result(request: str, progress_callback=None) -> MatrixRunResult:
+        if progress_callback is not None:
+            progress_callback("oracle", "Oracle is reading the request.", {})
+        running.set()
+        assert release.wait(timeout=5)
+        result = _run_result(request)
+        store.record_run(result)
+        return result
+
+    def run_server() -> None:
+        serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=slow_result,
+            port=0,
+            open_browser=False,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    server_thread = Thread(target=run_server, daemon=True)
+    server_thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+
+    payload = urlencode({"request": "Long mission"}).encode("utf-8")
+    request = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(request, timeout=5) as response:
+        body = response.read().decode("utf-8")
+
+    assert "Mission Status" in body
+    match = re.search(r"job_id=([^\"&]+)", body)
+    assert match is not None
+    job_id = match.group(1)
+    assert running.wait(timeout=5)
+
+    with urlopen(
+        f"http://{parsed.netloc}/mission/status?{parsed.query}&job_id={job_id}",
+        timeout=5,
+    ) as response:
+        status = json.loads(response.read().decode("utf-8"))
+
+    assert status["status"] == "running"
+    assert any(event["stage"] == "oracle" for event in status["events"])
+
+    release.set()
+    for _ in range(20):
+        with urlopen(
+            f"http://{parsed.netloc}/mission/status?{parsed.query}&job_id={job_id}",
+            timeout=5,
+        ) as response:
+            status = json.loads(response.read().decode("utf-8"))
+        if status["status"] == "completed":
+            break
+    assert status["status"] == "completed"
+    assert status["result"]["response"] == "Mission complete."
+
+    with urlopen(
+        f"http://{parsed.netloc}/mission?{parsed.query}&run_id={status['result']['run_id']}",
+        timeout=5,
+    ) as response:
+        detail_body = response.read().decode("utf-8")
+
+    assert "Mission Status" in detail_body
+    assert "Mission complete." in detail_body
+
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5):
+        pass
+    server_thread.join(timeout=5)
+    assert not server_thread.is_alive()
 
 
 def test_app_ui_duplicate_submit_reports_running_state(tmp_path) -> None:

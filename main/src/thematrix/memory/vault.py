@@ -96,6 +96,7 @@ class MemoryVault:
                 f"- Purpose: {spec.purpose}\n"
                 f"- Risk: {spec.risk_level.value}\n"
                 f"- Reusable: {spec.reusable}\n"
+                f"- Enabled: {spec.enabled}\n"
                 f"- Reuse candidate: {spec.reuse_candidate_id or 'none'}\n"
                 f"- Provider: {spec.provider_id}\n"
                 f"- Model: {spec.model_id}\n\n"

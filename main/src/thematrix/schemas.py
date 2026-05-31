@@ -83,6 +83,7 @@ class AgentSpec(BaseModel):
     privacy_mode: PrivacyMode = PrivacyMode.ASK_EACH_TIME
     risk_level: RiskLevel = RiskLevel.LOW
     reusable: bool = True
+    enabled: bool = True
     reuse_candidate_id: str | None = None
     prompt_block_refs: list[str] = Field(default_factory=list)
 

@@ -173,6 +173,40 @@ def test_runtime_runs_selected_reusable_agent_directly(tmp_path) -> None:
     assert len(gateway.requests) == 1
 
 
+def test_runtime_refuses_paused_manual_agent(tmp_path) -> None:
+    vault = MemoryVault(tmp_path / "vault")
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    vault.initialize()
+    store.initialize()
+    prompt_library.install_defaults()
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent")
+    )
+    store.upsert_agent(spec.model_copy(update={"enabled": False}))
+    gateway = FakeGateway("should not run")
+    runtime = Nebuchadnezzar(
+        oracle=Oracle(),
+        architect=Architect(store, prompt_library=prompt_library),
+        neo=Neo(),
+        vault=vault,
+        store=store,
+        agent_runner=AgentRunner(gateway, prompt_library),
+    )
+
+    try:
+        runtime.run_agent(
+            spec.agent_id,
+            "Use this stored agent",
+            privacy_mode=PrivacyMode.ASK_EACH_TIME,
+        )
+    except ValueError as exc:
+        assert "paused" in str(exc)
+    else:
+        raise AssertionError("Paused agents should not run.")
+    assert gateway.requests == []
+
+
 def test_agent_runner_executes_allowed_shell_tool_and_returns_final_answer(tmp_path) -> None:
     prompt_library = PromptLibrary(tmp_path / "prompts")
     prompt_library.install_defaults()

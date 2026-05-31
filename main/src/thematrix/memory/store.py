@@ -175,7 +175,7 @@ class RuntimeStore:
                 (agent_type, limit),
             ).fetchall()
         specs = [AgentSpec.model_validate_json(row["spec_json"]) for row in rows]
-        return [spec for spec in specs if spec.reusable]
+        return [spec for spec in specs if spec.reusable and spec.enabled]
 
     def list_agent_records(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -188,14 +188,22 @@ class RuntimeStore:
                     risk_level,
                     success_count,
                     failure_count,
-                    last_used_at
+                    last_used_at,
+                    spec_json
                 FROM agents
                 ORDER BY last_used_at DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        records = []
+        for row in rows:
+            record = dict(row)
+            spec = AgentSpec.model_validate_json(record.pop("spec_json"))
+            record["reusable"] = spec.reusable
+            record["enabled"] = spec.enabled
+            records.append(record)
+        return records
 
     def overview_counts(self) -> dict[str, int]:
         tables = [

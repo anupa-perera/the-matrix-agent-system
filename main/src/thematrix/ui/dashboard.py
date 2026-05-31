@@ -542,7 +542,7 @@ def render_dashboard_html(
       {metric_panel("Prompt Blocks", counts["prompt_blocks"])}
       {metric_panel("Security Events", counts["security_events"])}
       {provider_panel(provider_config, provider_profile, provider_verification)}
-      {runs_panel(runs, store)}
+      {runs_panel(runs, store, app_token)}
       {agents_panel(agents, app_token)}
       {security_panel(security_events)}
       {prompt_blocks_panel(prompt_blocks)}
@@ -704,18 +704,25 @@ def provider_panel(provider_config, provider_profile, provider_verification) -> 
 """
 
 
-def runs_panel(runs: list[dict], store: RuntimeStore) -> str:
+def runs_panel(runs: list[dict], store: RuntimeStore, app_token: str | None = None) -> str:
     items = []
     for record in runs:
         result = store.get_run(record["run_id"])
         metadata = result.metadata if result else {}
         task_count = metadata.get("mission_task_count", "unknown")
         completed = metadata.get("mission_completed_count", "unknown")
+        title = f"<code>{escape(record['run_id'])}</code>"
+        if app_token is not None:
+            href = (
+                f"/mission?token={quote(app_token, safe='')}"
+                f"&run_id={quote(str(record['run_id']), safe='')}"
+            )
+            title = f'<a class="mission-card" href="{escape(href, quote=True)}">{title}</a>'
         items.append(
             f"""
           <div class="item">
             <div class="row">
-              <h3><code>{escape(record["run_id"])}</code></h3>
+              <h3>{title}</h3>
               <span class="tag">{completed}/{task_count} tasks</span>
             </div>
             <p class="muted">{escape(_clip(record["request"], 150))}</p>
@@ -741,10 +748,11 @@ def agents_panel(agents: list[dict], app_token: str | None = None) -> str:
 
 
 def _agent_item(agent: dict, app_token: str | None) -> str:
+    status = "active" if agent.get("enabled", True) else "paused"
     body = f"""
             <div class="row">
               <h3><code>{escape(agent["agent_id"])}</code></h3>
-              <span class="tag">{escape(agent["agent_type"])}/{escape(agent["risk_level"])}</span>
+              <span class="tag">{escape(agent["agent_type"])}/{escape(status)}</span>
             </div>
             <p class="muted">{escape(_clip(agent["purpose"], 130))}</p>
             <p class="muted">success={agent["success_count"]} failure={agent["failure_count"]}</p>

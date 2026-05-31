@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from thematrix.architect import Architect
@@ -28,6 +29,7 @@ class Nebuchadnezzar:
         vault: MemoryVault,
         store: RuntimeStore,
         agent_runner: AgentRunner | None = None,
+        progress_callback: Callable[[str, str, dict[str, object]], None] | None = None,
     ):
         self.oracle = oracle
         self.architect = architect
@@ -35,6 +37,7 @@ class Nebuchadnezzar:
         self.vault = vault
         self.store = store
         self.agent_runner = agent_runner
+        self.progress_callback = progress_callback
 
     def run(
         self,
@@ -42,11 +45,19 @@ class Nebuchadnezzar:
         privacy_mode: PrivacyMode,
         provider_config: ProviderConfig | None = None,
     ) -> MatrixRunResult:
+        self._emit_progress("oracle", "Understanding the request.")
         brief = self.oracle.assess(user_request)
+        self._emit_progress("architect", "Planning the mission and selecting agents.")
         plan = self.architect.plan_mission(
             brief,
             privacy_mode=privacy_mode,
             provider_config=provider_config,
+        )
+        self._emit_progress(
+            "mission_planned",
+            f"Architect planned {len(plan.tasks)} sequential task(s).",
+            mission_id=plan.mission_id,
+            task_count=len(plan.tasks),
         )
         primary_task = plan.tasks[0]
         spec = primary_task.agent_spec
@@ -108,6 +119,13 @@ class Nebuchadnezzar:
             },
         )
         self._persist_plan_result(plan, result, execution_tool_results)
+        self._emit_progress(
+            "complete",
+            "Mission result is ready.",
+            run_id=result.run_id,
+            completed_count=result.metadata["mission_completed_count"],
+            task_count=result.metadata["mission_task_count"],
+        )
         return result
 
     def continue_mission(
@@ -123,6 +141,12 @@ class Nebuchadnezzar:
         if not tasks:
             raise ValueError(f"No mission tasks found for run id: {run_id}")
 
+        self._emit_progress(
+            "mission_resumed",
+            "Continuing the unfinished mission.",
+            run_id=run_id,
+            task_count=len(tasks),
+        )
         plan = MissionPlan(mission_id=run_id, tasks=tasks)
         previous_statuses = {task.task_id: task.status for task in plan.tasks}
         for task in plan.tasks:
@@ -181,6 +205,13 @@ class Nebuchadnezzar:
             execution_tool_results,
             previous_statuses=previous_statuses,
         )
+        self._emit_progress(
+            "complete",
+            "Mission result is ready.",
+            run_id=result.run_id,
+            completed_count=result.metadata["mission_completed_count"],
+            task_count=result.metadata["mission_task_count"],
+        )
         return result
 
     def run_agent(
@@ -193,7 +224,15 @@ class Nebuchadnezzar:
         spec = self.store.get_agent(agent_id)
         if spec is None:
             raise ValueError(f"No agent found for id: {agent_id}")
+        if not spec.enabled:
+            raise ValueError(f"Agent is paused: {agent_id}")
 
+        self._emit_progress(
+            "agent_selected",
+            f"Loaded reusable agent `{agent_id}`.",
+            agent_id=agent_id,
+        )
+        self._emit_progress("oracle", "Understanding the request for this agent.")
         brief = self.oracle.assess(user_request)
         agent_spec = spec.model_copy(deep=True)
         agent_spec.privacy_mode = privacy_mode
@@ -270,6 +309,13 @@ class Nebuchadnezzar:
             },
         )
         self._persist_plan_result(plan, result, execution_tool_results)
+        self._emit_progress(
+            "complete",
+            "Agent result is ready.",
+            run_id=result.run_id,
+            completed_count=result.metadata["mission_completed_count"],
+            task_count=result.metadata["mission_task_count"],
+        )
         return result
 
     def _run_sequential_plan(
@@ -302,6 +348,15 @@ class Nebuchadnezzar:
                 continue
             task.status = TaskStatus.RUNNING
             task.updated_at = datetime.now(UTC)
+            self._emit_progress(
+                "neo_preflight",
+                f"Neo is reviewing task {task.sequence}: {task.title}",
+                mission_id=plan.mission_id,
+                task_id=task.task_id,
+                task_sequence=task.sequence,
+                agent_id=task.agent_spec.agent_id,
+                agent_type=task.agent_spec.agent_type,
+            )
             preflight = self.neo.review_agent_spec(task.agent_spec)
             if first_preflight is None:
                 first_preflight = preflight
@@ -310,17 +365,51 @@ class Nebuchadnezzar:
                 task.error = "; ".join(preflight.issues)
                 task.result_summary = "Neo blocked this task before execution."
                 task.updated_at = datetime.now(UTC)
+                self._emit_progress(
+                    "blocked",
+                    f"Neo blocked task {task.sequence}: {task.title}",
+                    mission_id=plan.mission_id,
+                    task_id=task.task_id,
+                    task_sequence=task.sequence,
+                    agent_id=task.agent_spec.agent_id,
+                    issues=preflight.issues,
+                )
                 break
             if task.agent_spec.provider_id == "unconfigured":
                 task.status = TaskStatus.SKIPPED
                 task.result_summary = "No model provider is configured for execution."
                 task.updated_at = datetime.now(UTC)
+                self._emit_progress(
+                    "skipped",
+                    f"Task {task.sequence} is waiting for a configured model provider.",
+                    mission_id=plan.mission_id,
+                    task_id=task.task_id,
+                    task_sequence=task.sequence,
+                    agent_id=task.agent_spec.agent_id,
+                )
                 continue
             if self.agent_runner is None:
                 task.status = TaskStatus.SKIPPED
                 task.result_summary = "Runtime execution is not attached."
                 task.updated_at = datetime.now(UTC)
+                self._emit_progress(
+                    "skipped",
+                    f"Task {task.sequence} cannot run because execution is not attached.",
+                    mission_id=plan.mission_id,
+                    task_id=task.task_id,
+                    task_sequence=task.sequence,
+                    agent_id=task.agent_spec.agent_id,
+                )
                 continue
+            self._emit_progress(
+                "task_running",
+                f"Running task {task.sequence} with `{task.agent_spec.agent_id}`.",
+                mission_id=plan.mission_id,
+                task_id=task.task_id,
+                task_sequence=task.sequence,
+                agent_id=task.agent_spec.agent_id,
+                agent_type=task.agent_spec.agent_type,
+            )
             execution = self.agent_runner.run(
                 task.agent_spec,
                 brief,
@@ -336,6 +425,16 @@ class Nebuchadnezzar:
             task.error = execution.error
             task.updated_at = datetime.now(UTC)
             previous_results.append(f"{task.title}: {execution.response}")
+            self._emit_progress(
+                "task_completed" if execution.executed else "task_failed",
+                f"Task {task.sequence} {task.status.value}: {task.title}",
+                mission_id=plan.mission_id,
+                task_id=task.task_id,
+                task_sequence=task.sequence,
+                agent_id=task.agent_spec.agent_id,
+                tool_result_count=task.tool_result_count,
+                error=task.error,
+            )
             if not execution.executed:
                 break
         return {
@@ -481,3 +580,11 @@ class Nebuchadnezzar:
         if execution_status == "error":
             return False
         return output_approved
+
+    def _emit_progress(self, stage: str, message: str, **details: object) -> None:
+        if self.progress_callback is None:
+            return
+        try:
+            self.progress_callback(stage, message, details)
+        except Exception:
+            return

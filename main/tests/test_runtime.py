@@ -55,3 +55,32 @@ def test_runtime_records_run(tmp_path) -> None:
     ).exists()
     assert (tmp_path / "vault" / "raw" / "neo_reviews" / f"{result.run_id}-output.md").exists()
     assert (tmp_path / "vault" / "raw" / "runs" / f"{result.run_id}.json").exists()
+
+
+def test_runtime_emits_mission_progress_events(tmp_path) -> None:
+    vault = MemoryVault(tmp_path / "vault")
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    vault.initialize()
+    store.initialize()
+    events: list[tuple[str, str, dict[str, object]]] = []
+
+    runtime = Nebuchadnezzar(
+        oracle=Oracle(),
+        architect=Architect(store),
+        neo=Neo(),
+        vault=vault,
+        store=store,
+        progress_callback=lambda stage, message, details: events.append(
+            (stage, message, details)
+        ),
+    )
+
+    runtime.run("Build a coding helper agent", privacy_mode=PrivacyMode.ASK_EACH_TIME)
+
+    stages = [event[0] for event in events]
+    assert "oracle" in stages
+    assert "architect" in stages
+    assert "mission_planned" in stages
+    assert "neo_preflight" in stages
+    assert "skipped" in stages
+    assert stages[-1] == "complete"
