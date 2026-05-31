@@ -98,8 +98,9 @@ def _check_pages(problems: list[str]) -> None:
     required = [
         "releases/latest/download/the-matrix-agent-system-windows.zip",
         "releases/latest/download/the-matrix-agent-system-mac-linux.tar.gz",
-        "OpenAI Codex",
-        "official Codex app",
+        "local-first Matrix-inspired agent framework",
+        "works with different AI models",
+        "Choose Your AI",
     ]
     for text in required:
         if text not in html:
