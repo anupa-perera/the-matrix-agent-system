@@ -13,6 +13,7 @@ from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.neo import Neo
 from thematrix.oracle import Oracle
 from thematrix.onboarding import OnboardingService
+from thematrix.operator import TheOperator
 from thematrix.prompts import PromptLibrary
 from thematrix.providers import (
     ModelGatewayError,
@@ -42,10 +43,12 @@ providers_app = typer.Typer(help="Manage model providers.")
 memory_app = typer.Typer(help="Inspect memory locations.")
 agents_app = typer.Typer(help="Inspect reusable agent specs.")
 missions_app = typer.Typer(help="Inspect and continue mission ledgers.")
+operator_app = typer.Typer(help="Manage recurring Operator goals.")
 app.add_typer(providers_app, name="providers")
 app.add_typer(memory_app, name="memory")
 app.add_typer(agents_app, name="agents")
 app.add_typer(missions_app, name="missions")
+app.add_typer(operator_app, name="operator")
 
 
 def bootstrap(paths: MatrixPaths) -> tuple[MemoryVault, RuntimeStore]:
@@ -387,6 +390,63 @@ def continue_mission(
         raise typer.Exit(code=1) from exc
     typer.echo(oracle.finalize(result))
     typer.echo(f"Mission updated: {result.run_id}")
+
+
+@operator_app.command("list")
+def list_operator_goals(
+    limit: Annotated[int, typer.Option(help="Maximum number of goals to show.")] = 20,
+) -> None:
+    """List recurring goals stewarded by The Operator."""
+    _, store = bootstrap(MatrixPaths())
+    goals = store.list_operator_goals(limit=limit)
+    if not goals:
+        typer.echo("No Operator goals are recorded yet.")
+        return
+    for goal in goals:
+        next_run = goal.next_run_at.isoformat() if goal.next_run_at else "none"
+        typer.echo(f"{goal.goal_id} [{goal.status.value}] {goal.title}")
+        typer.echo(f"  kind={goal.kind.value} next={next_run} failures={goal.failure_count}")
+
+
+@operator_app.command("pause")
+def pause_operator_goal(goal_id: Annotated[str, typer.Argument(help="Operator goal id.")]) -> None:
+    """Pause an active Operator goal."""
+    _, store = bootstrap(MatrixPaths())
+    goal = TheOperator(store).pause_goal(goal_id)
+    typer.echo(f"Paused Operator goal: {goal.goal_id}")
+
+
+@operator_app.command("activate")
+def activate_operator_goal(goal_id: Annotated[str, typer.Argument(help="Operator goal id.")]) -> None:
+    """Activate a pending recurring Operator goal."""
+    _, store = bootstrap(MatrixPaths())
+    goal = TheOperator(store).activate_goal(goal_id)
+    typer.echo(f"Activated Operator goal: {goal.goal_id}")
+
+
+@operator_app.command("resume")
+def resume_operator_goal(goal_id: Annotated[str, typer.Argument(help="Operator goal id.")]) -> None:
+    """Resume a paused Operator goal."""
+    _, store = bootstrap(MatrixPaths())
+    goal = TheOperator(store).resume_goal(goal_id)
+    typer.echo(f"Resumed Operator goal: {goal.goal_id}")
+
+
+@operator_app.command("cancel")
+def cancel_operator_goal(goal_id: Annotated[str, typer.Argument(help="Operator goal id.")]) -> None:
+    """Cancel an Operator goal."""
+    _, store = bootstrap(MatrixPaths())
+    goal = TheOperator(store).cancel_goal(goal_id)
+    typer.echo(f"Canceled Operator goal: {goal.goal_id}")
+
+
+@operator_app.command("run-now")
+def run_operator_goal_now(goal_id: Annotated[str, typer.Argument(help="Operator goal id.")]) -> None:
+    """Run an Operator goal immediately."""
+    _, store = bootstrap(MatrixPaths())
+    goal = TheOperator(store).run_goal_now(goal_id)
+    typer.echo(f"Operator goal run recorded: {goal.goal_id}")
+    typer.echo(goal.last_result)
 
 
 def _build_runtime(

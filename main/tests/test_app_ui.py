@@ -12,9 +12,19 @@ from thematrix.schemas import (
     AgentSpec,
     EthicalStatus,
     MatrixRunResult,
+    MissionTask,
+    OperatorGoalKind,
+    OperatorGoalStatus,
+    OperatorSchedule,
     OracleBrief,
+    TaskStatus,
+    OperatorGoal,
 )
-from thematrix.ui.app_server import render_app_page, serve_app_ui
+from thematrix.ui.app_server import (
+    _mission_payload,
+    render_app_page,
+    serve_app_ui,
+)
 
 
 def _run_result(request: str) -> MatrixRunResult:
@@ -49,6 +59,110 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "Useful terminal commands" not in html
     assert "the-matrix providers current" not in html
     assert "Recent Missions" in html
+    assert "The Operator" in html
+
+
+def test_app_page_recent_mission_links_do_not_use_default_underline(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+    store.record_run(_run_result("Build a helper").model_copy(update={"run_id": "run-1"}))
+
+    html = render_app_page(paths, store, "token-123")
+
+    assert ".run-link {" in html
+    assert ".run-link:hover, .run-link:focus { text-decoration: none; }" in html
+    expected_link = (
+        '<a class="run-link" href="/mission?token=token-123&run_id=run-1">'
+        "<code>run-1</code></a>"
+    )
+    assert expected_link in html
+
+
+def test_app_page_renders_operator_goal_controls(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+    store.upsert_operator_goal(
+        OperatorGoal(
+            goal_id="goal-1",
+            original_request="Send me a notification every 5 minutes",
+            title="Drink water",
+            kind=OperatorGoalKind.RECURRING_NOTIFICATION,
+            status=OperatorGoalStatus.ACTIVE,
+            schedule=OperatorSchedule(interval_minutes=5),
+            capability="notify_desktop",
+            payload={"message": "Drink water"},
+        )
+    )
+
+    html = render_app_page(paths, store, "token-123")
+
+    assert "Drink water" in html
+    assert "/operator?token=token-123" in html
+    assert "/operator?token=token-123&amp;goal_id=goal-1" in html
+    assert "/operator/action?token=token-123" in html
+    assert 'value="pause"' in html
+    assert 'value="run_now"' in html
+
+    store.upsert_operator_goal(
+        OperatorGoal(
+            goal_id="goal-2",
+            original_request="Send me a notification every 10 minutes",
+            title="Pending reminder",
+            kind=OperatorGoalKind.RECURRING_NOTIFICATION,
+            status=OperatorGoalStatus.PENDING,
+            schedule=OperatorSchedule(interval_minutes=10),
+            capability="notify_desktop",
+            payload={"message": "Pending reminder"},
+        )
+    )
+    html = render_app_page(paths, store, "token-123")
+    assert "Waiting for your activation" in html
+    assert 'value="activate"' in html
+
+    store.upsert_operator_goal(
+        OperatorGoal(
+            goal_id="goal-3",
+            original_request="Build a completed helper",
+            title="Completed helper",
+            kind=OperatorGoalKind.ONE_SHOT,
+            status=OperatorGoalStatus.COMPLETED,
+            capability="mission_run",
+        )
+    )
+    html = render_app_page(paths, store, "token-123")
+    assert "Completed helper" not in html
+
+
+def test_operator_goal_detail_explains_pending_recurring_goal(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+    store.upsert_operator_goal(
+        OperatorGoal(
+            goal_id="goal-1",
+            original_request="Send me a notification about water every 5 minutes",
+            title="Water reminder",
+            kind=OperatorGoalKind.RECURRING_NOTIFICATION,
+            status=OperatorGoalStatus.PENDING,
+            schedule=OperatorSchedule(interval_minutes=5),
+            capability="notify_desktop",
+            payload={"message": "water"},
+        )
+    )
+
+    from thematrix.ui.app_server import _operator_page
+
+    html = _operator_page(store, "token-123", goal_id="goal-1")
+
+    assert "Operator Goal" in html
+    assert "Nothing recurring will happen until you activate this goal." in html
+    assert "After activation" in html
+    assert "every 5 minute(s)" in html
+    assert "It will not read files, run shell commands, control apps" in html
+    assert 'value="activate"' in html
+    assert 'value="cancel"' in html
 
 
 def test_app_ui_server_runs_browser_request(tmp_path) -> None:
@@ -104,6 +218,42 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     assert "Mission complete." in body
     assert "Mission Status" in body
     assert requests == ["Build a tiny helper"]
+    assert len(store.list_operator_goals()) == 1
+
+    payload = urlencode({"request": "Send me a notification about stretching every 5 minutes"}).encode(
+        "utf-8"
+    )
+    operator_request = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(operator_request, timeout=5) as response:
+        operator_body = response.read().decode("utf-8")
+
+    assert "The Operator drafted a recurring goal" in operator_body
+    assert "Review it below" in operator_body
+    assert "stretching" in operator_body
+    assert requests == ["Build a tiny helper"]
+    assert len(store.list_operator_goals()) == 2
+    pending_goals = [goal for goal in store.list_operator_goals() if goal.title == "stretching"]
+    assert pending_goals[0].status == OperatorGoalStatus.PENDING
+    assert pending_goals[0].next_run_at is None
+
+    activate_request = Request(
+        f"http://{parsed.netloc}/operator/action?{parsed.query}",
+        data=urlencode({"goal_id": pending_goals[0].goal_id, "action": "activate"}).encode(
+            "utf-8"
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(activate_request, timeout=5) as response:
+        activated_body = response.read().decode("utf-8")
+
+    assert "Operator goal updated." in activated_body
+    assert store.get_operator_goal(pending_goals[0].goal_id).status == OperatorGoalStatus.ACTIVE
 
     with urlopen(f"http://{parsed.netloc}/settings?{parsed.query}", timeout=5) as response:
         settings_body = response.read().decode("utf-8")
@@ -138,6 +288,8 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     with urlopen(f"http://{parsed.netloc}/dashboard?{parsed.query}", timeout=5) as response:
         dashboard_body = response.read().decode("utf-8")
     assert "Control Center" in dashboard_body
+    assert "The Operator" in dashboard_body
+    assert "/operator?" in dashboard_body
     assert "/diagnostics?" in dashboard_body
     assert "/memory?" in dashboard_body
     assert "/agent?" in dashboard_body
@@ -332,6 +484,89 @@ def test_app_ui_exposes_pollable_mission_status(tmp_path) -> None:
         pass
     server_thread.join(timeout=5)
     assert not server_thread.is_alive()
+
+
+def test_mission_status_payload_explains_execution_path(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+    spec = AgentSpec(
+        agent_id="news-agent",
+        agent_type="operator",
+        purpose="Send configurable local news updates.",
+        capabilities=["confirm_preferences", "summarize_news"],
+        tools_allowed=["memory_read"],
+        constraints=["Ask before background scheduling."],
+        interaction_points=["before_sensitive_actions", "final_user_handoff"],
+    )
+    result = MatrixRunResult(
+        request="create a news update agent",
+        oracle_brief=OracleBrief(
+            intent="create a news update agent",
+            ethical_status=EthicalStatus.SAFE,
+            user_interaction_required=True,
+            human_need="Make the operating path clear before setup.",
+            constraints=["Respect the user's privacy mode."],
+            success_criteria=[
+                "The user can see what each agent step is for.",
+                "The agent stays inside its approved scope.",
+            ],
+        ),
+        agent_spec=spec,
+        response="Mission complete.",
+        metadata={
+            "mission_strategy": "sequential",
+            "mission_task_count": 1,
+            "mission_completed_count": 1,
+            "agent_execution_status": "executed",
+        },
+    )
+    store.record_run(result)
+    store.record_mission_task(
+        result.run_id,
+        MissionTask(
+            sequence=1,
+            title="Confirm news preferences",
+            description="Ask the user which topics, sources, and delivery mode they want.",
+            agent_spec=spec,
+            architect_decision="Spawned a focused operator for the preference step.",
+            required_capabilities=["confirm_preferences"],
+            expected_outputs=["User-approved news topics, sources, and delivery mode."],
+            completion_checks=["The user knows what must happen before scheduling starts."],
+            user_actions=["Approve background scheduling before it is enabled."],
+            status=TaskStatus.COMPLETED,
+            result_summary="Collected user-approved topics and delivery mode.",
+        ),
+    )
+
+    payload = _mission_payload(store, None, run_id=result.run_id)
+
+    assert payload["mission_context"]["need"] == "Make the operating path clear before setup."
+    assert payload["mission_context"]["success_criteria"][0] == (
+        "The user can see what each agent step is for."
+    )
+    assert payload["tasks"][0]["description"] == (
+        "Ask the user which topics, sources, and delivery mode they want."
+    )
+    assert payload["tasks"][0]["agent_purpose"] == "Send configurable local news updates."
+    assert payload["tasks"][0]["capabilities"] == ["confirm_preferences", "summarize_news"]
+    assert payload["tasks"][0]["required_capabilities"] == ["confirm_preferences"]
+    assert payload["tasks"][0]["expected_outputs"] == [
+        "User-approved news topics, sources, and delivery mode."
+    ]
+    assert payload["tasks"][0]["completion_checks"] == [
+        "The user knows what must happen before scheduling starts."
+    ]
+    assert payload["tasks"][0]["user_actions"] == [
+        "Approve background scheduling before it is enabled."
+    ]
+    assert payload["tasks"][0]["interaction_points"] == [
+        "before_sensitive_actions",
+        "final_user_handoff",
+    ]
+    assert payload["tasks"][0]["result_summary"] == (
+        "Collected user-approved topics and delivery mode."
+    )
 
 
 def test_app_ui_duplicate_submit_reports_running_state(tmp_path) -> None:

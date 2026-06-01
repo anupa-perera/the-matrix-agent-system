@@ -214,6 +214,28 @@ def test_architect_plans_build_then_sentinel_review(tmp_path: Path) -> None:
     assert plan.tasks[1].sequence == 2
     assert "Spawned" in plan.tasks[0].architect_decision
     assert plan.tasks[0].agent_spec.agent_id in plan.tasks[0].architect_decision
+    assert plan.tasks[0].required_capabilities == plan.tasks[0].agent_spec.capabilities
+    assert plan.tasks[0].expected_outputs
+    assert plan.tasks[0].completion_checks
+
+
+def test_architect_records_execution_requirements_for_recurring_notification(tmp_path: Path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    brief = OracleBrief(
+        intent="Create an agent that notifies me every 5 minutes with world news",
+        ethical_status="safe",
+        user_interaction_required=True,
+        human_need="Make the recurring work controllable.",
+    )
+
+    plan = Architect(store).plan_mission(brief)
+
+    combined_outputs = " ".join(output for task in plan.tasks for output in task.expected_outputs)
+    combined_actions = " ".join(action for task in plan.tasks for action in task.user_actions)
+    assert "start, stop, and status controls" in combined_outputs
+    assert "delivery path for notifications" in combined_outputs
+    assert "Approve sensitive or persistent local actions" in combined_actions
 
 
 def test_architect_records_reuse_decision_on_mission_task(tmp_path: Path) -> None:

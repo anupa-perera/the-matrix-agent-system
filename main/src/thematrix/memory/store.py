@@ -11,6 +11,9 @@ from thematrix.schemas import (
     AgentSpec,
     MatrixRunResult,
     MissionTask,
+    OperatorGoal,
+    OperatorGoalRun,
+    OperatorGoalStatus,
     ProviderConfig,
     ProviderProfile,
 )
@@ -106,6 +109,33 @@ class RuntimeStore:
 
                 CREATE INDEX IF NOT EXISTS idx_mission_tasks_run_sequence
                 ON mission_tasks(run_id, sequence);
+
+                CREATE TABLE IF NOT EXISTS operator_goals (
+                    goal_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    next_run_at TEXT,
+                    last_run_at TEXT,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    goal_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_operator_goals_status_next_run
+                ON operator_goals(status, next_run_at);
+
+                CREATE TABLE IF NOT EXISTS operator_goal_runs (
+                    run_id TEXT PRIMARY KEY,
+                    goal_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    run_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_operator_goal_runs_goal_created
+                ON operator_goal_runs(goal_id, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS security_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,6 +243,7 @@ class RuntimeStore:
             "mission_tasks",
             "security_events",
             "model_calls",
+            "operator_goals",
         ]
         with self.connect() as conn:
             return {
@@ -332,6 +363,138 @@ class RuntimeStore:
         with self.connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [MissionTask.model_validate_json(row["task_json"]) for row in rows]
+
+    def upsert_operator_goal(self, goal: OperatorGoal) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO operator_goals(
+                    goal_id,
+                    status,
+                    kind,
+                    title,
+                    next_run_at,
+                    last_run_at,
+                    failure_count,
+                    goal_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(goal_id) DO UPDATE SET
+                    status = excluded.status,
+                    kind = excluded.kind,
+                    title = excluded.title,
+                    next_run_at = excluded.next_run_at,
+                    last_run_at = excluded.last_run_at,
+                    failure_count = excluded.failure_count,
+                    goal_json = excluded.goal_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    goal.goal_id,
+                    goal.status.value,
+                    goal.kind.value,
+                    goal.title,
+                    goal.next_run_at.isoformat() if goal.next_run_at else None,
+                    goal.last_run_at.isoformat() if goal.last_run_at else None,
+                    goal.failure_count,
+                    goal.model_dump_json(),
+                    goal.updated_at.isoformat(),
+                ),
+            )
+
+    def get_operator_goal(self, goal_id: str) -> OperatorGoal | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT goal_json FROM operator_goals WHERE goal_id = ?",
+                (goal_id,),
+            ).fetchone()
+        return OperatorGoal.model_validate_json(row["goal_json"]) if row else None
+
+    def list_operator_goals(
+        self,
+        status: OperatorGoalStatus | None = None,
+        limit: int = 20,
+    ) -> list[OperatorGoal]:
+        if status is None:
+            query = """
+                SELECT goal_json FROM operator_goals
+                ORDER BY updated_at DESC
+                LIMIT ?
+            """
+            params: tuple[object, ...] = (limit,)
+        else:
+            query = """
+                SELECT goal_json FROM operator_goals
+                WHERE status = ?
+                ORDER BY next_run_at IS NULL, next_run_at ASC, updated_at DESC
+                LIMIT ?
+            """
+            params = (status.value, limit)
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [OperatorGoal.model_validate_json(row["goal_json"]) for row in rows]
+
+    def list_due_operator_goals(self, now: datetime, limit: int = 20) -> list[OperatorGoal]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT goal_json FROM operator_goals
+                WHERE status = ? AND next_run_at IS NOT NULL AND next_run_at <= ?
+                ORDER BY next_run_at ASC
+                LIMIT ?
+                """,
+                (OperatorGoalStatus.ACTIVE.value, now.isoformat(), limit),
+            ).fetchall()
+        return [OperatorGoal.model_validate_json(row["goal_json"]) for row in rows]
+
+    def record_operator_goal_run(self, run: OperatorGoalRun) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO operator_goal_runs(
+                    run_id,
+                    goal_id,
+                    created_at,
+                    status,
+                    message,
+                    run_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.run_id,
+                    run.goal_id,
+                    run.created_at.isoformat(),
+                    run.status.value,
+                    run.message,
+                    run.model_dump_json(),
+                ),
+            )
+
+    def list_operator_goal_runs(
+        self,
+        goal_id: str | None = None,
+        limit: int = 20,
+    ) -> list[OperatorGoalRun]:
+        if goal_id is None:
+            query = """
+                SELECT run_json FROM operator_goal_runs
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params: tuple[object, ...] = (limit,)
+        else:
+            query = """
+                SELECT run_json FROM operator_goal_runs
+                WHERE goal_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params = (goal_id, limit)
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [OperatorGoalRun.model_validate_json(row["run_json"]) for row in rows]
 
     def record_prompt_block(self, block_ref: str, block_type: str, content: str) -> None:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()

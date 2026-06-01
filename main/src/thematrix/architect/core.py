@@ -149,6 +149,10 @@ class Architect:
                     description=task_brief.intent,
                     agent_spec=spec,
                     architect_decision=self._architect_decision_for(spec),
+                    required_capabilities=spec.capabilities,
+                    expected_outputs=self._expected_outputs_for(task_brief.intent, spec),
+                    completion_checks=self._completion_checks_for(task_brief, spec),
+                    user_actions=self._user_actions_for(spec),
                 )
             )
         return MissionPlan(tasks=tasks)
@@ -312,6 +316,52 @@ class Architect:
             f"Spawned `{spec.agent_id}` because no compatible reusable {spec.agent_type} "
             "baseline matched this task."
         )
+
+    def _expected_outputs_for(self, intent: str, spec: AgentSpec) -> list[str]:
+        lowered = intent.lower()
+        outputs = [f"A concrete result for: {intent[:160]}"]
+        if spec.agent_type == "builder" or any(
+            term in lowered for term in ["build", "create", "implement", "fix", "code"]
+        ):
+            outputs.append("Implemented files or a clear approval block explaining what is missing.")
+        if "agent" in lowered:
+            outputs.append("A reusable agent record or runnable handoff the user can invoke later.")
+        if any(term in lowered for term in ["every", "recurring", "schedule", "background"]):
+            outputs.append(
+                "Configuration plus start, stop, and status controls before any background loop runs."
+            )
+        if any(
+            term in lowered
+            for term in ["notify", "notifies", "notification", "send me", "update me"]
+        ):
+            outputs.append(
+                "A delivery path for notifications, or an explicit request for missing delivery settings."
+            )
+        return self._merge_text_lists([], outputs)
+
+    def _completion_checks_for(self, brief: OracleBrief, spec: AgentSpec) -> list[str]:
+        checks = list(brief.success_criteria)
+        checks.append("The result says whether the task completed, is blocked, or needs approval.")
+        if "file_write" in spec.tools_allowed:
+            checks.append("Written files are named and remain inside the approved workspace.")
+        if "shell_guarded" in spec.tools_allowed:
+            checks.append("Commands that change local state are approved or left pending.")
+        return self._merge_text_lists([], checks)
+
+    def _user_actions_for(self, spec: AgentSpec) -> list[str]:
+        action_labels = {
+            "before_sensitive_actions": "Approve sensitive or persistent local actions.",
+            "before_cloud_sensitive_use": "Approve cloud/provider use for sensitive data.",
+            "before_file_writes": "Approve file writes.",
+            "before_shell_commands": "Approve shell commands.",
+            "when_scope_changes": "Approve scope changes.",
+            "final_user_handoff": "Review the final handoff and next controls.",
+        }
+        return [
+            action_labels[point]
+            for point in spec.interaction_points
+            if point in action_labels
+        ]
 
     def _classify_agent_type(self, intent: str) -> str:
         lowered = intent.lower()

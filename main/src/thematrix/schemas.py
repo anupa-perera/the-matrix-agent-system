@@ -97,6 +97,55 @@ class TaskStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class OperatorGoalKind(StrEnum):
+    ONE_SHOT = "one_shot"
+    RECURRING_NOTIFICATION = "recurring_notification"
+
+
+class OperatorGoalStatus(StrEnum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+class OperatorRunStatus(StrEnum):
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+class OperatorSchedule(BaseModel):
+    interval_minutes: int
+
+
+class OperatorGoal(BaseModel):
+    goal_id: str = Field(default_factory=lambda: str(uuid4()))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    original_request: str
+    title: str
+    kind: OperatorGoalKind
+    status: OperatorGoalStatus = OperatorGoalStatus.ACTIVE
+    schedule: OperatorSchedule | None = None
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    last_result: str = ""
+    failure_count: int = 0
+    capability: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class OperatorGoalRun(BaseModel):
+    run_id: str = Field(default_factory=lambda: str(uuid4()))
+    goal_id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    status: OperatorRunStatus
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class MissionTask(BaseModel):
     task_id: str = Field(default_factory=lambda: str(uuid4()))
     sequence: int
@@ -104,6 +153,10 @@ class MissionTask(BaseModel):
     description: str
     agent_spec: AgentSpec
     architect_decision: str = ""
+    required_capabilities: list[str] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+    completion_checks: list[str] = Field(default_factory=list)
+    user_actions: list[str] = Field(default_factory=list)
     status: TaskStatus = TaskStatus.PENDING
     result_summary: str = ""
     tool_result_count: int = 0

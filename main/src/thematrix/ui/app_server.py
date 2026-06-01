@@ -16,6 +16,7 @@ import webbrowser
 
 from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
+from thematrix.operator import TheOperator
 from thematrix.prompts import PromptLibrary
 from thematrix.providers import detect_local_providers
 from thematrix.providers.oauth import (
@@ -25,7 +26,7 @@ from thematrix.providers.oauth import (
     exchange_openrouter_code,
     setup_form_from_oauth,
 )
-from thematrix.schemas import AgentSpec, MatrixRunResult
+from thematrix.schemas import AgentSpec, MatrixRunResult, MissionTask, OperatorGoalStatus
 from thematrix.security import Keymaker
 from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
 from thematrix.ui.setup_server import apply_setup_form, render_setup_form
@@ -134,6 +135,7 @@ def serve_app_ui(
     store: RuntimeStore,
     request_runner: Callable[..., MatrixRunResult],
     agent_request_runner: Callable[..., MatrixRunResult] | None = None,
+    operator: TheOperator | None = None,
     port: int = 0,
     open_browser: bool = True,
     url_callback: Callable[[str], None] | None = None,
@@ -142,6 +144,8 @@ def serve_app_ui(
     token = token_urlsafe(24)
     run_lock = Lock()
     mission_registry = MissionRegistry()
+    active_operator = operator or TheOperator(store)
+    active_operator.start()
     server = _AppServer(
         ("127.0.0.1", port),
         _handler_factory(
@@ -151,6 +155,7 @@ def serve_app_ui(
             token,
             request_runner,
             agent_request_runner,
+            active_operator,
             run_lock,
             mission_registry,
         ),
@@ -168,6 +173,7 @@ def serve_app_ui(
         server.serve_forever()
     finally:
         timer.cancel()
+        active_operator.stop()
         server.server_close()
     return url
 
@@ -183,6 +189,7 @@ def _handler_factory(
     token: str,
     request_runner: Callable[..., MatrixRunResult],
     agent_request_runner: Callable[..., MatrixRunResult] | None,
+    operator: TheOperator,
     run_lock: Lock,
     mission_registry: MissionRegistry,
 ) -> AgentSpec:
@@ -253,6 +260,10 @@ def _handler_factory(
             if parsed.path == "/memory":
                 self._send_html(HTTPStatus.OK, _memory_page(paths, store, token))
                 return
+            if parsed.path == "/operator":
+                goal_id = parse_qs(parsed.query).get("goal_id", [""])[-1].strip()
+                self._send_html(HTTPStatus.OK, _operator_page(store, token, goal_id=goal_id))
+                return
             self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not Found", "Unknown route."))
 
         def do_POST(self) -> None:
@@ -305,6 +316,23 @@ def _handler_factory(
                         ),
                     )
                     return
+                operator_goal = operator.create_from_request(user_request)
+                if operator_goal is not None:
+                    self._send_html(
+                        HTTPStatus.OK,
+                        render_app_page(
+                            paths,
+                            store,
+                            token,
+                            AppUiResponse(
+                                message=(
+                                    "The Operator drafted a recurring goal. "
+                                    "Review it below, then activate it if it should keep running."
+                                ),
+                            ),
+                        ),
+                    )
+                    return
                 if not run_lock.acquire(blocking=False):
                     self._send_html(
                         HTTPStatus.CONFLICT,
@@ -322,13 +350,44 @@ def _handler_factory(
                         ),
                     )
                     return
+                goal = operator.create_one_shot_goal(user_request)
                 job = mission_registry.create("mission", user_request)
                 Thread(
                     target=_run_background_mission,
-                    args=(job, request_runner, user_request, run_lock),
+                    args=(job, request_runner, user_request, run_lock, operator, goal.goal_id),
                     daemon=True,
                 ).start()
                 self._send_html(HTTPStatus.ACCEPTED, _mission_page(store, token, job))
+                return
+            if parsed.path == "/operator/action":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                goal_id = form.get("goal_id", "").strip()
+                action = form.get("action", "").strip()
+                try:
+                    if action == "activate":
+                        operator.activate_goal(goal_id)
+                    elif action == "pause":
+                        operator.pause_goal(goal_id)
+                    elif action == "resume":
+                        operator.resume_goal(goal_id)
+                    elif action == "cancel":
+                        operator.cancel_goal(goal_id)
+                    elif action == "run_now":
+                        operator.run_goal_now(goal_id)
+                    else:
+                        raise ValueError("Choose a valid Operator action.")
+                except ValueError as exc:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _operator_page(store, token, AppUiResponse(error=str(exc))),
+                    )
+                    return
+                self._send_html(
+                    HTTPStatus.OK,
+                    _operator_page(store, token, response=AppUiResponse(message="Operator goal updated.")),
+                )
                 return
             if parsed.path == "/agent/update":
                 form = self._read_form(paths, store, token)
@@ -454,10 +513,23 @@ def _handler_factory(
                         ),
                     )
                     return
+                goal = operator.create_one_shot_goal(
+                    user_request,
+                    title=f"Run {agent_id}",
+                    payload={"agent_id": agent_id},
+                )
                 job = mission_registry.create("agent", user_request, agent_id=agent_id)
                 Thread(
                     target=_run_background_agent_mission,
-                    args=(job, agent_request_runner, agent_id, user_request, run_lock),
+                    args=(
+                        job,
+                        agent_request_runner,
+                        agent_id,
+                        user_request,
+                        run_lock,
+                        operator,
+                        goal.goal_id,
+                    ),
                     daemon=True,
                 ).start()
                 self._send_html(HTTPStatus.ACCEPTED, _mission_page(store, token, job))
@@ -608,14 +680,24 @@ def _run_background_mission(
     request_runner: Callable[..., MatrixRunResult],
     request: str,
     run_lock: Lock,
+    operator: TheOperator | None = None,
+    goal_id: str | None = None,
 ) -> None:
     job.start()
     try:
         result = _call_runner(request_runner, request, job.record)
     except Exception as exc:
         job.fail(f"Mission failed: {exc}")
+        if operator is not None and goal_id:
+            operator.fail_goal(goal_id, f"Mission failed: {exc}")
     else:
         job.complete(result)
+        if operator is not None and goal_id:
+            operator.complete_goal(
+                goal_id,
+                "Mission completed.",
+                {"run_id": result.run_id, "kind": job.kind},
+            )
     finally:
         run_lock.release()
 
@@ -626,14 +708,24 @@ def _run_background_agent_mission(
     agent_id: str,
     request: str,
     run_lock: Lock,
+    operator: TheOperator | None = None,
+    goal_id: str | None = None,
 ) -> None:
     job.start()
     try:
         result = _call_agent_runner(agent_request_runner, agent_id, request, job.record)
     except Exception as exc:
         job.fail(f"Agent run failed: {exc}")
+        if operator is not None and goal_id:
+            operator.fail_goal(goal_id, f"Agent run failed: {exc}", {"agent_id": agent_id})
     else:
         job.complete(result)
+        if operator is not None and goal_id:
+            operator.complete_goal(
+                goal_id,
+                "Agent run completed.",
+                {"run_id": result.run_id, "agent_id": agent_id, "kind": job.kind},
+            )
     finally:
         run_lock.release()
 
@@ -708,6 +800,7 @@ def _mission_page(
           <p id="mission-message" class="muted"></p>
           <p id="mission-request" class="request-text"></p>
         </div>
+        <div id="mission-contract"></div>
         <div id="mission-result"></div>
         <div class="mission-grid">
           <div>
@@ -726,7 +819,11 @@ def _mission_page(
         token,
         "Track what the agents are doing and open the result when it is ready.",
         content,
-        extra_script=_mission_status_script(status_url, payload, _token_url("/agent", token)),
+        extra_script=_mission_status_script(
+            status_url,
+            payload,
+            _token_url("/agent", token),
+        ),
         primary_action_label=primary_action_label,
         primary_action_url=primary_action_url,
     )
@@ -742,7 +839,8 @@ def _mission_payload(
             result = job.result
             resolved_run_id = result.run_id if result is not None else ""
             resolved_agent_id = job.agent_id or _result_agent_id(result)
-            return {
+            events = list(job.events)
+            payload = {
                 "found": True,
                 "job_id": job.job_id,
                 "kind": job.kind,
@@ -756,11 +854,17 @@ def _mission_payload(
                 "started_at": job.started_at,
                 "completed_at": job.completed_at,
                 "run_id": resolved_run_id,
-                "events": [_event_payload(event) for event in job.events],
+                "events": [_event_payload(event) for event in events],
+                "mission_context": _mission_context_from_result(result)
+                if result is not None
+                else _mission_context_from_events(events),
                 "tasks": _task_payloads(store, resolved_run_id),
                 "result": _result_payload(result),
                 "error": job.error,
             }
+            if not payload["tasks"]:
+                payload["tasks"] = _task_payloads_from_events(events)
+            return payload
 
     if run_id:
         result = store.get_run(run_id)
@@ -782,6 +886,7 @@ def _mission_payload(
             "completed_at": result.created_at.isoformat(),
             "run_id": result.run_id,
             "events": _events_from_result(result),
+            "mission_context": _mission_context_from_result(result),
             "tasks": _task_payloads(store, result.run_id),
             "result": _result_payload(result),
             "error": result.metadata.get("agent_execution_error"),
@@ -797,6 +902,38 @@ def _result_agent_id(result: MatrixRunResult | None) -> str | None:
 
 def _agent_available(store: RuntimeStore, agent_id: str | None) -> bool:
     return bool(agent_id and store.get_agent(agent_id) is not None)
+
+
+def _mission_context_from_result(result: MatrixRunResult | None) -> dict[str, object]:
+    if result is None:
+        return {}
+    return {
+        "intent": result.oracle_brief.intent,
+        "need": result.oracle_brief.human_need,
+        "success_criteria": result.oracle_brief.success_criteria,
+        "constraints": result.oracle_brief.constraints,
+        "strategy": result.metadata.get("mission_strategy", "sequential"),
+        "execution_status": result.metadata.get("agent_execution_status"),
+        "task_count": result.metadata.get("mission_task_count"),
+        "completed_count": result.metadata.get("mission_completed_count"),
+    }
+
+
+def _mission_context_from_events(events: list[MissionStatusEvent]) -> dict[str, object]:
+    for event in reversed(events):
+        details = event.details
+        if "mission_need" not in details and "success_criteria" not in details:
+            continue
+        return {
+            "intent": _string_value(details.get("intent")),
+            "need": _string_value(details.get("mission_need")),
+            "success_criteria": _string_list(details.get("success_criteria")),
+            "constraints": _string_list(details.get("constraints")),
+            "strategy": _string_value(details.get("strategy")),
+            "task_count": details.get("task_count"),
+            "completed_count": 0,
+        }
+    return {}
 
 
 def _event_payload(event: MissionStatusEvent) -> dict[str, object]:
@@ -836,19 +973,63 @@ def _events_from_result(result: MatrixRunResult) -> list[dict[str, object]]:
 def _task_payloads(store: RuntimeStore, run_id: str) -> list[dict[str, object]]:
     if not run_id:
         return []
-    return [
-        {
-            "sequence": task.sequence,
-            "title": task.title,
-            "status": task.status.value,
-            "agent_id": task.agent_spec.agent_id,
-            "agent_type": task.agent_spec.agent_type,
-            "result_summary": task.result_summary,
-            "tool_result_count": task.tool_result_count,
-            "error": task.error,
-        }
-        for task in store.list_mission_tasks(run_id=run_id, limit=100)
-    ]
+    return [_task_payload(task) for task in store.list_mission_tasks(run_id=run_id, limit=100)]
+
+
+def _task_payload(task: MissionTask) -> dict[str, object]:
+    spec = task.agent_spec
+    return {
+        "task_id": task.task_id,
+        "sequence": task.sequence,
+        "title": task.title,
+        "description": task.description,
+        "status": task.status.value,
+        "agent_id": spec.agent_id,
+        "agent_type": spec.agent_type,
+        "agent_purpose": spec.purpose,
+        "capabilities": spec.capabilities,
+        "tools_allowed": spec.tools_allowed,
+        "memory_scope": spec.memory_scope,
+        "constraints": spec.constraints,
+        "interaction_points": spec.interaction_points,
+        "risk_level": spec.risk_level.value,
+        "provider_id": spec.provider_id,
+        "model_id": spec.model_id,
+        "architect_decision": task.architect_decision,
+        "required_capabilities": task.required_capabilities,
+        "expected_outputs": task.expected_outputs,
+        "completion_checks": task.completion_checks,
+        "user_actions": task.user_actions,
+        "result_summary": task.result_summary,
+        "tool_result_count": task.tool_result_count,
+        "error": task.error,
+    }
+
+
+def _task_payloads_from_events(events: list[MissionStatusEvent]) -> list[dict[str, object]]:
+    for event in reversed(events):
+        raw_tasks = event.details.get("tasks")
+        if not isinstance(raw_tasks, list):
+            continue
+        tasks = []
+        for raw_task in raw_tasks:
+            if isinstance(raw_task, dict):
+                tasks.append({str(key): value for key, value in raw_task.items()})
+        if tasks:
+            return tasks
+    return []
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [_string_value(item) for item in value if _string_value(item)]
+
+
+def _string_value(value: object) -> str:
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
 
 
 def _result_payload(result: MatrixRunResult | None) -> dict[str, object] | None:
@@ -890,6 +1071,7 @@ def _mission_status_script(
       const events = document.getElementById('mission-events');
       const tasks = document.getElementById('mission-tasks');
       const result = document.getElementById('mission-result');
+      const contract = document.getElementById('mission-contract');
 
       function clear(node) {{
         while (node && node.firstChild) node.removeChild(node.firstChild);
@@ -915,6 +1097,124 @@ def _mission_status_script(
         return item;
       }}
 
+      function values(items) {{
+        if (!Array.isArray(items)) return [];
+        return items.map((item) => String(item || '').trim()).filter(Boolean);
+      }}
+
+      function appendField(parent, label, value) {{
+        const clean = String(value || '').trim();
+        if (!clean) return;
+        const item = document.createElement('div');
+        item.className = 'contract-field';
+        const key = document.createElement('p');
+        key.className = 'kicker';
+        key.textContent = label;
+        const body = document.createElement('p');
+        body.textContent = clean;
+        item.appendChild(key);
+        item.appendChild(body);
+        parent.appendChild(item);
+      }}
+
+      function appendListField(parent, label, items, fallback) {{
+        const clean = values(items);
+        appendField(parent, label, clean.length ? clean.join('; ') : fallback);
+      }}
+
+      function taskProof(task) {{
+        if (task.error) return 'Blocked or failed: ' + task.error;
+        if (task.result_summary) return task.result_summary;
+        if (task.status === 'skipped') return 'Waiting for a configured provider or attached runtime.';
+        return 'No result recorded yet.';
+      }}
+
+      function taskStep(task) {{
+        const item = document.createElement('div');
+        item.className = 'execution-step';
+        const head = document.createElement('div');
+        head.className = 'execution-step-head';
+        const title = document.createElement('p');
+        title.className = 'timeline-title';
+        title.textContent = (task.sequence || '?') + '. ' + (task.title || 'Task');
+        head.appendChild(title);
+        if (task.status) {{
+          const status = document.createElement('span');
+          status.className = 'pill';
+          status.textContent = task.status;
+          head.appendChild(status);
+        }}
+        item.appendChild(head);
+
+        const objective = document.createElement('p');
+        objective.className = 'request-text';
+        objective.textContent = task.description || task.title || 'No task objective recorded.';
+        item.appendChild(objective);
+
+        const details = document.createElement('div');
+        details.className = 'execution-details';
+        appendField(
+          details,
+          'Agent',
+          (task.agent_id || 'unknown') + ' / ' + (task.agent_type || 'unknown')
+        );
+        appendField(details, 'Purpose', task.agent_purpose);
+        appendListField(
+          details,
+          'Required capabilities',
+          task.required_capabilities || task.capabilities,
+          'No capability list recorded.'
+        );
+        appendListField(details, 'Expected outputs', task.expected_outputs, 'No expected outputs recorded.');
+        appendListField(details, 'Completion checks', task.completion_checks, 'No completion checks recorded.');
+        appendListField(details, 'Allowed tools', task.tools_allowed, 'No tools recorded.');
+        appendListField(
+          details,
+          'User actions',
+          task.user_actions || task.interaction_points,
+          'No user action recorded.'
+        );
+        appendListField(details, 'Guardrails', task.constraints, 'No task guardrails recorded.');
+        appendField(details, 'Proof', taskProof(task));
+        item.appendChild(details);
+        return item;
+      }}
+
+      function renderContract() {{
+        clear(contract);
+        const context = payload.mission_context || {{}};
+        const taskList = payload.tasks || [];
+        const box = document.createElement('div');
+        box.className = 'mission-contract';
+        const heading = document.createElement('h2');
+        heading.textContent = 'How This Mission Succeeds';
+        box.appendChild(heading);
+
+        const grid = document.createElement('div');
+        grid.className = 'contract-grid';
+        appendField(grid, 'Mission need', context.need || context.intent || payload.request);
+        appendListField(grid, 'Success signals', context.success_criteria, 'No success signals recorded yet.');
+        appendListField(grid, 'Mission guardrails', context.constraints, 'No extra guardrails recorded.');
+        appendField(grid, 'Strategy', context.strategy);
+        if (!grid.childNodes.length) {{
+          appendField(grid, 'Plan', 'Waiting for Architect to publish the execution path.');
+        }}
+        box.appendChild(grid);
+
+        const pathTitle = document.createElement('h3');
+        pathTitle.textContent = 'Execution Path';
+        box.appendChild(pathTitle);
+        const path = document.createElement('div');
+        path.className = 'execution-path';
+        if (taskList.length) {{
+          taskList.forEach((task) => path.appendChild(taskStep(task)));
+        }} else {{
+          path.appendChild(line('Plan pending', 'The planner has not published task mechanics yet.', 'pending'));
+        }}
+        box.appendChild(path);
+        contract.appendChild(box);
+      }}
+
       function agentUrl(agentId) {{
         return agentActionBaseUrl + '&agent_id=' + encodeURIComponent(agentId);
       }}
@@ -931,6 +1231,7 @@ def _mission_status_script(
         state.textContent = String(payload.status || 'unknown').toUpperCase();
         message.textContent = payload.message || '';
         request.textContent = payload.request || '';
+        renderContract();
         clear(events);
         (payload.events || []).forEach((event) => {{
           events.appendChild(line(event.stage || 'event', event.message || '', event.created_at || ''));
@@ -940,9 +1241,13 @@ def _mission_status_script(
         }}
         clear(tasks);
         (payload.tasks || []).forEach((task) => {{
+          const taskBody = [
+            task.description || '',
+            'Agent: ' + (task.agent_id || 'unknown')
+          ].filter(Boolean).join(' | ');
           tasks.appendChild(line(
             (task.sequence || '?') + '. ' + (task.title || 'Task'),
-            'Agent: ' + (task.agent_id || 'unknown'),
+            taskBody,
             task.status || ''
           ));
         }});
@@ -1022,6 +1327,7 @@ def render_app_page(
         if provider_config.reasoning_effort:
             provider_label += f" / {provider_config.reasoning_effort}"
     result_html = _result_panel(response)
+    operator_html = _operator_panel(store, token)
     recent_html = _recent_runs_panel(store, token)
     help_html = _help_panel()
     return f"""<!doctype html>
@@ -1222,6 +1528,27 @@ def render_app_page(
       padding-top: 12px;
     }}
     .item:first-child {{ border-top: 0; padding-top: 0; }}
+    .run-link {{
+      color: var(--phosphor-bright);
+      text-decoration: none;
+    }}
+    .run-link:hover, .run-link:focus {{ text-decoration: none; }}
+    .operator-row {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+      border-top: 1px dashed var(--line);
+      padding-top: 12px;
+    }}
+    .operator-row:first-child {{ border-top: 0; padding-top: 0; }}
+    .operator-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }}
+    .operator-actions button {{ font-size: 18px; letter-spacing: 2px; margin-top: 0; padding: 8px 12px; }}
     details.panel summary {{
       cursor: pointer;
       list-style: none;
@@ -1272,6 +1599,7 @@ def render_app_page(
       </form>
     </section>
     {result_html}
+    {operator_html}
     {help_html}
     {recent_html}
   </main>
@@ -1364,6 +1692,79 @@ def _result_panel(response: AppUiResponse) -> str:
 """
 
 
+def _operator_panel(store: RuntimeStore, token: str) -> str:
+    goals = _actionable_operator_goals(store.list_operator_goals(limit=20))[:5]
+    items = []
+    for goal in goals:
+        next_run = goal.next_run_at.isoformat(timespec="seconds") if goal.next_run_at else "not scheduled"
+        last = goal.last_result or "No runs recorded yet."
+        if goal.status == OperatorGoalStatus.PENDING:
+            last = "Waiting for your activation before anything recurring starts."
+        actions = _operator_goal_actions(goal.goal_id, goal.status, token)
+        items.append(
+            f"""
+        <div class="operator-row">
+          <div>
+            <p><a class="run-link" href="{_operator_goal_url(token, goal.goal_id)}"><strong>{escape(goal.title)}</strong></a></p>
+            <p class="muted">status={escape(goal.status.value)} next={escape(next_run)}</p>
+            <p class="muted">{escape(last)}</p>
+          </div>
+          <div class="operator-actions">{actions}</div>
+        </div>
+"""
+        )
+    content = "".join(items) or (
+        '<p class="muted">No Operator goals need attention right now. Try: '
+        'send me a notification to drink water every 5 minutes.</p>'
+    )
+    return f"""
+    <section class="panel">
+      <h2>The Operator</h2>
+      <div class="list">{content}</div>
+      <div class="actions">
+        <a class="button-link" href="/operator?token={escape(token, quote=True)}">Open Operator</a>
+      </div>
+    </section>
+"""
+
+
+def _operator_goal_actions(goal_id: str, status: OperatorGoalStatus, token: str) -> str:
+    action_url = f"/operator/action?token={escape(token, quote=True)}"
+    if status == OperatorGoalStatus.PENDING:
+        buttons = ["activate", "cancel"]
+    elif status == OperatorGoalStatus.CANCELED:
+        buttons = []
+    elif status in {OperatorGoalStatus.COMPLETED, OperatorGoalStatus.FAILED}:
+        buttons = ["cancel"]
+    else:
+        primary = "resume" if status == OperatorGoalStatus.PAUSED else "pause"
+        buttons = [primary, "run_now", "cancel"]
+    return "".join(
+        f"""
+            <form method="post" action="{action_url}">
+              <input type="hidden" name="goal_id" value="{escape(goal_id, quote=True)}">
+              <input type="hidden" name="action" value="{escape(action, quote=True)}">
+              <button type="submit">{escape(action.replace("_", " "))}</button>
+            </form>
+"""
+        for action in buttons
+    )
+
+
+def _operator_goal_url(token: str, goal_id: str) -> str:
+    return escape(_token_url("/operator", token, goal_id=goal_id), quote=True)
+
+
+def _actionable_operator_goals(goals) -> list:
+    actionable = {
+        OperatorGoalStatus.PENDING,
+        OperatorGoalStatus.ACTIVE,
+        OperatorGoalStatus.PAUSED,
+        OperatorGoalStatus.FAILED,
+    }
+    return [goal for goal in goals if goal.status in actionable]
+
+
 def _recent_runs_panel(store: RuntimeStore, token: str) -> str:
     runs = store.list_run_records(limit=5)
     items = []
@@ -1372,7 +1773,7 @@ def _recent_runs_panel(store: RuntimeStore, token: str) -> str:
         items.append(
             f"""
         <div class="item">
-          <p><a href="{href}"><code>{escape(run["run_id"])}</code></a></p>
+          <p><a class="run-link" href="{href}"><code>{escape(run["run_id"])}</code></a></p>
           <p class="muted">{escape(_clip(run["request"], 180))}</p>
         </div>
 """
@@ -1394,6 +1795,10 @@ def _help_panel() -> str:
         <div class="item">
           <p><strong>Run from browser</strong></p>
           <p class="muted">Use the request box above for normal agent missions.</p>
+        </div>
+        <div class="item">
+          <p><strong>The Operator</strong></p>
+          <p class="muted">Recurring goals are drafted first. Review and activate them before they run, and keep this app open while they are scheduled.</p>
         </div>
         <div class="item">
           <p><strong>Change provider</strong></p>
@@ -1721,6 +2126,177 @@ def _memory_page(paths: MatrixPaths, store: RuntimeStore, token: str) -> str:
     )
 
 
+def _operator_page(
+    store: RuntimeStore,
+    token: str,
+    goal_id: str = "",
+    response: AppUiResponse | None = None,
+) -> str:
+    response = response or AppUiResponse()
+    if goal_id:
+        return _operator_goal_page(store, token, goal_id, response)
+    goals = store.list_operator_goals(limit=20)
+    runs = store.list_operator_goal_runs(limit=8)
+    goal_items = []
+    for goal in goals:
+        schedule = (
+            f"every {goal.schedule.interval_minutes} minute(s)" if goal.schedule else "no schedule"
+        )
+        next_run = goal.next_run_at.isoformat(timespec="seconds") if goal.next_run_at else "none"
+        last_run = goal.last_run_at.isoformat(timespec="seconds") if goal.last_run_at else "none"
+        goal_items.append(
+            f"""
+        <div class="notice">
+          <strong>{escape(goal.title)}</strong>
+          <p class="muted">id=<code>{escape(goal.goal_id)}</code></p>
+          <p class="muted">status={escape(goal.status.value)} schedule={escape(schedule)}</p>
+          <p class="muted">next={escape(next_run)} last={escape(last_run)} failures={goal.failure_count}</p>
+          <p class="result">{escape(goal.payload.get("message", ""))}</p>
+          <p><a class="button-link" href="{_operator_goal_url(token, goal.goal_id)}">Inspect Goal</a></p>
+          <div class="operator-actions">
+            {_operator_goal_actions(goal.goal_id, goal.status, token)}
+          </div>
+        </div>
+"""
+        )
+    run_items = [
+        f"""
+        <div class="timeline-item">
+          <p class="timeline-title">{escape(run.status.value)} / {escape(run.goal_id)}</p>
+          <p class="muted">{escape(run.created_at.isoformat(timespec="seconds"))}</p>
+          <p>{escape(run.message)}</p>
+        </div>
+"""
+        for run in runs
+    ]
+    content = f"""
+      {_inline_response(response)}
+      <h2>Goals</h2>
+      {''.join(goal_items) or '<p class="muted">No Operator goals are active yet.</p>'}
+      <h2>Recent Operator Runs</h2>
+      <div class="timeline">{''.join(run_items) or '<p class="muted">No Operator runs recorded yet.</p>'}</div>
+"""
+    return _utility_page(
+        "The Operator",
+        token,
+        "Recurring goals live here while The Matrix app is running.",
+        content,
+    )
+
+
+def _operator_goal_page(
+    store: RuntimeStore,
+    token: str,
+    goal_id: str,
+    response: AppUiResponse,
+) -> str:
+    goal = store.get_operator_goal(goal_id)
+    if goal is None:
+        return _utility_page(
+            "Operator Goal Missing",
+            token,
+            "No Operator goal exists with that id.",
+            _inline_response(AppUiResponse(error=f"No Operator goal exists with id `{goal_id}`.")),
+            primary_action_label="The Operator",
+            primary_action_url=_token_url("/operator", token),
+        )
+    runs = store.list_operator_goal_runs(goal_id=goal.goal_id, limit=12)
+    schedule = f"Every {goal.schedule.interval_minutes} minute(s)" if goal.schedule else "Not scheduled"
+    next_run = goal.next_run_at.isoformat(timespec="seconds") if goal.next_run_at else "Not scheduled"
+    last_run = goal.last_run_at.isoformat(timespec="seconds") if goal.last_run_at else "No run yet"
+    capability = goal.capability or "none"
+    payload_message = str(goal.payload.get("message", "")).strip()
+    explanation = _operator_goal_explanation(goal.status, goal.kind.value, capability)
+    run_items = [
+        f"""
+        <div class="timeline-item">
+          <p class="timeline-title">{escape(run.status.value)}</p>
+          <p class="muted">{escape(run.created_at.isoformat(timespec="seconds"))}</p>
+          <p>{escape(run.message)}</p>
+        </div>
+"""
+        for run in runs
+    ]
+    rows = _rows_html(
+        [
+            ("Status", goal.status.value, explanation),
+            ("Schedule", schedule, f"Next run: {next_run}"),
+            ("Capability", capability, _operator_capability_note(capability)),
+            ("Message", payload_message or "none", "This is the notification/body payload."),
+            ("Last run", last_run, goal.last_result or "No result recorded yet."),
+            ("Original request", goal.original_request, ""),
+        ]
+    )
+    content = f"""
+      {_inline_response(response)}
+      {rows}
+      <div class="notice">
+        <strong>What The Operator Will Do</strong>
+        <p>{escape(_operator_goal_plain_english(goal))}</p>
+      </div>
+      <div class="notice">
+        <strong>What The Operator Will Not Do</strong>
+        <p>{escape(_operator_goal_limits(goal))}</p>
+      </div>
+      <div class="operator-actions">
+        {_operator_goal_actions(goal.goal_id, goal.status, token)}
+      </div>
+      <h2>Goal History</h2>
+      <div class="timeline">{''.join(run_items) or '<p class="muted">No runs recorded for this goal yet.</p>'}</div>
+"""
+    return _utility_page(
+        "Operator Goal",
+        token,
+        f"Inspect `{goal.title}` before letting it continue.",
+        content,
+        primary_action_label="The Operator",
+        primary_action_url=_token_url("/operator", token),
+    )
+
+
+def _operator_goal_explanation(status: OperatorGoalStatus, kind: str, capability: str) -> str:
+    if status == OperatorGoalStatus.PENDING:
+        return "Nothing recurring will happen until you activate this goal."
+    if status == OperatorGoalStatus.ACTIVE:
+        return "The Operator may run this goal while the app is open."
+    if status == OperatorGoalStatus.PAUSED:
+        return "This goal is saved but will not run until resumed."
+    if status == OperatorGoalStatus.CANCELED:
+        return "This goal is stopped and will not run again."
+    if status == OperatorGoalStatus.FAILED:
+        return "This goal needs attention before it is trusted."
+    if kind == "one_shot" or capability == "mission_run":
+        return "This was tracked as a one-time delegated mission."
+    return "This goal is recorded in The Operator."
+
+
+def _operator_capability_note(capability: str) -> str:
+    if capability == "notify_desktop":
+        return "Allows a local desktop notification only."
+    if capability == "mission_run":
+        return "Tracks a one-time mission through the normal runtime."
+    return "No external action capability is recorded."
+
+
+def _operator_goal_plain_english(goal) -> str:
+    if goal.kind.value == "recurring_notification" and goal.schedule is not None:
+        message = str(goal.payload.get("message", "the reminder")).strip() or "the reminder"
+        return (
+            f"After activation, it will send a local desktop notification saying "
+            f"`{message}` every {goal.schedule.interval_minutes} minute(s) while The Matrix app is running."
+        )
+    return "It tracks this delegated mission and records whether it completed or failed."
+
+
+def _operator_goal_limits(goal) -> str:
+    if goal.capability == "notify_desktop":
+        return (
+            "It will not read files, run shell commands, control apps, or keep running after "
+            "The Matrix app is stopped."
+        )
+    return "It does not add extra permissions beyond the normal mission safety flow."
+
+
 def _utility_page(
     title: str,
     token: str,
@@ -1763,10 +2339,26 @@ def _utility_page(
     .notice.error {{ color: #ff003c; }}
     .notice.busy {{ color: #7cff9d; }}
     .result-actions {{ margin-top: 14px; }}
+    .operator-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
+    .operator-actions form {{ margin: 0; }}
+    .operator-actions button {{ font-size: 13px; letter-spacing: 1.4px; margin-top: 0; padding: 8px 10px; }}
     .mission-summary {{ border-bottom: 1px dashed rgba(0,255,65,0.16); margin-bottom: 18px; padding-bottom: 16px; }}
     .mission-summary h2 {{ border: 0; margin: 0 0 8px; padding: 0; color: #00ff41; font-size: 24px; }}
     .kicker {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; }}
     .request-text {{ color: #00ff41; overflow-wrap: anywhere; }}
+    .mission-contract {{ border-bottom: 1px dashed rgba(0,255,65,0.16); margin-bottom: 18px; padding-bottom: 18px; }}
+    .mission-contract h2, .mission-contract h3 {{ color: #00ff41; margin: 0 0 10px; }}
+    .mission-contract h2 {{ font-size: 24px; }}
+    .mission-contract h3 {{ font-size: 17px; margin-top: 18px; text-transform: uppercase; letter-spacing: 1px; }}
+    .contract-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; margin-bottom: 8px; }}
+    .contract-field {{ border-top: 1px dashed rgba(0,255,65,0.16); padding-top: 10px; min-width: 0; }}
+    .contract-field p:last-child {{ color: #00ff41; overflow-wrap: anywhere; }}
+    .execution-path {{ display: grid; gap: 12px; }}
+    .execution-step {{ border-top: 1px dashed rgba(0,255,65,0.16); padding-top: 12px; }}
+    .execution-step-head {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }}
+    .execution-step-head .timeline-title {{ margin-bottom: 8px; }}
+    .execution-details {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin-top: 10px; }}
+    .execution-details .contract-field {{ padding-top: 8px; }}
     .mission-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 18px; }}
     .timeline {{ display: grid; gap: 10px; }}
     .timeline-item {{ border-top: 1px dashed rgba(0,255,65,0.16); padding-top: 10px; }}
@@ -1778,7 +2370,7 @@ def _utility_page(
     .key {{ color: #7cff9d; text-transform: uppercase; letter-spacing: 1.4px; font-size: 12px; }}
     .value {{ color: #00ff41; overflow-wrap: anywhere; }}
     .note {{ color: #00b341; overflow-wrap: anywhere; }}
-    @media (max-width: 720px) {{ .row, .mission-grid {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 720px) {{ .row, .mission-grid, .contract-grid, .execution-details {{ grid-template-columns: 1fr; }} .execution-step-head {{ display: block; }} }}
   </style>
 </head>
 <body>

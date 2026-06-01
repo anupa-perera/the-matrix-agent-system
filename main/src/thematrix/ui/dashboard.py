@@ -42,6 +42,7 @@ def render_dashboard_html(
     )
     agents = store.list_agent_records(limit=6)
     runs = store.list_run_records(limit=6)
+    operator_goals = _actionable_operator_goals(store.list_operator_goals(limit=20))[:6]
     prompt_blocks = store.list_prompt_blocks(limit=6)
     security_events = store.list_security_events(limit=6)
     model_calls = store.list_model_calls(limit=6)
@@ -431,16 +432,20 @@ def render_dashboard_html(
     .row {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; }}
     .row h3 {{ min-width: 0; }}
     .row .tag {{ flex: 0 0 auto; }}
-    .agent-card {{
+    .agent-card,
+    .mission-card {{
       display: block;
       color: inherit;
       text-decoration: none;
     }}
     .agent-card:hover code,
-    .agent-card:focus-visible code {{
+    .agent-card:focus-visible code,
+    .mission-card:hover code,
+    .mission-card:focus-visible code {{
       color: var(--phosphor-white);
     }}
-    .agent-card:focus-visible {{
+    .agent-card:focus-visible,
+    .mission-card:focus-visible {{
       outline: 1px solid var(--phosphor-bright);
       outline-offset: 6px;
     }}
@@ -542,6 +547,7 @@ def render_dashboard_html(
       {metric_panel("Prompt Blocks", counts["prompt_blocks"])}
       {metric_panel("Security Events", counts["security_events"])}
       {provider_panel(provider_config, provider_profile, provider_verification)}
+      {operator_panel(operator_goals, app_token)}
       {runs_panel(runs, store, app_token)}
       {agents_panel(agents, app_token)}
       {security_panel(security_events)}
@@ -613,10 +619,10 @@ def control_panel(app_token: str | None) -> str:
     if app_token:
         actions = [
             ("Mission Console", "/?token=" + app_token, "Ask for work in plain English."),
+            ("The Operator", "/operator?token=" + app_token, "See recurring goals and controls."),
             ("Change Model", "/settings?token=" + app_token, "Switch local or cloud provider."),
             ("System Check", "/diagnostics?token=" + app_token, "Check setup health and safety state."),
             ("Memory", "/memory?token=" + app_token, "View where the local vault stores memory."),
-            ("Refresh", "/dashboard?token=" + app_token, "Reload this control center."),
         ]
         stop_html = f"""
           <form class="control-form" method="post" action="/shutdown?token={escape(app_token, quote=True)}">
@@ -630,9 +636,9 @@ def control_panel(app_token: str | None) -> str:
         actions = [
             ("Start App", "#start-app", "Run the beginner launcher command."),
             ("Ask Agent", "#start-app", "Use the app console after launch."),
+            ("The Operator", "#start-app", "Manage recurring goals after launch."),
             ("Change Model", "#start-app", "Open provider settings after launch."),
             ("System Check", "#start-app", "Run diagnostics from the app or terminal."),
-            ("Memory", "#memory", "Inspect the Obsidian vault paths below."),
         ]
     links = "\n".join(
         f"""
@@ -700,6 +706,40 @@ def provider_panel(provider_config, provider_profile, provider_verification) -> 
         <p class="muted">Reasoning: <code>{escape(reasoning)}</code></p>
         <p class="muted">Auth: {escape(provider_config.auth_mode.value)} ({secret})</p>
         <p class="muted">Verification: {escape(verification_text)}</p>
+      </section>
+"""
+
+
+def operator_panel(goals: list, app_token: str | None = None) -> str:
+    items = []
+    for goal in goals:
+        next_run = goal.next_run_at.isoformat(timespec="seconds") if goal.next_run_at else "none"
+        actions = ""
+        title = escape(goal.title)
+        if app_token is not None:
+            href = (
+                f"/operator?token={quote(app_token, safe='')}"
+                f"&goal_id={quote(str(goal.goal_id), safe='')}"
+            )
+            title = f'<a class="mission-card" href="{escape(href, quote=True)}">{title}</a>'
+            actions = f'<p><a class="agent-run" href="{escape(href, quote=True)}">inspect goal</a></p>'
+        items.append(
+            f"""
+          <div class="item">
+            <div class="row">
+              <h3>{title}</h3>
+              <span class="tag">{escape(goal.status.value)}</span>
+            </div>
+            <p class="muted">next={escape(next_run)}</p>
+            <p class="muted">{escape(_clip(goal.last_result or goal.original_request, 140))}</p>
+            {actions}
+          </div>
+"""
+        )
+    return f"""
+      <section class="panel span-4">
+        <h2>The Operator</h2>
+        <div class="list">{''.join(items) or empty_text("No recurring goals active yet.")}</div>
       </section>
 """
 
@@ -847,6 +887,11 @@ def model_calls_panel(model_calls: list[dict]) -> str:
 
 def empty_text(text: str) -> str:
     return f'<p class="muted">{escape(text)}</p>'
+
+
+def _actionable_operator_goals(goals: list) -> list:
+    actionable = {"pending", "active", "paused", "failed"}
+    return [goal for goal in goals if goal.status.value in actionable]
 
 
 def _clip(value: str, limit: int) -> str:

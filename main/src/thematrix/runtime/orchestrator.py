@@ -58,6 +58,12 @@ class Nebuchadnezzar:
             f"Architect planned {len(plan.tasks)} sequential task(s).",
             mission_id=plan.mission_id,
             task_count=len(plan.tasks),
+            strategy=plan.strategy,
+            mission_need=brief.human_need,
+            intent=brief.intent,
+            success_criteria=brief.success_criteria,
+            constraints=brief.constraints,
+            tasks=[self._progress_task_payload(task) for task in plan.tasks],
         )
         primary_task = plan.tasks[0]
         spec = primary_task.agent_spec
@@ -508,8 +514,17 @@ class Nebuchadnezzar:
         return (
             f"Original user request:\n{user_request}\n\n"
             f"Current sequential task:\n{task.description}\n\n"
+            f"Required capabilities:\n{self._plain_list(task.required_capabilities)}\n\n"
+            f"Expected outputs:\n{self._plain_list(task.expected_outputs)}\n\n"
+            f"Completion checks:\n{self._plain_list(task.completion_checks)}\n\n"
+            f"User actions or approvals:\n{self._plain_list(task.user_actions)}\n\n"
             f"Previous task results:\n{context}"
         )
+
+    def _plain_list(self, values: list[str]) -> str:
+        if not values:
+            return "- None recorded."
+        return "\n".join(f"- {value}" for value in values)
 
     def _architect_decision_metadata(self, plan: MissionPlan) -> list[dict[str, object]]:
         return [
@@ -524,6 +539,35 @@ class Nebuchadnezzar:
             }
             for task in sorted(plan.tasks, key=lambda item: item.sequence)
         ]
+
+    def _progress_task_payload(self, task: MissionTask) -> dict[str, object]:
+        spec = task.agent_spec
+        return {
+            "task_id": task.task_id,
+            "sequence": task.sequence,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status.value,
+            "agent_id": spec.agent_id,
+            "agent_type": spec.agent_type,
+            "agent_purpose": spec.purpose,
+            "capabilities": spec.capabilities,
+            "tools_allowed": spec.tools_allowed,
+            "memory_scope": spec.memory_scope,
+            "constraints": spec.constraints,
+            "interaction_points": spec.interaction_points,
+            "risk_level": spec.risk_level.value,
+            "provider_id": spec.provider_id,
+            "model_id": spec.model_id,
+            "architect_decision": task.architect_decision,
+            "required_capabilities": task.required_capabilities,
+            "expected_outputs": task.expected_outputs,
+            "completion_checks": task.completion_checks,
+            "user_actions": task.user_actions,
+            "result_summary": task.result_summary,
+            "tool_result_count": task.tool_result_count,
+            "error": task.error,
+        }
 
     def _render_response(
         self,

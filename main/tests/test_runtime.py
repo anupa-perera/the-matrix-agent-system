@@ -84,3 +84,16 @@ def test_runtime_emits_mission_progress_events(tmp_path) -> None:
     assert "neo_preflight" in stages
     assert "skipped" in stages
     assert stages[-1] == "complete"
+    planned = next(details for stage, _, details in events if stage == "mission_planned")
+    assert planned["mission_need"] == "Keep the agent clear, concise, and grounded in the user's goal."
+    assert planned["strategy"] == "sequential"
+    assert planned["success_criteria"] == [
+        "The user understands what the spawned agent is for.",
+        "The agent stays inside its approved scope.",
+    ]
+    assert planned["tasks"][0]["description"].startswith(
+        "Plan and implement the requested local software work"
+    )
+    assert planned["tasks"][0]["agent_id"]
+    assert planned["tasks"][0]["required_capabilities"]
+    assert planned["tasks"][0]["expected_outputs"]

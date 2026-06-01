@@ -34,6 +34,7 @@ The Matrix gives you a local control center for agent work.
 - The system checks the request for safety.
 - It designs the right kind of agent for the job.
 - It asks before risky actions such as changing files.
+- It can hand recurring goals to The Operator after you review and activate them.
 - It writes readable memory notes to your own computer.
 - It keeps API keys out of notes, logs, and the database.
 
@@ -43,6 +44,7 @@ The app is inspired by *The Matrix*, but you do not need to know the movie. The 
 - **Architect** designs the agent and decides what can be reused later.
 - **Neo** checks for risk before and after work.
 - **Nebuchadnezzar** runs the mission.
+- **The Operator** keeps track of goals that need follow-up, including recurring goals.
 
 ## Before You Install
 
@@ -159,6 +161,12 @@ Review this project folder and tell me what should be improved first.
 Plan a safe step-by-step workflow for organizing my notes.
 ```
 
+```text
+Send me a desktop notification every 5 minutes to check the build.
+```
+
+Recurring requests are drafted by **The Operator** first. You can inspect the goal, then activate it from the same browser page. The Operator only runs scheduled goals while the local app is open.
+
 If a request needs file changes, shell commands, or sensitive actions, The Matrix should ask before proceeding.
 
 ## Safety And Privacy
@@ -255,6 +263,7 @@ the-matrix providers detect
 the-matrix providers test
 the-matrix ask "Create a reusable research agent"
 the-matrix agents list
+the-matrix operator list
 the-matrix memory summary
 the-matrix missions list
 the-matrix doctor
@@ -283,6 +292,7 @@ Request flow:
 ```text
 User
   -> Browser or CLI
+  -> The Operator, when the request is a goal that needs tracking or recurrence
   -> Oracle intent and ethics pass
   -> Architect agent design and reuse plan
   -> Oracle human-language adjustment
