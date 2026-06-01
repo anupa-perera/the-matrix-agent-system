@@ -41,6 +41,22 @@ def _run_result(request: str) -> MatrixRunResult:
     )
 
 
+class FakeClarifier:
+    def __init__(self) -> None:
+        self.questions: list[tuple[str, str, str]] = []
+        self.summaries: list[str] = []
+
+    def answer(self, *, draft, question, target="auto", transcript=None):
+        from thematrix.schemas import ClarificationResponse
+
+        self.questions.append((draft, question, target))
+        return ClarificationResponse(target=target, answer=f"Clarified: {question}")
+
+    def summarize(self, *, draft, transcript):
+        self.summaries.append(draft)
+        return f"SUMMARIZED BRIEF: {draft}"
+
+
 def test_app_page_renders_request_form(tmp_path) -> None:
     paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
     store = RuntimeStore(paths.runtime_db)
@@ -53,6 +69,10 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "Back to Dashboard" in html
     assert "/settings?token=token-123" in html
     assert "Transmit Request" in html
+    assert "Clarify with" in html
+    assert "/clarify?token=token-123" in html
+    assert "/clarify/reset?token=token-123" in html
+    assert "Clarification Transcript" in html
     assert "data-mission-form" in html
     assert "Mission accepted. Keep this tab open." in html
     assert "Help / Commands" in html
@@ -384,6 +404,165 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
 
     thread.join(timeout=5)
     assert "App stopped" in shutdown_body
+    assert not thread.is_alive()
+
+
+def test_app_ui_clarification_transcript_summarizes_mission_and_agent_runs(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    store.upsert_agent(AgentSpec(agent_id="test-agent", agent_type="guide", purpose="Test"))
+    captured_url: list[str] = []
+    requests: list[str] = []
+    agent_requests: list[tuple[str, str]] = []
+    clarifier = FakeClarifier()
+    ready = Event()
+
+    def run_server() -> None:
+        serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=lambda request: requests.append(request) or _run_result(request),
+            agent_request_runner=lambda agent_id, request: (
+                agent_requests.append((agent_id, request)) or _run_result(request)
+            ),
+            clarifier=clarifier,
+            port=0,
+            open_browser=False,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+
+    payload = urlencode({"draft": "Build something", "question": "What is missing?"}).encode(
+        "utf-8"
+    )
+    clarify_without_token = Request(
+        f"http://{parsed.netloc}/clarify",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        urlopen(clarify_without_token, timeout=5)
+    except HTTPError as exc:
+        assert exc.code == 403
+    else:
+        raise AssertionError("Clarification should require the app token.")
+
+    clarify_request = Request(
+        f"http://{parsed.netloc}/clarify?{parsed.query}",
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(clarify_request, timeout=5) as response:
+        clarify_body = response.read().decode("utf-8")
+
+    assert "Clarification added" in clarify_body
+    assert "Clarified: What is missing?" in clarify_body
+    assert clarifier.questions == [("Build something", "What is missing?", "auto")]
+
+    mission_request = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=urlencode({"request": "Build something"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(mission_request, timeout=5) as response:
+        response.read()
+
+    for _ in range(50):
+        if requests:
+            break
+        sleep(0.05)
+    assert requests == ["SUMMARIZED BRIEF: Build something"]
+
+    agent_clarify = Request(
+        f"http://{parsed.netloc}/clarify?{parsed.query}",
+        data=urlencode(
+            {
+                "context": "agent",
+                "agent_id": "test-agent",
+                "draft": "Use this stored agent",
+                "target": "agent:test-agent",
+                "question": "What should this agent confirm?",
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(agent_clarify, timeout=5) as response:
+        agent_clarify_body = response.read().decode("utf-8")
+
+    assert "Clarified: What should this agent confirm?" in agent_clarify_body
+    assert clarifier.questions[-1] == (
+        "Use this stored agent",
+        "What should this agent confirm?",
+        "agent:test-agent",
+    )
+
+    reset_request = Request(
+        f"http://{parsed.netloc}/clarify/reset?{parsed.query}",
+        data=urlencode({"context": "agent", "agent_id": "test-agent"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(reset_request, timeout=5) as response:
+        reset_body = response.read().decode("utf-8")
+
+    assert "Clarification transcript cleared." in reset_body
+    assert "No clarification yet" in reset_body
+
+    agent_clarify_again = Request(
+        f"http://{parsed.netloc}/clarify?{parsed.query}",
+        data=urlencode(
+            {
+                "context": "agent",
+                "agent_id": "test-agent",
+                "draft": "Use this stored agent",
+                "target": "agent:test-agent",
+                "question": "What output is expected?",
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(agent_clarify_again, timeout=5):
+        pass
+
+    agent_run = Request(
+        f"http://{parsed.netloc}/agent/run?{parsed.query}",
+        data=urlencode({"agent_id": "test-agent", "request": "Use this stored agent"}).encode(
+            "utf-8"
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(agent_run, timeout=5):
+        pass
+
+    for _ in range(50):
+        if agent_requests:
+            break
+        sleep(0.05)
+    assert agent_requests == [("test-agent", "SUMMARIZED BRIEF: Use this stored agent")]
+
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5):
+        pass
+    thread.join(timeout=5)
     assert not thread.is_alive()
 
 

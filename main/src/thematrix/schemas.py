@@ -146,6 +146,34 @@ class OperatorGoalRun(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class ClarificationRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+class ClarificationTurn(BaseModel):
+    role: ClarificationRole
+    content: str
+    target: str = "auto"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ClarificationResponse(BaseModel):
+    target: str
+    answer: str
+
+
+class ClarificationSession(BaseModel):
+    context_key: str
+    draft: str = ""
+    default_target: str = "auto"
+    turns: list[ClarificationTurn] = Field(default_factory=list)
+
+    @property
+    def has_turns(self) -> bool:
+        return bool(self.turns)
+
+
 class MissionTask(BaseModel):
     task_id: str = Field(default_factory=lambda: str(uuid4()))
     sequence: int

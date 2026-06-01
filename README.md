@@ -145,6 +145,8 @@ the-matrix start
 
 The app opens a local browser dashboard. Type what you want the agents to do, then submit the request.
 
+If the request is not clear yet, use the clarification composer on the same page. You can ask The Matrix, Oracle, Architect, Neo, or a reusable agent a question before running. When you launch the mission, The Matrix folds the draft and clarification transcript into the mission brief automatically.
+
 ## Example Requests
 
 You can ask for things like:

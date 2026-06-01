@@ -14,11 +14,12 @@ from threading import Lock, Thread, Timer
 from urllib.parse import parse_qs, urlencode, urlparse
 import webbrowser
 
+from thematrix.clarify import ClarificationError, ClarificationService
 from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.operator import TheOperator
 from thematrix.prompts import PromptLibrary
-from thematrix.providers import detect_local_providers
+from thematrix.providers import default_model_gateway, detect_local_providers
 from thematrix.providers.oauth import (
     OAuthPendingSetup,
     OAuthProviderError,
@@ -26,7 +27,15 @@ from thematrix.providers.oauth import (
     exchange_openrouter_code,
     setup_form_from_oauth,
 )
-from thematrix.schemas import AgentSpec, MatrixRunResult, MissionTask, OperatorGoalStatus
+from thematrix.schemas import (
+    AgentSpec,
+    ClarificationRole,
+    ClarificationSession,
+    ClarificationTurn,
+    MatrixRunResult,
+    MissionTask,
+    OperatorGoalStatus,
+)
 from thematrix.security import Keymaker
 from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
 from thematrix.ui.setup_server import apply_setup_form, render_setup_form
@@ -129,6 +138,84 @@ class MissionRegistry:
             return self._jobs.get(job_id)
 
 
+class ClarificationSessionRegistry:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._sessions: dict[str, ClarificationSession] = {}
+
+    def get(self, context_key: str, default_target: str = "auto") -> ClarificationSession:
+        with self._lock:
+            session = self._sessions.get(context_key)
+            if session is None:
+                session = ClarificationSession(
+                    context_key=context_key,
+                    default_target=default_target,
+                )
+                self._sessions[context_key] = session
+            return session
+
+    def update_draft(
+        self,
+        context_key: str,
+        draft: str,
+        default_target: str = "auto",
+    ) -> ClarificationSession:
+        with self._lock:
+            session = self._sessions.get(context_key)
+            if session is None:
+                session = ClarificationSession(
+                    context_key=context_key,
+                    draft=draft,
+                    default_target=default_target,
+                )
+            else:
+                session = session.model_copy(
+                    update={"draft": draft, "default_target": default_target}
+                )
+            self._sessions[context_key] = session
+            return session
+
+    def append(
+        self,
+        context_key: str,
+        *,
+        draft: str,
+        target: str,
+        question: str,
+        answer: str,
+        default_target: str = "auto",
+    ) -> ClarificationSession:
+        with self._lock:
+            session = self._sessions.get(context_key)
+            turns = list(session.turns) if session else []
+            turns.extend(
+                [
+                    ClarificationTurn(
+                        role=ClarificationRole.USER,
+                        content=question,
+                        target=target,
+                    ),
+                    ClarificationTurn(
+                        role=ClarificationRole.ASSISTANT,
+                        content=answer,
+                        target=target,
+                    ),
+                ]
+            )
+            updated = ClarificationSession(
+                context_key=context_key,
+                draft=draft,
+                default_target=default_target,
+                turns=turns,
+            )
+            self._sessions[context_key] = updated
+            return updated
+
+    def reset(self, context_key: str) -> None:
+        with self._lock:
+            self._sessions.pop(context_key, None)
+
+
 def serve_app_ui(
     paths: MatrixPaths,
     vault: MemoryVault,
@@ -136,6 +223,7 @@ def serve_app_ui(
     request_runner: Callable[..., MatrixRunResult],
     agent_request_runner: Callable[..., MatrixRunResult] | None = None,
     operator: TheOperator | None = None,
+    clarifier: ClarificationService | None = None,
     port: int = 0,
     open_browser: bool = True,
     url_callback: Callable[[str], None] | None = None,
@@ -144,7 +232,9 @@ def serve_app_ui(
     token = token_urlsafe(24)
     run_lock = Lock()
     mission_registry = MissionRegistry()
+    clarification_registry = ClarificationSessionRegistry()
     active_operator = operator or TheOperator(store)
+    active_clarifier = clarifier or ClarificationService(store, default_model_gateway(store))
     active_operator.start()
     server = _AppServer(
         ("127.0.0.1", port),
@@ -156,8 +246,10 @@ def serve_app_ui(
             request_runner,
             agent_request_runner,
             active_operator,
+            active_clarifier,
             run_lock,
             mission_registry,
+            clarification_registry,
         ),
     )
     host, bound_port = server.server_address
@@ -190,8 +282,10 @@ def _handler_factory(
     request_runner: Callable[..., MatrixRunResult],
     agent_request_runner: Callable[..., MatrixRunResult] | None,
     operator: TheOperator,
+    clarifier: ClarificationService,
     run_lock: Lock,
     mission_registry: MissionRegistry,
+    clarification_registry: ClarificationSessionRegistry,
 ) -> AgentSpec:
     oauth_flows: dict[str, OAuthPendingSetup] = {}
     oauth_lock = Lock()
@@ -209,7 +303,15 @@ def _handler_factory(
                 self._start_openrouter_oauth(parsed)
                 return
             if parsed.path == "/":
-                self._send_html(HTTPStatus.OK, render_app_page(paths, store, token))
+                self._send_html(
+                    HTTPStatus.OK,
+                    render_app_page(
+                        paths,
+                        store,
+                        token,
+                        clarification_session=clarification_registry.get("mission"),
+                    ),
+                )
                 return
             if parsed.path == "/settings":
                 self._send_html(
@@ -252,7 +354,19 @@ def _handler_factory(
                     )
                     return
                 status = HTTPStatus.OK if store.get_agent(agent_id) is not None else HTTPStatus.NOT_FOUND
-                self._send_html(status, _agent_page(paths, store, token, agent_id))
+                self._send_html(
+                    status,
+                    _agent_page(
+                        paths,
+                        store,
+                        token,
+                        agent_id,
+                        clarification_session=clarification_registry.get(
+                            _agent_context_key(agent_id),
+                            f"agent:{agent_id}",
+                        ),
+                    ),
+                )
                 return
             if parsed.path == "/diagnostics":
                 self._send_html(HTTPStatus.OK, _diagnostics_page(paths, store, token))
@@ -268,6 +382,7 @@ def _handler_factory(
 
         def do_POST(self) -> None:
             if not self._token_ok():
+                self._discard_request_body()
                 self._send_html(HTTPStatus.FORBIDDEN, _message_page("Forbidden", "Invalid token."))
                 return
             parsed = urlparse(self.path)
@@ -300,6 +415,87 @@ def _handler_factory(
                     render_app_page(paths, store, token, AppUiResponse(message=result.message)),
                 )
                 return
+            if parsed.path == "/clarify":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                context_key = _clarification_context_from_form(form)
+                default_target = _default_target_for_context(context_key)
+                draft = form.get("draft", "").strip()
+                target = form.get("target", default_target).strip() or default_target
+                question = form.get("question", "").strip()
+                agent_id = form.get("agent_id", "").strip()
+                current_session = clarification_registry.update_draft(
+                    context_key,
+                    draft,
+                    default_target,
+                )
+                try:
+                    clarification = clarifier.answer(
+                        draft=draft,
+                        question=question,
+                        target=target,
+                        transcript=current_session.turns,
+                    )
+                except (ClarificationError, Exception) as exc:
+                    response = AppUiResponse(error=f"Clarification failed: {exc}")
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _render_context_page(
+                            paths,
+                            store,
+                            token,
+                            context_key,
+                            agent_id,
+                            clarification_registry.get(context_key, default_target),
+                            response,
+                        ),
+                    )
+                    return
+                session = clarification_registry.append(
+                    context_key,
+                    draft=draft,
+                    target=clarification.target,
+                    question=question,
+                    answer=clarification.answer,
+                    default_target=clarification.target,
+                )
+                self._send_html(
+                    HTTPStatus.OK,
+                    _render_context_page(
+                        paths,
+                        store,
+                        token,
+                        context_key,
+                        agent_id,
+                        session,
+                        AppUiResponse(message="Clarification added to this mission draft."),
+                    ),
+                )
+                return
+            if parsed.path == "/clarify/reset":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                context_key = _clarification_context_from_form(form)
+                agent_id = form.get("agent_id", "").strip()
+                clarification_registry.reset(context_key)
+                self._send_html(
+                    HTTPStatus.OK,
+                    _render_context_page(
+                        paths,
+                        store,
+                        token,
+                        context_key,
+                        agent_id,
+                        clarification_registry.get(
+                            context_key,
+                            _default_target_for_context(context_key),
+                        ),
+                        AppUiResponse(message="Clarification transcript cleared."),
+                    ),
+                )
+                return
             if parsed.path == "/ask":
                 form = self._read_form(paths, store, token)
                 if form is None:
@@ -316,8 +512,11 @@ def _handler_factory(
                         ),
                     )
                     return
-                operator_goal = operator.create_from_request(user_request)
+                session = clarification_registry.update_draft("mission", user_request)
+                launch_request = _clarified_launch_request(clarifier, user_request, session)
+                operator_goal = operator.create_from_request(launch_request)
                 if operator_goal is not None:
+                    clarification_registry.reset("mission")
                     self._send_html(
                         HTTPStatus.OK,
                         render_app_page(
@@ -350,13 +549,14 @@ def _handler_factory(
                         ),
                     )
                     return
-                goal = operator.create_one_shot_goal(user_request)
-                job = mission_registry.create("mission", user_request)
+                goal = operator.create_one_shot_goal(launch_request)
+                job = mission_registry.create("mission", launch_request)
                 Thread(
                     target=_run_background_mission,
-                    args=(job, request_runner, user_request, run_lock, operator, goal.goal_id),
+                    args=(job, request_runner, launch_request, run_lock, operator, goal.goal_id),
                     daemon=True,
                 ).start()
+                clarification_registry.reset("mission")
                 self._send_html(HTTPStatus.ACCEPTED, _mission_page(store, token, job))
                 return
             if parsed.path == "/operator/action":
@@ -405,6 +605,10 @@ def _handler_factory(
                             token,
                             agent_id,
                             AppUiResponse(error=str(exc)),
+                            clarification_session=clarification_registry.get(
+                                _agent_context_key(agent_id),
+                                f"agent:{agent_id}",
+                            ),
                         ),
                     )
                     return
@@ -416,6 +620,10 @@ def _handler_factory(
                         token,
                         spec.agent_id,
                         AppUiResponse(message="Agent instructions updated."),
+                        clarification_session=clarification_registry.get(
+                            _agent_context_key(spec.agent_id),
+                            f"agent:{spec.agent_id}",
+                        ),
                     ),
                 )
                 return
@@ -435,13 +643,27 @@ def _handler_factory(
                             token,
                             agent_id,
                             AppUiResponse(error=str(exc)),
+                            clarification_session=clarification_registry.get(
+                                _agent_context_key(agent_id),
+                                f"agent:{agent_id}",
+                            ),
                         ),
                     )
                     return
                 message = "Agent resumed." if spec.enabled else "Agent paused."
                 self._send_html(
                     HTTPStatus.OK,
-                    _agent_page(paths, store, token, spec.agent_id, AppUiResponse(message=message)),
+                    _agent_page(
+                        paths,
+                        store,
+                        token,
+                        spec.agent_id,
+                        AppUiResponse(message=message),
+                        clarification_session=clarification_registry.get(
+                            _agent_context_key(spec.agent_id),
+                            f"agent:{spec.agent_id}",
+                        ),
+                    ),
                 )
                 return
             if parsed.path == "/agent/run":
@@ -465,6 +687,10 @@ def _handler_factory(
                             token,
                             agent_id,
                             AppUiResponse(error="Enter a mission for this agent."),
+                            clarification_session=clarification_registry.get(
+                                _agent_context_key(agent_id),
+                                f"agent:{agent_id}",
+                            ),
                         ),
                     )
                     return
@@ -479,6 +705,10 @@ def _handler_factory(
                             AppUiResponse(
                                 error="Manual agent runs are not available in this session."
                             ),
+                            clarification_session=clarification_registry.get(
+                                _agent_context_key(agent_id),
+                                f"agent:{agent_id}",
+                            ),
                         ),
                     )
                     return
@@ -492,6 +722,10 @@ def _handler_factory(
                             token,
                             agent_id,
                             AppUiResponse(error="Resume this agent before running it."),
+                            clarification_session=clarification_registry.get(
+                                _agent_context_key(agent_id),
+                                f"agent:{agent_id}",
+                            ),
                         ),
                     )
                     return
@@ -510,28 +744,40 @@ def _handler_factory(
                                     "a duplicate agent run."
                                 ),
                             ),
+                            clarification_session=clarification_registry.get(
+                                _agent_context_key(agent_id),
+                                f"agent:{agent_id}",
+                            ),
                         ),
                     )
                     return
-                goal = operator.create_one_shot_goal(
+                context_key = _agent_context_key(agent_id)
+                session = clarification_registry.update_draft(
+                    context_key,
                     user_request,
+                    f"agent:{agent_id}",
+                )
+                launch_request = _clarified_launch_request(clarifier, user_request, session)
+                goal = operator.create_one_shot_goal(
+                    launch_request,
                     title=f"Run {agent_id}",
                     payload={"agent_id": agent_id},
                 )
-                job = mission_registry.create("agent", user_request, agent_id=agent_id)
+                job = mission_registry.create("agent", launch_request, agent_id=agent_id)
                 Thread(
                     target=_run_background_agent_mission,
                     args=(
                         job,
                         agent_request_runner,
                         agent_id,
-                        user_request,
+                        launch_request,
                         run_lock,
                         operator,
                         goal.goal_id,
                     ),
                     daemon=True,
                 ).start()
+                clarification_registry.reset(context_key)
                 self._send_html(HTTPStatus.ACCEPTED, _mission_page(store, token, job))
                 return
             self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not Found", "Unknown route."))
@@ -637,6 +883,14 @@ def _handler_factory(
 
             raw = self.rfile.read(length).decode("utf-8")
             return {key: values[-1] for key, values in parse_qs(raw).items()}
+
+        def _discard_request_body(self) -> None:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return
+            if length > 0:
+                self.rfile.read(length)
 
         def log_message(self, format: str, *args: object) -> None:
             return
@@ -1313,13 +1567,71 @@ def _script_json(payload: dict[str, object]) -> str:
     return json.dumps(payload).replace("</", "<\\/")
 
 
+def _agent_context_key(agent_id: str) -> str:
+    return f"agent:{agent_id}"
+
+
+def _clarification_context_from_form(form: dict[str, str]) -> str:
+    context = form.get("context", "mission").strip()
+    if context == "agent":
+        agent_id = form.get("agent_id", "").strip()
+        return _agent_context_key(agent_id) if agent_id else "agent:"
+    return "mission"
+
+
+def _default_target_for_context(context_key: str) -> str:
+    if context_key.startswith("agent:") and context_key != "agent:":
+        return context_key
+    return "auto"
+
+
+def _render_context_page(
+    paths: MatrixPaths,
+    store: RuntimeStore,
+    token: str,
+    context_key: str,
+    agent_id: str,
+    clarification_session: ClarificationSession,
+    response: AppUiResponse,
+) -> str:
+    if context_key.startswith("agent:"):
+        actual_agent_id = agent_id or context_key.split(":", 1)[1]
+        return _agent_page(
+            paths,
+            store,
+            token,
+            actual_agent_id,
+            response,
+            clarification_session=clarification_session,
+        )
+    return render_app_page(
+        paths,
+        store,
+        token,
+        response,
+        clarification_session=clarification_session,
+    )
+
+
+def _clarified_launch_request(
+    clarifier: ClarificationService,
+    draft: str,
+    session: ClarificationSession,
+) -> str:
+    if not session.has_turns:
+        return draft
+    return clarifier.summarize(draft=draft, transcript=session.turns)
+
+
 def render_app_page(
     paths: MatrixPaths,
     store: RuntimeStore,
     token: str,
     response: AppUiResponse | None = None,
+    clarification_session: ClarificationSession | None = None,
 ) -> str:
     response = response or AppUiResponse()
+    clarification_session = clarification_session or ClarificationSession(context_key="mission")
     provider_config = store.get_default_provider_config()
     provider_label = "unconfigured"
     if provider_config is not None:
@@ -1328,6 +1640,19 @@ def render_app_page(
             provider_label += f" / {provider_config.reasoning_effort}"
     result_html = _result_panel(response)
     operator_html = _operator_panel(store, token)
+    clarification_html = _clarification_composer(
+        store,
+        token,
+        session=clarification_session,
+        context="mission",
+        draft_name="request",
+        run_action=f"/ask?token={escape(token)}",
+        run_label="Run Mission",
+        running_label="Mission Running",
+        draft_label="What do you want the agents to do?",
+        draft_placeholder="Create a reusable research agent for comparing AI tools",
+        submit_hint="Mission accepted. Keep this tab open.",
+    )
     recent_html = _recent_runs_panel(store, token)
     help_html = _help_panel()
     return f"""<!doctype html>
@@ -1483,6 +1808,19 @@ def render_app_page(
       border-color: var(--phosphor-bright);
       box-shadow: 0 0 0 1px var(--phosphor-bright), 0 0 16px rgba(0,255,65,0.25);
     }}
+    input, select {{
+      width: 100%;
+      border: 1px solid var(--line);
+      background: rgba(0, 8, 2, 0.86);
+      color: var(--phosphor-bright);
+      font: inherit;
+      padding: 12px;
+      outline: none;
+    }}
+    input:focus, select:focus {{
+      border-color: var(--phosphor-bright);
+      box-shadow: 0 0 0 1px var(--phosphor-bright), 0 0 16px rgba(0,255,65,0.25);
+    }}
     button, .button-link {{
       display: inline-flex;
       align-items: center;
@@ -1565,9 +1903,24 @@ def render_app_page(
     strong {{ color: var(--phosphor-bright); font-weight: normal; }}
     code {{ color: var(--phosphor-bright); overflow-wrap: anywhere; }}
     .actions {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }}
+    .clarify-grid {{ display: grid; gap: 14px; }}
+    .clarify-row {{ display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 14px; align-items: end; }}
+    .transcript {{ display: grid; gap: 10px; }}
+    .turn {{
+      border-top: 1px dashed var(--line);
+      padding-top: 10px;
+    }}
+    .turn:first-child {{ border-top: 0; padding-top: 0; }}
+    .turn-label {{
+      color: var(--phosphor-title);
+      font-size: 12px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+    }}
     @media (max-width: 760px) {{
       main {{ width: min(1040px, calc(100% - 28px)); }}
       h1 {{ font-size: 54px; letter-spacing: 3px; }}
+      .clarify-row {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -1582,22 +1935,7 @@ def render_app_page(
         <span>vault<strong>::{escape(str(paths.vault))}</strong></span>
       </div>
     </header>
-    <section class="panel">
-      <h2>Transmit Request</h2>
-      <form method="post" action="/ask?token={escape(token)}" data-mission-form>
-        <label>What do you want the agents to do?
-          <textarea name="request" placeholder="Create a reusable research agent for comparing AI tools" required></textarea>
-        </label>
-        <div class="actions">
-          <button type="submit" data-running-label="Mission Running">Run Mission</button>
-          <a class="button-link" href="/dashboard?token={escape(token)}">Back to Dashboard</a>
-          <a class="button-link" href="/settings?token={escape(token)}">Provider Settings</a>
-          <span class="submit-status" hidden aria-live="polite">
-            Mission accepted. Keep this tab open.
-          </span>
-        </div>
-      </form>
-    </section>
+    {clarification_html}
     {result_html}
     {operator_html}
     {help_html}
@@ -1635,8 +1973,16 @@ def render_app_page(
       setInterval(draw, 60);
     }})();
     (function () {{
+      const draftInput = document.querySelector('[data-clarify-draft]');
+      const runDraft = document.querySelector('[data-run-draft]');
+      if (draftInput && runDraft) {{
+        const syncDraft = () => {{ runDraft.value = draftInput.value; }};
+        draftInput.addEventListener('input', syncDraft);
+        syncDraft();
+      }}
       document.querySelectorAll('[data-mission-form]').forEach((form) => {{
         form.addEventListener('submit', (event) => {{
+          if (draftInput && runDraft) runDraft.value = draftInput.value;
           if (form.dataset.submitted === 'true') {{
             event.preventDefault();
             return;
@@ -1656,6 +2002,137 @@ def render_app_page(
 </body>
 </html>
 """
+
+
+def _clarification_composer(
+    store: RuntimeStore,
+    token: str,
+    *,
+    session: ClarificationSession,
+    context: str,
+    draft_name: str,
+    run_action: str,
+    run_label: str,
+    running_label: str,
+    draft_label: str,
+    draft_placeholder: str,
+    submit_hint: str,
+    agent_id: str = "",
+    disabled: bool = False,
+) -> str:
+    draft = session.draft
+    selected = session.default_target
+    target_options = _clarification_target_options(store, selected, agent_id=agent_id)
+    transcript = _clarification_transcript_html(session.turns)
+    clarify_action = f"/clarify?token={escape(token, quote=True)}"
+    reset_action = f"/clarify/reset?token={escape(token, quote=True)}"
+    hidden_agent = (
+        f'<input type="hidden" name="agent_id" value="{escape(agent_id, quote=True)}">'
+        if agent_id
+        else ""
+    )
+    disabled_attr = " disabled" if disabled else ""
+    return f"""
+    <section class="panel">
+      <h2>Transmit Request</h2>
+      <div class="clarify-grid">
+        <form method="post" action="{clarify_action}">
+          <input type="hidden" name="context" value="{escape(context, quote=True)}">
+          {hidden_agent}
+          <label>{escape(draft_label)}
+            <textarea name="draft" placeholder="{escape(draft_placeholder, quote=True)}" required data-clarify-draft>{escape(draft)}</textarea>
+          </label>
+          <div class="clarify-row">
+            <label>Clarify with
+              <select name="target">{target_options}</select>
+            </label>
+            <label>Question before running
+              <input name="question" placeholder="What should be clarified before this runs?" required>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="submit">Clarify</button>
+          </div>
+        </form>
+        <div class="notice">
+          <strong>Clarification Transcript</strong>
+          {transcript}
+        </div>
+        <form method="post" action="{reset_action}">
+          <input type="hidden" name="context" value="{escape(context, quote=True)}">
+          {hidden_agent}
+          <div class="actions">
+            <button type="submit">Reset Transcript</button>
+          </div>
+        </form>
+        <form method="post" action="{run_action}" data-mission-form>
+          {hidden_agent}
+          <input type="hidden" name="{escape(draft_name, quote=True)}" value="{escape(draft, quote=True)}" data-run-draft>
+          <p class="muted">Run uses the draft above. If the transcript has turns, The Matrix first composes a clean mission brief from it.</p>
+          <div class="actions">
+            <button type="submit" data-running-label="{escape(running_label, quote=True)}"{disabled_attr}>{escape(run_label)}</button>
+            <a class="button-link" href="/dashboard?token={escape(token)}">Back to Dashboard</a>
+            <a class="button-link" href="/settings?token={escape(token)}">Provider Settings</a>
+            <span class="submit-status" hidden aria-live="polite">
+              {escape(submit_hint)}
+            </span>
+          </div>
+        </form>
+      </div>
+    </section>
+"""
+
+
+def _clarification_target_options(
+    store: RuntimeStore,
+    selected: str,
+    *,
+    agent_id: str = "",
+) -> str:
+    options = [
+        ("auto", "Auto / The Matrix"),
+        ("matrix", "The Matrix"),
+        ("oracle", "Oracle"),
+        ("architect", "Architect"),
+        ("neo", "Neo"),
+    ]
+    seen = {value for value, _label in options}
+    if agent_id:
+        value = f"agent:{agent_id}"
+        spec = store.get_agent(agent_id)
+        label = f"Agent / {agent_id}" if spec is None else f"Agent / {spec.agent_id}"
+        options.append((value, label))
+        seen.add(value)
+    for record in store.list_agent_records(limit=20):
+        spec = store.get_agent(str(record["agent_id"]))
+        if spec is None or not spec.reusable or not spec.enabled:
+            continue
+        value = f"agent:{spec.agent_id}"
+        if value not in seen:
+            options.append((value, f"Agent / {spec.agent_id}"))
+            seen.add(value)
+    return "".join(
+        f'<option value="{escape(value, quote=True)}"{" selected" if value == selected else ""}>{escape(label)}</option>'
+        for value, label in options
+    )
+
+
+def _clarification_transcript_html(turns: list[ClarificationTurn]) -> str:
+    if not turns:
+        return '<p class="muted">No clarification yet. Ask Oracle, Architect, Neo, The Matrix, or a reusable agent before running.</p>'
+    items = []
+    for turn in turns:
+        speaker = "You" if turn.role == ClarificationRole.USER else "Matrix"
+        label = f"{speaker} / {turn.target}"
+        items.append(
+            f"""
+          <div class="turn">
+            <div class="turn-label">{escape(label)}</div>
+            <div class="result">{escape(turn.content)}</div>
+          </div>
+"""
+        )
+    return f'<div class="transcript">{"".join(items)}</div>'
 
 
 def _result_panel(response: AppUiResponse) -> str:
@@ -1794,7 +2271,11 @@ def _help_panel() -> str:
       <div class="list help-list">
         <div class="item">
           <p><strong>Run from browser</strong></p>
-          <p class="muted">Use the request box above for normal agent missions.</p>
+          <p class="muted">Use the request box above for normal agent missions. Ask a clarification question first when the request needs shaping.</p>
+        </div>
+        <div class="item">
+          <p><strong>Clarify first</strong></p>
+          <p class="muted">Ask The Matrix, Oracle, Architect, Neo, or a reusable agent. Run uses a clean brief composed from the draft and transcript.</p>
         </div>
         <div class="item">
           <p><strong>The Operator</strong></p>
@@ -1922,6 +2403,7 @@ def _agent_page(
     token: str,
     agent_id: str,
     response: AppUiResponse | None = None,
+    clarification_session: ClarificationSession | None = None,
 ) -> str:
     spec = store.get_agent(agent_id)
     if spec is None:
@@ -1952,11 +2434,29 @@ def _agent_page(
     toggle_action = f"/agent/toggle?token={escape(token, quote=True)}"
     enabled_checked = " checked" if spec.enabled else ""
     reusable_checked = " checked" if spec.reusable else ""
-    run_disabled = " disabled" if not spec.enabled else ""
     run_hint = (
         "Agent mission accepted. Keep this tab open."
         if spec.enabled
         else "Resume this agent before running it."
+    )
+    clarification_session = clarification_session or ClarificationSession(
+        context_key=_agent_context_key(spec.agent_id),
+        default_target=f"agent:{spec.agent_id}",
+    )
+    clarify_html = _clarification_composer(
+        store,
+        token,
+        session=clarification_session,
+        context="agent",
+        draft_name="request",
+        run_action=action,
+        run_label="Run Agent",
+        running_label="Agent Running",
+        draft_label="Mission for this agent",
+        draft_placeholder="Run this agent on a specific task",
+        submit_hint=run_hint,
+        agent_id=spec.agent_id,
+        disabled=not spec.enabled,
     )
     content = f"""
       {rows}
@@ -1967,18 +2467,7 @@ def _agent_page(
           <button type="submit">{"Pause Agent" if spec.enabled else "Resume Agent"}</button>
         </div>
       </form>
-      <form method="post" action="{action}" data-mission-form>
-        <input type="hidden" name="agent_id" value="{escape(spec.agent_id, quote=True)}">
-        <label>Mission for this agent
-          <textarea name="request" placeholder="Run this agent on a specific task" required></textarea>
-        </label>
-        <div class="actions">
-          <button type="submit" data-running-label="Agent Running"{run_disabled}>Run Agent</button>
-          <span class="submit-status" hidden aria-live="polite">
-            {escape(run_hint)}
-          </span>
-        </div>
-      </form>
+      {clarify_html}
       <form method="post" action="{update_action}">
         <input type="hidden" name="agent_id" value="{escape(spec.agent_id, quote=True)}">
         <h2>Alter Agent</h2>
@@ -2053,8 +2542,16 @@ def _mission_submit_script() -> str:
     return """
   <script>
     (function () {
+      const draftInput = document.querySelector('[data-clarify-draft]');
+      const runDraft = document.querySelector('[data-run-draft]');
+      if (draftInput && runDraft) {
+        const syncDraft = () => { runDraft.value = draftInput.value; };
+        draftInput.addEventListener('input', syncDraft);
+        syncDraft();
+      }
       document.querySelectorAll('[data-mission-form]').forEach((form) => {
         form.addEventListener('submit', (event) => {
+          if (draftInput && runDraft) runDraft.value = draftInput.value;
           if (form.dataset.submitted === 'true') {
             event.preventDefault();
             return;
@@ -2330,7 +2827,9 @@ def _utility_page(
     .check-row {{ display: flex; grid-template-columns: none; align-items: center; gap: 10px; }}
     input[type="checkbox"] {{ accent-color: #00ff41; }}
     textarea {{ width: 100%; min-height: 140px; resize: vertical; border: 1px solid rgba(0,255,65,0.18); background: rgba(0,8,2,0.86); color: #00ff41; font: inherit; padding: 12px; outline: none; }}
-    textarea:focus {{ border-color: #00ff41; box-shadow: 0 0 0 1px #00ff41; }}
+    input, select {{ width: 100%; border: 1px solid rgba(0,255,65,0.18); background: rgba(0,8,2,0.86); color: #00ff41; font: inherit; padding: 10px; outline: none; }}
+    input[type="hidden"] {{ display: none; }}
+    textarea:focus, input:focus, select:focus {{ border-color: #00ff41; box-shadow: 0 0 0 1px #00ff41; }}
     button {{ border: 1px solid #00ff41; background: transparent; color: #00ff41; cursor: pointer; font: inherit; padding: 10px 13px; text-transform: uppercase; }}
     button:hover {{ background: rgba(0,255,65,0.1); }}
     button:disabled {{ cursor: wait; opacity: 0.68; border-color: #7cff9d; color: #7cff9d; }}
@@ -2342,6 +2841,12 @@ def _utility_page(
     .operator-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
     .operator-actions form {{ margin: 0; }}
     .operator-actions button {{ font-size: 13px; letter-spacing: 1.4px; margin-top: 0; padding: 8px 10px; }}
+    .clarify-grid {{ display: grid; gap: 14px; }}
+    .clarify-row {{ display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 14px; align-items: end; }}
+    .transcript {{ display: grid; gap: 10px; }}
+    .turn {{ border-top: 1px dashed rgba(0,255,65,0.16); padding-top: 10px; }}
+    .turn:first-child {{ border-top: 0; padding-top: 0; }}
+    .turn-label {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.3px; text-transform: uppercase; }}
     .mission-summary {{ border-bottom: 1px dashed rgba(0,255,65,0.16); margin-bottom: 18px; padding-bottom: 16px; }}
     .mission-summary h2 {{ border: 0; margin: 0 0 8px; padding: 0; color: #00ff41; font-size: 24px; }}
     .kicker {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; }}
@@ -2370,7 +2875,7 @@ def _utility_page(
     .key {{ color: #7cff9d; text-transform: uppercase; letter-spacing: 1.4px; font-size: 12px; }}
     .value {{ color: #00ff41; overflow-wrap: anywhere; }}
     .note {{ color: #00b341; overflow-wrap: anywhere; }}
-    @media (max-width: 720px) {{ .row, .mission-grid, .contract-grid, .execution-details {{ grid-template-columns: 1fr; }} .execution-step-head {{ display: block; }} }}
+    @media (max-width: 720px) {{ .row, .mission-grid, .contract-grid, .execution-details, .clarify-row {{ grid-template-columns: 1fr; }} .execution-step-head {{ display: block; }} }}
   </style>
 </head>
 <body>

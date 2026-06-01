@@ -146,6 +146,9 @@ This release packages the local-first Matrix-inspired agent framework for normal
 ### What's New
 
 - Browser missions now open a live status cockpit instead of leaving users on a waiting form.
+- Clarification can now happen in the same mission or agent page before launch.
+- The Matrix can summarize the clarification transcript into the mission brief automatically.
+- The Operator can draft, activate, pause, resume, and run local recurring notification goals.
 - Mission detail pages show the timeline, task ledger, final result, and links from recent missions.
 - Completed mission pages now route `Ask This Agent` back to the reusable agent that handled the mission.
 - Browser help stays focused on app actions instead of terminal commands.
