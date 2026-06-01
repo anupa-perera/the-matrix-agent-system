@@ -158,6 +158,39 @@ class TheOperator:
         self.store.upsert_operator_goal(updated)
         return updated
 
+    def update_recurring_notification_goal(
+        self,
+        goal_id: str,
+        *,
+        title: str,
+        message: str,
+        interval_minutes: int,
+    ) -> OperatorGoal:
+        goal = self._require_goal(goal_id)
+        if goal.kind != OperatorGoalKind.RECURRING_NOTIFICATION:
+            raise ValueError("Only recurring notification goals can be edited here.")
+        if interval_minutes < 1 or interval_minutes > 24 * 60:
+            raise ValueError("Interval must be between 1 and 1440 minutes.")
+        clean_message = " ".join(message.split())[:240]
+        if not clean_message:
+            raise ValueError("Enter a notification message.")
+        clean_title = " ".join(title.split())[:80] or self._title_for(clean_message)
+        now = datetime.now(UTC)
+        next_run_at = goal.next_run_at
+        if goal.status == OperatorGoalStatus.ACTIVE and goal.schedule is not None:
+            next_run_at = now + timedelta(minutes=interval_minutes)
+        updated = goal.model_copy(
+            update={
+                "title": clean_title,
+                "schedule": OperatorSchedule(interval_minutes=interval_minutes),
+                "next_run_at": next_run_at,
+                "payload": {**goal.payload, "message": clean_message},
+                "updated_at": now,
+            }
+        )
+        self.store.upsert_operator_goal(updated)
+        return updated
+
     def cancel_goal(self, goal_id: str) -> OperatorGoal:
         goal = self._require_goal(goal_id)
         goal.next_run_at = None

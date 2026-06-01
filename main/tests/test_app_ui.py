@@ -21,10 +21,20 @@ from thematrix.schemas import (
     OperatorGoal,
 )
 from thematrix.ui.app_server import (
+    _agent_page,
+    _diagnostics_page,
+    _memory_page,
+    _message_page,
     _mission_payload,
+    _operator_page,
     render_app_page,
     serve_app_ui,
 )
+
+
+def _assert_matrix_background(html: str) -> None:
+    assert 'id="matrix-rain"' in html
+    assert "getElementById('matrix-rain')" in html or 'getElementById("matrix-rain")' in html
 
 
 def _run_result(request: str) -> MatrixRunResult:
@@ -64,22 +74,26 @@ def test_app_page_renders_request_form(tmp_path) -> None:
 
     html = render_app_page(paths, store, "token-123")
 
+    _assert_matrix_background(html)
     assert "/ask?token=token-123" in html
     assert "/dashboard?token=token-123" in html
     assert "Back to Dashboard" in html
     assert "/settings?token=token-123" in html
-    assert "Transmit Request" in html
+    assert "Mission Console" in html
+    assert "Run Mission" in html
+    assert "Clarify first, optional" in html
     assert "Clarify with" in html
     assert "/clarify?token=token-123" in html
     assert "/clarify/reset?token=token-123" in html
     assert "Clarification Transcript" in html
     assert "data-mission-form" in html
     assert "Mission accepted. Keep this tab open." in html
+    assert html.index("Run Mission") < html.index("Clarify first, optional")
     assert "Help / Commands" in html
     assert "Useful terminal commands" not in html
     assert "the-matrix providers current" not in html
     assert "Recent Missions" in html
-    assert "The Operator" in html
+    assert "/operator?token=token-123" in html
 
 
 def test_app_page_recent_mission_links_do_not_use_default_underline(tmp_path) -> None:
@@ -116,8 +130,9 @@ def test_app_page_renders_operator_goal_controls(tmp_path) -> None:
         )
     )
 
-    html = render_app_page(paths, store, "token-123")
+    html = _operator_page(store, "token-123")
 
+    _assert_matrix_background(html)
     assert "Drink water" in html
     assert "/operator?token=token-123" in html
     assert "/operator?token=token-123&amp;goal_id=goal-1" in html
@@ -137,8 +152,8 @@ def test_app_page_renders_operator_goal_controls(tmp_path) -> None:
             payload={"message": "Pending reminder"},
         )
     )
-    html = render_app_page(paths, store, "token-123")
-    assert "Waiting for your activation" in html
+    html = _operator_page(store, "token-123")
+    assert "Pending reminder" in html
     assert 'value="activate"' in html
 
     store.upsert_operator_goal(
@@ -151,8 +166,12 @@ def test_app_page_renders_operator_goal_controls(tmp_path) -> None:
             capability="mission_run",
         )
     )
-    html = render_app_page(paths, store, "token-123")
-    assert "Completed helper" not in html
+    html = _operator_page(store, "token-123")
+    assert "Completed helper" in html
+
+    mission_html = render_app_page(paths, store, "token-123")
+    assert "Drink water" not in mission_html
+    assert "Pending reminder" not in mission_html
 
 
 def test_operator_goal_detail_explains_pending_recurring_goal(tmp_path) -> None:
@@ -172,17 +191,40 @@ def test_operator_goal_detail_explains_pending_recurring_goal(tmp_path) -> None:
         )
     )
 
-    from thematrix.ui.app_server import _operator_page
-
     html = _operator_page(store, "token-123", goal_id="goal-1")
 
+    _assert_matrix_background(html)
     assert "Operator Goal" in html
     assert "Nothing recurring will happen until you activate this goal." in html
     assert "After activation" in html
     assert "every 5 minute(s)" in html
     assert "It will not read files, run shell commands, control apps" in html
+    assert "Alter Recurring Goal" in html
+    assert "/operator/update?token=token-123" in html
+    assert 'name="interval_minutes"' in html
     assert 'value="activate"' in html
     assert 'value="cancel"' in html
+
+
+def test_app_shared_page_shells_include_matrix_background(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+    store.upsert_agent(AgentSpec(agent_id="test-agent", agent_type="guide", purpose="Test"))
+
+    pages = [
+        render_app_page(paths, store, "token-123"),
+        _operator_page(store, "token-123"),
+        _operator_page(store, "token-123", goal_id="missing-goal"),
+        _diagnostics_page(paths, store, "token-123"),
+        _memory_page(paths, store, "token-123"),
+        _agent_page(paths, store, "token-123", "test-agent"),
+        _agent_page(paths, store, "token-123", "missing-agent"),
+        _message_page("Forbidden", "Invalid token."),
+    ]
+
+    for html in pages:
+        _assert_matrix_background(html)
 
 
 def test_app_ui_server_runs_browser_request(tmp_path) -> None:
@@ -253,13 +295,40 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
         operator_body = response.read().decode("utf-8")
 
     assert "The Operator drafted a recurring goal" in operator_body
-    assert "Review it below" in operator_body
-    assert "stretching" in operator_body
+    assert "Open The Operator to review" in operator_body
+    assert "The Operator" in operator_body
     assert requests == ["Build a tiny helper"]
     assert len(store.list_operator_goals()) == 2
     pending_goals = [goal for goal in store.list_operator_goals() if goal.title == "stretching"]
     assert pending_goals[0].status == OperatorGoalStatus.PENDING
     assert pending_goals[0].next_run_at is None
+
+    with urlopen(f"http://{parsed.netloc}/operator?{parsed.query}", timeout=5) as response:
+        operator_page_body = response.read().decode("utf-8")
+    assert "stretching" in operator_page_body
+
+    update_goal_request = Request(
+        f"http://{parsed.netloc}/operator/update?{parsed.query}",
+        data=urlencode(
+            {
+                "goal_id": pending_goals[0].goal_id,
+                "title": "Stretch reminder",
+                "message": "Stretch shoulders",
+                "interval_minutes": "15",
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(update_goal_request, timeout=5) as response:
+        updated_goal_body = response.read().decode("utf-8")
+
+    assert "Operator goal updated." in updated_goal_body
+    updated_pending = store.get_operator_goal(pending_goals[0].goal_id)
+    assert updated_pending.title == "Stretch reminder"
+    assert updated_pending.payload["message"] == "Stretch shoulders"
+    assert updated_pending.schedule.interval_minutes == 15
+    assert updated_pending.status == OperatorGoalStatus.PENDING
 
     activate_request = Request(
         f"http://{parsed.netloc}/operator/action?{parsed.query}",
@@ -323,6 +392,9 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     assert "test-agent" in agent_body
     assert "data-mission-form" in agent_body
     assert "Alter Agent" in agent_body
+    assert '.check-row input[type="checkbox"]' in agent_body
+    assert "<span>Agent is active</span>" in agent_body
+    assert "<span>Reuse this agent for matching future missions</span>" in agent_body
 
     payload = urlencode(
         {

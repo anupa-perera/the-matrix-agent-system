@@ -12,10 +12,16 @@ from thematrix.schemas import AuthMode, ProviderConfig, ReasoningEffort
 from thematrix.security import InMemorySecretStore, Keymaker
 from thematrix.ui.setup_server import (
     MAX_SETUP_BODY_BYTES,
+    _message_page as _setup_message_page,
     apply_setup_form,
     render_setup_form,
     serve_setup_ui,
 )
+
+
+def _assert_matrix_background(html: str) -> None:
+    assert 'id="matrix-rain"' in html
+    assert "getElementById('matrix-rain')" in html or 'getElementById("matrix-rain")' in html
 
 
 def test_setup_ui_applies_form_without_storing_raw_secret(tmp_path) -> None:
@@ -167,6 +173,7 @@ def test_setup_ui_rejects_oauth_until_flow_exists(tmp_path) -> None:
 def test_setup_ui_form_contains_session_token() -> None:
     html = render_setup_form("token-123")
 
+    _assert_matrix_background(html)
     assert "/save?token=token-123" in html
     assert "The Matrix Setup" in html
     assert "Start here" in html
@@ -188,8 +195,15 @@ def test_setup_ui_form_contains_session_token() -> None:
     assert "<summary>Provider Registry</summary>" in html
 
     settings_html = render_setup_form("token-123", dashboard_url="/dashboard?token=token-123")
+    _assert_matrix_background(settings_html)
     assert "Back to Dashboard" in settings_html
     assert "/dashboard?token=token-123" in settings_html
+
+
+def test_setup_message_pages_include_matrix_background() -> None:
+    html = _setup_message_page("Forbidden", "Invalid token.")
+
+    _assert_matrix_background(html)
 
 
 def test_setup_ui_form_embeds_provider_defaults() -> None:

@@ -40,6 +40,11 @@ from thematrix.schemas import (
 )
 from thematrix.security import Keymaker, SecretStoreError
 from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
+from thematrix.ui.matrix_background import (
+    matrix_background_canvas,
+    matrix_rain_canvas_styles,
+    matrix_rain_script,
+)
 
 MAX_SETUP_BODY_BYTES = 64 * 1024
 DEFAULT_SETUP_TIMEOUT_SECONDS = 15 * 60
@@ -1491,6 +1496,7 @@ def _message_page(
       min-height: 100vh;
       overflow-x: hidden;
     }}
+    {matrix_rain_canvas_styles("0.34")}
     body::before {{
       content: '';
       position: fixed; inset: 0;
@@ -1602,6 +1608,7 @@ def _message_page(
   </style>
 </head>
 <body>
+  {matrix_background_canvas()}
   <main>
     <section>
       <h1>{escape(title)}</h1>
@@ -1611,6 +1618,7 @@ def _message_page(
     </section>
     <div class="footer-bar">// the matrix has you &nbsp;&middot;&nbsp; follow the white rabbit ▌</div>
   </main>
+  {matrix_rain_script()}
   {script_html}
 </body>
 </html>

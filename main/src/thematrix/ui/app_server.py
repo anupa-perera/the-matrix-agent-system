@@ -34,10 +34,16 @@ from thematrix.schemas import (
     ClarificationTurn,
     MatrixRunResult,
     MissionTask,
+    OperatorGoalKind,
     OperatorGoalStatus,
 )
 from thematrix.security import Keymaker
 from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
+from thematrix.ui.matrix_background import (
+    matrix_background_canvas,
+    matrix_background_styles,
+    matrix_rain_script,
+)
 from thematrix.ui.setup_server import apply_setup_form, render_setup_form
 
 MAX_APP_BODY_BYTES = 64 * 1024
@@ -526,7 +532,7 @@ def _handler_factory(
                             AppUiResponse(
                                 message=(
                                     "The Operator drafted a recurring goal. "
-                                    "Review it below, then activate it if it should keep running."
+                                    "Open The Operator to review and activate it if it should keep running."
                                 ),
                             ),
                         ),
@@ -587,6 +593,40 @@ def _handler_factory(
                 self._send_html(
                     HTTPStatus.OK,
                     _operator_page(store, token, response=AppUiResponse(message="Operator goal updated.")),
+                )
+                return
+            if parsed.path == "/operator/update":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                goal_id = form.get("goal_id", "").strip()
+                try:
+                    interval_minutes = int(form.get("interval_minutes", "0"))
+                    updated = operator.update_recurring_notification_goal(
+                        goal_id,
+                        title=form.get("title", ""),
+                        message=form.get("message", ""),
+                        interval_minutes=interval_minutes,
+                    )
+                except ValueError as exc:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _operator_page(
+                            store,
+                            token,
+                            goal_id=goal_id,
+                            response=AppUiResponse(error=str(exc)),
+                        ),
+                    )
+                    return
+                self._send_html(
+                    HTTPStatus.OK,
+                    _operator_page(
+                        store,
+                        token,
+                        goal_id=updated.goal_id,
+                        response=AppUiResponse(message="Operator goal updated."),
+                    ),
                 )
                 return
             if parsed.path == "/agent/update":
@@ -1639,7 +1679,6 @@ def render_app_page(
         if provider_config.reasoning_effort:
             provider_label += f" / {provider_config.reasoning_effort}"
     result_html = _result_panel(response)
-    operator_html = _operator_panel(store, token)
     clarification_html = _clarification_composer(
         store,
         token,
@@ -1904,7 +1943,20 @@ def render_app_page(
     code {{ color: var(--phosphor-bright); overflow-wrap: anywhere; }}
     .actions {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }}
     .clarify-grid {{ display: grid; gap: 14px; }}
-    .clarify-row {{ display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 14px; align-items: end; }}
+    .clarify-row {{ display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 14px; align-items: end; margin-top: 14px; }}
+    .clarify-box {{
+      border-top: 1px dashed var(--line);
+      margin-top: 18px;
+      padding-top: 16px;
+    }}
+    .clarify-box summary {{
+      cursor: pointer;
+      color: var(--phosphor-bright);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }}
+    .clarify-box summary::before {{ content: 'â–¸ '; color: var(--phosphor-title); }}
+    .clarify-box[open] summary::before {{ content: 'â–¾ '; }}
     .transcript {{ display: grid; gap: 10px; }}
     .turn {{
       border-top: 1px dashed var(--line);
@@ -1937,7 +1989,6 @@ def render_app_page(
     </header>
     {clarification_html}
     {result_html}
-    {operator_html}
     {help_html}
     {recent_html}
   </main>
@@ -1974,15 +2025,19 @@ def render_app_page(
     }})();
     (function () {{
       const draftInput = document.querySelector('[data-clarify-draft]');
-      const runDraft = document.querySelector('[data-run-draft]');
-      if (draftInput && runDraft) {{
-        const syncDraft = () => {{ runDraft.value = draftInput.value; }};
+      const draftTargets = document.querySelectorAll('[data-draft-sync]');
+      if (draftInput && draftTargets.length) {{
+        const syncDraft = () => {{
+          draftTargets.forEach((target) => {{ target.value = draftInput.value; }});
+        }};
         draftInput.addEventListener('input', syncDraft);
         syncDraft();
       }}
       document.querySelectorAll('[data-mission-form]').forEach((form) => {{
         form.addEventListener('submit', (event) => {{
-          if (draftInput && runDraft) runDraft.value = draftInput.value;
+          if (draftInput && draftTargets.length) {{
+            draftTargets.forEach((target) => {{ target.value = draftInput.value; }});
+          }}
           if (form.dataset.submitted === 'true') {{
             event.preventDefault();
             return;
@@ -2032,52 +2087,62 @@ def _clarification_composer(
         else ""
     )
     disabled_attr = " disabled" if disabled else ""
+    operator_link = (
+        f'<a class="button-link" href="/operator?token={escape(token)}">The Operator</a>'
+        if context == "mission"
+        else ""
+    )
+    heading = "Mission Console" if context == "mission" else "Agent Console"
     return f"""
     <section class="panel">
-      <h2>Transmit Request</h2>
+      <h2>{heading}</h2>
       <div class="clarify-grid">
-        <form method="post" action="{clarify_action}">
-          <input type="hidden" name="context" value="{escape(context, quote=True)}">
-          {hidden_agent}
-          <label>{escape(draft_label)}
-            <textarea name="draft" placeholder="{escape(draft_placeholder, quote=True)}" required data-clarify-draft>{escape(draft)}</textarea>
-          </label>
-          <div class="clarify-row">
-            <label>Clarify with
-              <select name="target">{target_options}</select>
-            </label>
-            <label>Question before running
-              <input name="question" placeholder="What should be clarified before this runs?" required>
-            </label>
-          </div>
-          <div class="actions">
-            <button type="submit">Clarify</button>
-          </div>
-        </form>
-        <div class="notice">
-          <strong>Clarification Transcript</strong>
-          {transcript}
-        </div>
-        <form method="post" action="{reset_action}">
-          <input type="hidden" name="context" value="{escape(context, quote=True)}">
-          {hidden_agent}
-          <div class="actions">
-            <button type="submit">Reset Transcript</button>
-          </div>
-        </form>
         <form method="post" action="{run_action}" data-mission-form>
           {hidden_agent}
-          <input type="hidden" name="{escape(draft_name, quote=True)}" value="{escape(draft, quote=True)}" data-run-draft>
-          <p class="muted">Run uses the draft above. If the transcript has turns, The Matrix first composes a clean mission brief from it.</p>
+          <label>{escape(draft_label)}
+            <textarea name="{escape(draft_name, quote=True)}" placeholder="{escape(draft_placeholder, quote=True)}" required data-clarify-draft>{escape(draft)}</textarea>
+          </label>
           <div class="actions">
             <button type="submit" data-running-label="{escape(running_label, quote=True)}"{disabled_attr}>{escape(run_label)}</button>
             <a class="button-link" href="/dashboard?token={escape(token)}">Back to Dashboard</a>
             <a class="button-link" href="/settings?token={escape(token)}">Provider Settings</a>
+            {operator_link}
             <span class="submit-status" hidden aria-live="polite">
               {escape(submit_hint)}
             </span>
           </div>
         </form>
+        <details class="clarify-box">
+          <summary>Clarify first, optional</summary>
+          <form method="post" action="{clarify_action}">
+            <input type="hidden" name="context" value="{escape(context, quote=True)}">
+            <input type="hidden" name="draft" value="{escape(draft, quote=True)}" data-draft-sync>
+            {hidden_agent}
+            <div class="clarify-row">
+              <label>Clarify with
+                <select name="target">{target_options}</select>
+              </label>
+              <label>Question before running
+                <input name="question" placeholder="What should be clarified before this runs?" required>
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit">Clarify</button>
+            </div>
+          </form>
+          <div class="notice">
+            <strong>Clarification Transcript</strong>
+            {transcript}
+          </div>
+          <form method="post" action="{reset_action}">
+            <input type="hidden" name="context" value="{escape(context, quote=True)}">
+            {hidden_agent}
+            <div class="actions">
+              <button type="submit">Reset Transcript</button>
+            </div>
+          </form>
+          <p class="muted">If this transcript has turns, The Matrix composes a clean mission brief before running. You can skip this section completely.</p>
+        </details>
       </div>
     </section>
 """
@@ -2485,11 +2550,11 @@ def _agent_page(
         </label>
         <label class="check-row">
           <input type="checkbox" name="enabled"{enabled_checked}>
-          Agent is active
+          <span>Agent is active</span>
         </label>
         <label class="check-row">
           <input type="checkbox" name="reusable"{reusable_checked}>
-          Reuse this agent for matching future missions
+          <span>Reuse this agent for matching future missions</span>
         </label>
         <div class="actions">
           <button type="submit">Save Agent</button>
@@ -2543,15 +2608,19 @@ def _mission_submit_script() -> str:
   <script>
     (function () {
       const draftInput = document.querySelector('[data-clarify-draft]');
-      const runDraft = document.querySelector('[data-run-draft]');
-      if (draftInput && runDraft) {
-        const syncDraft = () => { runDraft.value = draftInput.value; };
+      const draftTargets = document.querySelectorAll('[data-draft-sync]');
+      if (draftInput && draftTargets.length) {
+        const syncDraft = () => {
+          draftTargets.forEach((target) => { target.value = draftInput.value; });
+        };
         draftInput.addEventListener('input', syncDraft);
         syncDraft();
       }
       document.querySelectorAll('[data-mission-form]').forEach((form) => {
         form.addEventListener('submit', (event) => {
-          if (draftInput && runDraft) runDraft.value = draftInput.value;
+          if (draftInput && draftTargets.length) {
+            draftTargets.forEach((target) => { target.value = draftInput.value; });
+          }
           if (form.dataset.submitted === 'true') {
             event.preventDefault();
             return;
@@ -2641,6 +2710,9 @@ def _operator_page(
         )
         next_run = goal.next_run_at.isoformat(timespec="seconds") if goal.next_run_at else "none"
         last_run = goal.last_run_at.isoformat(timespec="seconds") if goal.last_run_at else "none"
+        message = str(goal.payload.get("message", ""))
+        if goal.status == OperatorGoalStatus.PENDING:
+            message = message or "Waiting for your activation before anything recurring starts."
         goal_items.append(
             f"""
         <div class="notice">
@@ -2648,7 +2720,7 @@ def _operator_page(
           <p class="muted">id=<code>{escape(goal.goal_id)}</code></p>
           <p class="muted">status={escape(goal.status.value)} schedule={escape(schedule)}</p>
           <p class="muted">next={escape(next_run)} last={escape(last_run)} failures={goal.failure_count}</p>
-          <p class="result">{escape(goal.payload.get("message", ""))}</p>
+          <p class="result">{escape(message)}</p>
           <p><a class="button-link" href="{_operator_goal_url(token, goal.goal_id)}">Inspect Goal</a></p>
           <div class="operator-actions">
             {_operator_goal_actions(goal.goal_id, goal.status, token)}
@@ -2724,9 +2796,11 @@ def _operator_goal_page(
             ("Original request", goal.original_request, ""),
         ]
     )
+    edit_form = _operator_goal_edit_form(goal, token)
     content = f"""
       {_inline_response(response)}
       {rows}
+      {edit_form}
       <div class="notice">
         <strong>What The Operator Will Do</strong>
         <p>{escape(_operator_goal_plain_english(goal))}</p>
@@ -2749,6 +2823,33 @@ def _operator_goal_page(
         primary_action_label="The Operator",
         primary_action_url=_token_url("/operator", token),
     )
+
+
+def _operator_goal_edit_form(goal, token: str) -> str:
+    if goal.kind != OperatorGoalKind.RECURRING_NOTIFICATION:
+        return ""
+    interval = goal.schedule.interval_minutes if goal.schedule else 5
+    message = str(goal.payload.get("message", ""))
+    return f"""
+      <div class="notice">
+        <strong>Alter Recurring Goal</strong>
+        <form method="post" action="/operator/update?token={escape(token, quote=True)}">
+          <input type="hidden" name="goal_id" value="{escape(goal.goal_id, quote=True)}">
+          <label>Goal name
+            <input name="title" value="{escape(goal.title, quote=True)}" maxlength="80" required>
+          </label>
+          <label>Notification message
+            <textarea name="message" required>{escape(message)}</textarea>
+          </label>
+          <label>Repeat every minutes
+            <input name="interval_minutes" type="number" min="1" max="1440" value="{interval}" required>
+          </label>
+          <div class="actions">
+            <button type="submit">Save Changes</button>
+          </div>
+        </form>
+      </div>
+"""
 
 
 def _operator_goal_explanation(status: OperatorGoalStatus, kind: str, capability: str) -> str:
@@ -2814,7 +2915,8 @@ def _utility_page(
   <title>The Matrix {escape(title)}</title>
   <style>
     body {{ margin: 0; background: #000; color: #00b341; font: 15px/1.6 "Cascadia Mono", "Courier New", monospace; }}
-    main {{ width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0; }}
+    {matrix_background_styles("0.36")}
+    main {{ position: relative; z-index: 2; width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0; }}
     section {{ background: rgba(0,14,4,0.84); border: 1px solid rgba(0,255,65,0.14); border-left: 2px solid #00ff41; padding: 22px; }}
     h1 {{ margin: 0 0 8px; color: #00ff41; font-size: 38px; }}
     p {{ margin: 0 0 18px; color: #7cff9d; }}
@@ -2824,8 +2926,9 @@ def _utility_page(
     .button-link:hover {{ background: rgba(0,255,65,0.1); }}
     form {{ margin-top: 22px; }}
     label {{ display: grid; gap: 10px; color: #7cff9d; text-transform: uppercase; letter-spacing: 1.4px; font-size: 12px; }}
-    .check-row {{ display: flex; grid-template-columns: none; align-items: center; gap: 10px; }}
-    input[type="checkbox"] {{ accent-color: #00ff41; }}
+    .check-row {{ display: inline-flex; width: fit-content; max-width: 100%; grid-template-columns: none; align-items: center; gap: 10px; margin-top: 14px; }}
+    .check-row input[type="checkbox"] {{ flex: 0 0 auto; width: 16px; height: 16px; margin: 0; accent-color: #00ff41; }}
+    .check-row span {{ overflow-wrap: anywhere; }}
     textarea {{ width: 100%; min-height: 140px; resize: vertical; border: 1px solid rgba(0,255,65,0.18); background: rgba(0,8,2,0.86); color: #00ff41; font: inherit; padding: 12px; outline: none; }}
     input, select {{ width: 100%; border: 1px solid rgba(0,255,65,0.18); background: rgba(0,8,2,0.86); color: #00ff41; font: inherit; padding: 10px; outline: none; }}
     input[type="hidden"] {{ display: none; }}
@@ -2879,6 +2982,7 @@ def _utility_page(
   </style>
 </head>
 <body>
+  {matrix_background_canvas()}
   <main>
     <section>
       <h1>{escape(title)}</h1>
@@ -2891,6 +2995,7 @@ def _utility_page(
       {content}
     </section>
   </main>
+  {matrix_rain_script()}
   {extra_script}
 </body>
 </html>
@@ -2932,13 +3037,18 @@ def _message_page(title: str, message: str) -> str:
   <title>The Matrix {escape(title)}</title>
   <style>
     body {{ margin: 0; background: #000; color: #00b341; font: 15px/1.55 "Cascadia Mono", "Courier New", monospace; }}
-    main {{ width: min(720px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0; }}
+    {matrix_background_styles("0.34")}
+    main {{ position: relative; z-index: 2; width: min(720px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0; }}
     section {{ background: rgba(0,14,4,0.82); border: 1px solid rgba(0,255,65,0.14); border-left: 2px solid #00ff41; padding: 20px; }}
     h1 {{ margin: 0 0 8px; color: #00ff41; }}
     p {{ margin: 0; color: #7cff9d; }}
   </style>
 </head>
-<body><main><section><h1>{escape(title)}</h1><p>{escape(message)}</p></section></main></body>
+<body>
+  {matrix_background_canvas()}
+  <main><section><h1>{escape(title)}</h1><p>{escape(message)}</p></section></main>
+  {matrix_rain_script()}
+</body>
 </html>
 """
 

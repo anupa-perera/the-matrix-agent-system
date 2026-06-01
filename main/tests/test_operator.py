@@ -93,6 +93,55 @@ def test_operator_pause_resume_cancel_controls(tmp_path) -> None:
     assert canceled.next_run_at is None
 
 
+def test_operator_updates_recurring_notification_goal(tmp_path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    operator = TheOperator(store, notifier=FakeNotifier())
+    goal = operator.create_recurring_notification_goal(
+        original_request="notify me every 5 minutes",
+        message="stretch",
+        interval_minutes=5,
+    )
+
+    updated = operator.update_recurring_notification_goal(
+        goal.goal_id,
+        title="Movement reminder",
+        message="Stand and stretch",
+        interval_minutes=20,
+    )
+
+    assert updated.title == "Movement reminder"
+    assert updated.payload["message"] == "Stand and stretch"
+    assert updated.schedule is not None
+    assert updated.schedule.interval_minutes == 20
+    assert updated.status == OperatorGoalStatus.ACTIVE
+    assert updated.next_run_at is not None
+    assert updated.next_run_at > datetime.now(UTC)
+    stored = store.get_operator_goal(goal.goal_id)
+    assert stored is not None
+    assert stored.payload["message"] == "Stand and stretch"
+
+
+def test_operator_update_keeps_pending_goal_pending(tmp_path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    operator = TheOperator(store, notifier=FakeNotifier())
+    goal = operator.create_from_request("Remind me about posture every 10 minutes")
+
+    assert goal is not None
+    updated = operator.update_recurring_notification_goal(
+        goal.goal_id,
+        title="Posture reminder",
+        message="Check posture",
+        interval_minutes=15,
+    )
+
+    assert updated.status == OperatorGoalStatus.PENDING
+    assert updated.next_run_at is None
+    assert updated.schedule is not None
+    assert updated.schedule.interval_minutes == 15
+
+
 def test_operator_tracks_one_shot_goal_completion_and_failure(tmp_path) -> None:
     store = RuntimeStore(tmp_path / "runtime.sqlite")
     store.initialize()
