@@ -808,7 +808,17 @@ def _handler_factory(
                     return
                 self._send_html(
                     HTTPStatus.OK,
-                    render_app_page(paths, store, token, AppUiResponse(message=result.message)),
+                    render_dashboard_html(
+                        paths,
+                        store,
+                        token,
+                        pending_actions=_pending_user_actions(
+                            clarification_registry,
+                            approval_registry,
+                            token,
+                        ),
+                        message=result.message,
+                    ),
                 )
                 return
             if parsed.path == "/clarify/intent":
@@ -3017,7 +3027,8 @@ def render_app_page(
       display: grid;
       place-items: center;
       padding: 24px;
-      background: rgba(0, 0, 0, 0.74);
+      background: rgba(0, 0, 0, 0.88);
+      backdrop-filter: blur(3px);
     }}
     .clarification-dialog {{
       width: min(720px, 100%);
@@ -3052,27 +3063,34 @@ def render_app_page(
       flex-direction: column;
       gap: 14px;
       overflow: hidden;
+      max-height: calc(100vh - 48px);
     }}
     .intake-header {{
       display: flex;
-      align-items: baseline;
+      align-items: center;
       justify-content: space-between;
       gap: 12px;
       flex-wrap: wrap;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(0,255,65,0.26);
     }}
     .intake-header h3 {{ margin: 0; }}
     .intake-progress {{
       color: var(--phosphor-title);
-      font-size: 12px;
+      font-size: 11px;
       letter-spacing: 1.5px;
       text-transform: uppercase;
       white-space: nowrap;
+      border: 1px solid rgba(0,255,65,0.32);
+      padding: 4px 10px;
     }}
     .intake-body {{
       display: grid;
       gap: 16px;
       overflow: auto;
-      padding-right: 4px;
+      flex: 1;
+      min-height: 0;
+      padding-right: 6px;
     }}
     .intake-question {{
       border: 0;

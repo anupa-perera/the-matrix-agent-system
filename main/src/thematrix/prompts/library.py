@@ -31,12 +31,21 @@ class PromptLibrary:
         if self.prompt_dir is None:
             return
         self.prompt_dir.mkdir(parents=True, exist_ok=True)
+        # Managed templates are refreshed when the package version changes so prompt
+        # upgrades reach existing installs. User-authored files (agents/) are untouched.
+        from thematrix import __version__
+
+        stamp = self.prompt_dir / ".managed_version"
+        installed_version = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else ""
+        refresh = installed_version != __version__
         template_root = resources.files("thematrix.prompts").joinpath("templates")
         for template in template_root.iterdir():
             if template.name.endswith(".md"):
                 target = self.prompt_dir / template.name
-                if not target.exists():
+                if not target.exists() or refresh:
                     target.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+        if refresh:
+            stamp.write_text(__version__, encoding="utf-8")
 
     def write_agent_blueprint(self, agent_id: str, content: str) -> Path | None:
         if self.prompt_dir is None:

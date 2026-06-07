@@ -214,13 +214,32 @@ class ClarificationService:
 
 
 def deterministic_summary(draft: str, transcript: list[ClarificationTurn]) -> str:
-    turns = _format_transcript(transcript) or "(none)"
-    return (
-        "Original request:\n"
-        f"{draft.strip() or '(empty)'}\n\n"
-        "Clarification summary:\n"
-        f"{turns}"
-    )
+    lines = [draft.strip() or "(empty request)"]
+    resolved = _resolved_details(transcript)
+    if not resolved and transcript:
+        resolved = [f"- {turn.content.strip()}" for turn in transcript if turn.content.strip()]
+    if resolved:
+        lines.append("")
+        lines.append("Resolved details:")
+        lines.extend(resolved)
+    return "\n".join(lines)
+
+
+def _resolved_details(transcript: list[ClarificationTurn]) -> list[str]:
+    details: list[str] = []
+    pending_question: str | None = None
+    for turn in transcript:
+        if turn.kind == "system_question":
+            pending_question = turn.content.strip()
+        elif turn.kind == "user_answer" and pending_question:
+            details.append(f"- {pending_question} -> {turn.content.strip()}")
+            pending_question = None
+        elif turn.kind == "user_question":
+            pending_question = turn.content.strip()
+        elif turn.kind == "assistant_answer" and pending_question:
+            details.append(f"- {pending_question} -> {turn.content.strip()}")
+            pending_question = None
+    return details
 
 
 def deterministic_next_question(draft: str, transcript: list[ClarificationTurn]) -> str:

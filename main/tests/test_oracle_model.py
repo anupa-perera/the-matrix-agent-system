@@ -74,7 +74,15 @@ def test_oracle_heuristics_ask_questions_for_vague_request() -> None:
     brief = Oracle().assess("research stocks")
 
     assert brief.clarifying_questions
-    assert any(q.id == "expected_output" for q in brief.clarifying_questions)
+    output_question = next(q for q in brief.clarifying_questions if q.id == "output_format")
+    assert output_question.options  # offline fallback still offers selectable chips
+    assert output_question.recommended in output_question.options
+
+
+def test_oracle_heuristics_add_cadence_for_recurring_request() -> None:
+    brief = Oracle().assess("send me updates about f1")
+
+    assert any(q.id == "cadence" for q in brief.clarifying_questions)
 
 
 def test_oracle_falls_back_when_model_json_is_invalid() -> None:

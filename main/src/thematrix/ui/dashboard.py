@@ -33,6 +33,7 @@ def render_dashboard_html(
     store: RuntimeStore,
     app_token: str | None = None,
     pending_actions: list[dict[str, str]] | None = None,
+    message: str = "",
 ) -> str:
     counts = store.overview_counts()
     provider_config = store.get_default_provider_config()
@@ -51,6 +52,7 @@ def render_dashboard_html(
     needs_you_items = _needs_you_actions(pending_actions, operator_goals, app_token)
     generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     control_panel_html = control_panel(app_token, needs_you_count=len(needs_you_items))
+    message_html = f'<div class="dash-banner">{escape(message)}</div>' if message else ""
 
     return f"""<!doctype html>
 <html lang="en">
@@ -170,6 +172,17 @@ def render_dashboard_html(
       animation: bootLine 380ms ease-out both;
     }}
     .boot-log p::before {{ content: '> '; color: var(--phosphor); }}
+    .dash-banner {{
+      margin: 0 0 18px;
+      border: 1px solid rgba(0, 255, 65, 0.4);
+      border-left: 3px solid var(--phosphor-bright);
+      background: rgba(0, 255, 65, 0.06);
+      color: var(--phosphor-white);
+      padding: 12px 16px;
+      letter-spacing: 0.4px;
+      animation: bootLine 380ms ease-out both;
+    }}
+    .dash-banner::before {{ content: '\\2713  '; color: var(--phosphor-bright); }}
     .boot-log p:nth-child(1) {{ animation-delay: 80ms; }}
     .boot-log p:nth-child(2) {{ animation-delay: 240ms; }}
     .boot-log p:nth-child(3) {{ animation-delay: 400ms; }}
@@ -580,6 +593,7 @@ def render_dashboard_html(
         <div>gen <strong>{escape(generated_at)}</strong></div>
       </div>
     </header>
+    {message_html}
     <section class="grid">
       {control_panel_html}
       {metric_panel("Runs", counts["runs"])}

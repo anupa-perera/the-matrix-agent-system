@@ -767,6 +767,7 @@ def render_setup_form(
       text-transform: none;
       transition: border-color 150ms ease, box-shadow 150ms ease;
     }}
+    input:hover, select:hover {{ border-color: rgba(0, 255, 65, 0.5); }}
     input:focus, select:focus {{
       border-color: var(--phosphor-bright);
       box-shadow: 0 0 0 1px var(--phosphor-bright), 0 0 14px rgba(0, 255, 65, 0.25);
@@ -858,6 +859,11 @@ def render_setup_form(
     .oauth-row .hint {{
       display: block;
       margin-top: 10px;
+    }}
+    .oauth-row button {{
+      width: 100%;
+      justify-content: center;
+      margin-top: 4px;
     }}
     /* SUBMIT BUTTON — chunky HUD action */
     button {{

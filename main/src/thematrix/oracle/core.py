@@ -109,22 +109,66 @@ class Oracle:
         )
 
     def _heuristic_questions(self, request: str) -> list[ClarifyingQuestion]:
-        # Offline fallback: only a vague/short request needs intake. A detailed
-        # request is assumed specific enough to run without a popup.
+        # Offline fallback used when no model is available (or it errors/rate-limits).
+        # A detailed request is assumed specific enough to run without a popup.
         if len(request.split()) >= 12:
             return []
-        return [
+        lowered = request.lower()
+        questions = [
             ClarifyingQuestion(
-                id="expected_output",
+                id="output_format",
                 question="What should the agent produce, and in what form?",
                 why="Defines the deliverable the agent works toward.",
+                options=[
+                    "Short text summary",
+                    "Detailed written report",
+                    "Bulleted key points",
+                    "Raw data or table",
+                ],
+                recommended="Short text summary",
+            ),
+            ClarifyingQuestion(
+                id="audience",
+                question="Who is this output for?",
+                why="Sets the tone and depth of the result.",
+                options=["A beginner", "A practitioner", "An expert"],
+                recommended="A practitioner",
             ),
             ClarifyingQuestion(
                 id="boundaries",
-                question="What boundaries or limits should the agent respect?",
+                question="What boundaries should the agent respect?",
                 why="Keeps the agent inside the scope you intend.",
+                options=[
+                    "Use public information only",
+                    "Stay on local files only",
+                    "Ask before anything risky",
+                ],
+                recommended="Ask before anything risky",
             ),
         ]
+        recurring_terms = (
+            "update",
+            "daily",
+            "every",
+            "notify",
+            "remind",
+            "schedule",
+            "weekly",
+            "hourly",
+            "monitor",
+        )
+        if any(term in lowered for term in recurring_terms):
+            questions.insert(
+                1,
+                ClarifyingQuestion(
+                    id="cadence",
+                    question="How often should the agent run?",
+                    why="Controls whether this is one-time or recurring.",
+                    options=["One time", "Daily", "Weekly", "On demand"],
+                    recommended="On demand",
+                ),
+            )
+        return questions
 
     def shape_human_layer(self, brief: OracleBrief, spec: AgentSpec) -> OracleHumanLayer:
         temperament = "patient guide"

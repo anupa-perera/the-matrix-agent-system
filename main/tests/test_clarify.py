@@ -142,5 +142,7 @@ def test_clarification_summary_falls_back_when_model_fails(tmp_path) -> None:
     summary = service.summarize(draft="organize notes", transcript=turns)
 
     assert summary == deterministic_summary("organize notes", turns)
-    assert "Original request:" in summary
-    assert "User [oracle]: What is missing?" in summary
+    assert summary.startswith("organize notes")
+    assert "Resolved details:" in summary
+    assert "What is missing?" in summary
+    assert "Ask for the folder." in summary
