@@ -360,6 +360,24 @@ def render_dashboard_html(
       text-transform: uppercase;
     }}
     .inline-actions button:hover {{ background: rgba(0, 255, 65, 0.1); }}
+    .inline-actions button:disabled,
+    .control-button:disabled {{
+      cursor: wait;
+      opacity: 0.68;
+      border-color: var(--phosphor-title);
+      color: var(--phosphor-title);
+    }}
+    .submit-status {{
+      align-self: center;
+      color: var(--phosphor-title);
+      font-size: 11px;
+      letter-spacing: 1.3px;
+      text-transform: uppercase;
+    }}
+    .submit-status::after {{
+      content: ' _';
+      animation: blink 1.05s step-end infinite;
+    }}
     /* HEADINGS */
     h1, h2, h3, p {{ margin: 0; }}
     h2 {{
@@ -630,6 +648,43 @@ def render_dashboard_html(
         }}
       }}
       setInterval(draw, 55);
+    }})();
+    (function () {{
+      function ensureStatus(form, button) {{
+        const existing = form.querySelector('.submit-status');
+        if (existing) return existing;
+        const status = document.createElement('span');
+        status.className = 'submit-status';
+        status.setAttribute('aria-live', 'polite');
+        if (button && button.parentNode) {{
+          button.parentNode.insertBefore(status, button.nextSibling);
+        }} else {{
+          form.appendChild(status);
+        }}
+        return status;
+      }}
+      document.querySelectorAll('form[method="post"]').forEach((form) => {{
+        form.addEventListener('submit', (event) => {{
+          if (form.dataset.submitted === 'true') {{
+            event.preventDefault();
+            return;
+          }}
+          form.dataset.submitted = 'true';
+          const button = event.submitter || form.querySelector('button[type="submit"], input[type="submit"]');
+          if (button) {{
+            button.disabled = true;
+            const runningLabel = button.dataset.runningLabel || form.dataset.runningLabel || 'Working';
+            if (button.tagName === 'INPUT') {{
+              button.value = runningLabel;
+            }} else {{
+              button.textContent = runningLabel;
+            }}
+          }}
+          const status = ensureStatus(form, button);
+          status.textContent = form.dataset.submitStatus || (button && button.dataset.submitStatus) || status.textContent || 'Working. Keep this tab open.';
+          status.hidden = false;
+        }});
+      }});
     }})();
   </script>
 </body>

@@ -889,6 +889,24 @@ def render_setup_form(
                   inset 0 0 24px rgba(0, 255, 65, 0.08);
     }}
     button:active {{ transform: translateY(1px); }}
+    button:disabled {{
+      cursor: wait;
+      opacity: 0.68;
+      border-color: var(--phosphor-title);
+      color: var(--phosphor-title);
+    }}
+    .submit-status {{
+      display: inline-block;
+      margin-left: 12px;
+      color: var(--phosphor-title);
+      font-size: 12px;
+      letter-spacing: 1.3px;
+      text-transform: uppercase;
+    }}
+    .submit-status::after {{
+      content: ' _';
+      animation: blink 1.05s step-end infinite;
+    }}
     .error {{
       position: relative;
       border: 1px solid rgba(255, 0, 60, 0.5);
@@ -1085,6 +1103,7 @@ def render_setup_form(
       </details>
       <label class="check"><input name="test_provider" type="checkbox" checked> Test the connection before finishing</label>
       <button type="submit">Start The Matrix</button>
+      <span class="submit-status" hidden aria-live="polite">Checking provider and saving setup. Keep this tab open.</span>
     </form>
     <details class="notes provider-registry">
       <summary>Provider Registry</summary>
@@ -1320,6 +1339,21 @@ def render_setup_form(
         if (authSelect.value === "oauth") {{
           event.preventDefault();
           window.location.href = oauthStartUrl();
+          return;
+        }}
+        if (setupForm.dataset.submitted === "true") {{
+          event.preventDefault();
+          return;
+        }}
+        setupForm.dataset.submitted = "true";
+        const submitButton = setupForm.querySelector('button[type="submit"]');
+        if (submitButton) {{
+          submitButton.disabled = true;
+          submitButton.textContent = "Checking";
+        }}
+        const status = setupForm.querySelector(".submit-status");
+        if (status) {{
+          status.hidden = false;
         }}
       }});
       syncProvider();

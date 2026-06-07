@@ -82,6 +82,8 @@ def test_dashboard_renders_live_app_actions(tmp_path) -> None:
     assert "/agent?token=token-123&amp;agent_id=test-agent" in html
     assert "/mission?token=token-123&amp;run_id=" not in html
     assert "run this agent" in html
+    assert "Working. Keep this tab open." in html
+    assert "form[method=\"post\"]" in html
 
 
 def test_dashboard_recent_missions_show_pending_actions(tmp_path) -> None:

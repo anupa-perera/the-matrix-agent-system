@@ -2808,6 +2808,10 @@ def render_app_page(
       letter-spacing: 1.4px;
       text-transform: uppercase;
     }}
+    .submit-status::after {{
+      content: ' _';
+      animation: blink 1.05s step-end infinite;
+    }}
     .result {{
       white-space: pre-wrap;
       color: var(--phosphor-bright);
@@ -2997,39 +3001,8 @@ def render_app_page(
       }}
       setInterval(draw, 60);
     }})();
-    (function () {{
-      const draftInput = document.querySelector('[data-clarify-draft]');
-      const draftTargets = document.querySelectorAll('[data-draft-sync]');
-      if (draftInput && draftTargets.length) {{
-        const syncDraft = () => {{
-          draftTargets.forEach((target) => {{ target.value = draftInput.value; }});
-        }};
-        draftInput.addEventListener('input', syncDraft);
-        syncDraft();
-      }}
-      document.querySelectorAll('[data-mission-form]').forEach((form) => {{
-        form.addEventListener('submit', (event) => {{
-          if (draftInput && draftTargets.length) {{
-            draftTargets.forEach((target) => {{ target.value = draftInput.value; }});
-          }}
-          if (form.dataset.submitted === 'true') {{
-            event.preventDefault();
-            return;
-          }}
-          form.dataset.submitted = 'true';
-          const button = form.querySelector('button[type="submit"]');
-          if (button) {{
-            button.disabled = true;
-            button.textContent = button.dataset.runningLabel || 'Running';
-          }}
-          const status = form.querySelector('.submit-status');
-          if (status) status.hidden = false;
-        }});
-      }});
-      const popupInput = document.querySelector('[data-clarification-popup] input[name="answer"]');
-      if (popupInput) popupInput.focus();
-    }})();
   </script>
+  {_submit_feedback_script()}
 </body>
 </html>
 """
@@ -3834,7 +3807,6 @@ def _agent_page(
         token,
         f"Run `{spec.agent_id}` directly while keeping the normal safety and memory flow.",
         content,
-        extra_script=_mission_submit_script(),
     )
 
 
@@ -3871,7 +3843,7 @@ def _inline_response(response: AppUiResponse) -> str:
 """
 
 
-def _mission_submit_script() -> str:
+def _submit_feedback_script() -> str:
     return """
   <script>
     (function () {
@@ -3884,7 +3856,20 @@ def _mission_submit_script() -> str:
         draftInput.addEventListener('input', syncDraft);
         syncDraft();
       }
-      document.querySelectorAll('[data-mission-form]').forEach((form) => {
+      function ensureStatus(form, button) {
+        const existing = form.querySelector('.submit-status');
+        if (existing) return existing;
+        const status = document.createElement('span');
+        status.className = 'submit-status';
+        status.setAttribute('aria-live', 'polite');
+        if (button && button.parentNode) {
+          button.parentNode.insertBefore(status, button.nextSibling);
+        } else {
+          form.appendChild(status);
+        }
+        return status;
+      }
+      document.querySelectorAll('form[method="post"]').forEach((form) => {
         form.addEventListener('submit', (event) => {
           if (draftInput && draftTargets.length) {
             draftTargets.forEach((target) => { target.value = draftInput.value; });
@@ -3894,13 +3879,19 @@ def _mission_submit_script() -> str:
             return;
           }
           form.dataset.submitted = 'true';
-          const button = form.querySelector('button[type="submit"]');
+          const button = event.submitter || form.querySelector('button[type="submit"], input[type="submit"]');
           if (button) {
             button.disabled = true;
-            button.textContent = button.dataset.runningLabel || 'Running';
+            const runningLabel = button.dataset.runningLabel || form.dataset.runningLabel || 'Working';
+            if (button.tagName === 'INPUT') {
+              button.value = runningLabel;
+            } else {
+              button.textContent = runningLabel;
+            }
           }
-          const status = form.querySelector('.submit-status');
-          if (status) status.hidden = false;
+          const status = ensureStatus(form, button);
+          status.textContent = form.dataset.submitStatus || (button && button.dataset.submitStatus) || status.textContent || 'Working. Keep this tab open.';
+          status.hidden = false;
         });
       });
       const popupInput = document.querySelector('[data-clarification-popup] input[name="answer"]');
@@ -4207,6 +4198,7 @@ def _utility_page(
     button:hover {{ background: rgba(0,255,65,0.1); }}
     button:disabled {{ cursor: wait; opacity: 0.68; border-color: #7cff9d; color: #7cff9d; }}
     .submit-status {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; }}
+    .submit-status::after {{ content: ' _'; animation: statusBlink 1.05s step-end infinite; }}
     .notice {{ border-top: 1px dashed rgba(0,255,65,0.16); margin-top: 18px; padding-top: 14px; }}
     .notice.error {{ color: #ff003c; }}
     .notice.busy {{ color: #7cff9d; }}
@@ -4221,6 +4213,7 @@ def _utility_page(
     .oracle-scan span:nth-child(2) {{ animation-delay: 180ms; }}
     .oracle-scan span:nth-child(3) {{ animation-delay: 360ms; }}
     .oracle-output {{ min-height: 96px; overflow-wrap: anywhere; }}
+    @keyframes statusBlink {{ 0%, 49% {{ opacity: 1; }} 50%, 100% {{ opacity: 0; }} }}
     @keyframes scanPulse {{ 0%, 100% {{ opacity: 0.25; transform: scaleX(0.55); }} 50% {{ opacity: 1; transform: scaleX(1); }} }}
     .result-actions {{ margin-top: 14px; }}
     .operator-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
@@ -4283,6 +4276,7 @@ def _utility_page(
     </section>
   </main>
   {matrix_rain_script()}
+  {_submit_feedback_script()}
   {extra_script}
 </body>
 </html>

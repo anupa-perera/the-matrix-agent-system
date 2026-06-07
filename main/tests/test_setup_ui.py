@@ -178,6 +178,8 @@ def test_setup_ui_form_contains_session_token() -> None:
     assert "The Matrix Setup" in html
     assert "Start here" in html
     assert "Start The Matrix" in html
+    assert "Checking provider and saving setup. Keep this tab open." in html
+    assert 'submitButton.textContent = "Checking"' in html
     assert "Advanced settings" in html
     assert "Model choice" in html
     assert "Reasoning effort" in html

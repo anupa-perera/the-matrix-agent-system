@@ -100,6 +100,8 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "Question before running" not in html
     assert "data-mission-form" in html
     assert "Mission accepted. Keep this tab open." in html
+    assert "Working. Keep this tab open." in html
+    assert "form[method=\"post\"]" in html
     assert html.index("Run Mission") < html.index("Intent Check")
     assert "Help / Commands" in html
     assert "Useful terminal commands" not in html
