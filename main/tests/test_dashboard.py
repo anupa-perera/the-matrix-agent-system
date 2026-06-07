@@ -68,8 +68,11 @@ def test_dashboard_renders_live_app_actions(tmp_path) -> None:
     html = render_dashboard_html(paths, store, app_token="token-123")
 
     assert "Mission Console" in html
+    assert "Needs You (0)" in html
+    assert "Ask the Oracle" in html
     assert "The Operator" in html
     assert "/?token=token-123" in html
+    assert "/oracle?token=token-123" in html
     assert "/operator?token=token-123" in html
     assert "/settings?token=token-123" in html
     assert "/diagnostics?token=token-123" in html
@@ -78,6 +81,97 @@ def test_dashboard_renders_live_app_actions(tmp_path) -> None:
     assert "/agent?token=token-123&amp;agent_id=test-agent" in html
     assert "/mission?token=token-123&amp;run_id=" not in html
     assert "run this agent" in html
+
+
+def test_dashboard_recent_missions_show_pending_actions(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+
+    html = render_dashboard_html(
+        paths,
+        store,
+        app_token="token-123",
+        pending_actions=[
+            {
+                "kind": "clarification",
+                "title": "Clarification needed for mission",
+                "href": "/?token=token-123",
+                "status": "needs clarification",
+                "body": "What output should the agent produce?",
+            }
+        ],
+    )
+
+    assert "Recent Missions" in html
+    assert "Needs You" in html
+    assert "Needs You (1)" in html
+    assert "Clarification needed for mission" in html
+    assert "needs clarification" in html
+    assert "What output should the agent produce?" in html
+    assert "The mission will not start until this question is answered." in html
+
+
+def test_dashboard_recent_missions_render_approval_controls(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+
+    html = render_dashboard_html(
+        paths,
+        store,
+        app_token="token-123",
+        pending_actions=[
+            {
+                "kind": "approval",
+                "title": "Approval needed",
+                "href": "/mission?token=token-123&job_id=job-1",
+                "status": "needs approval",
+                "body": "pip install example-package",
+                "approval_id": "approval-1",
+            }
+        ],
+    )
+
+    assert "Approval needed" in html
+    assert "Needs You" in html
+    assert "Needs You (1)" in html
+    assert "pip install example-package" in html
+    assert "/approval/respond?token=token-123" in html
+    assert 'value="approval-1"' in html
+    assert 'value="approve"' in html
+    assert 'value="deny"' in html
+    assert 'value="dashboard"' in html
+    assert "Approve lets the agent continue this action." in html
+
+
+def test_dashboard_needs_you_renders_pending_operator_activation(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+    store.upsert_operator_goal(
+        OperatorGoal(
+            goal_id="goal-1",
+            original_request="Send me a notification about water every 5 minutes",
+            title="Water reminder",
+            kind=OperatorGoalKind.RECURRING_NOTIFICATION,
+            status=OperatorGoalStatus.PENDING,
+            schedule=OperatorSchedule(interval_minutes=5),
+            payload={"message": "water"},
+        )
+    )
+
+    html = render_dashboard_html(paths, store, app_token="token-123")
+
+    assert "Needs You" in html
+    assert "Needs You (1)" in html
+    assert "Activate Operator goal: Water reminder" in html
+    assert "needs activation" in html
+    assert "/operator/action?token=token-123" in html
+    assert 'value="activate"' in html
+    assert 'value="cancel"' in html
+    assert 'value="dashboard"' in html
+    assert "Activate lets this recurring goal run while the app is open." in html
 
 
 def test_dashboard_renders_operator_goal_panel(tmp_path) -> None:

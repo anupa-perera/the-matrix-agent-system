@@ -6,6 +6,7 @@ from urllib.parse import quote
 
 from thematrix.config import MatrixPaths
 from thematrix.memory import RuntimeStore
+from thematrix.schemas import OperatorGoalStatus
 
 DASHBOARD_FAVICON = "data:image/svg+xml," + quote(
     """
@@ -31,6 +32,7 @@ def render_dashboard_html(
     paths: MatrixPaths,
     store: RuntimeStore,
     app_token: str | None = None,
+    pending_actions: list[dict[str, str]] | None = None,
 ) -> str:
     counts = store.overview_counts()
     provider_config = store.get_default_provider_config()
@@ -46,8 +48,9 @@ def render_dashboard_html(
     prompt_blocks = store.list_prompt_blocks(limit=6)
     security_events = store.list_security_events(limit=6)
     model_calls = store.list_model_calls(limit=6)
+    needs_you_items = _needs_you_actions(pending_actions, operator_goals, app_token)
     generated_at = datetime.now(UTC).isoformat(timespec="seconds")
-    control_panel_html = control_panel(app_token)
+    control_panel_html = control_panel(app_token, needs_you_count=len(needs_you_items))
 
     return f"""<!doctype html>
 <html lang="en">
@@ -338,6 +341,25 @@ def render_dashboard_html(
       text-align: left;
       cursor: pointer;
     }}
+    .inline-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }}
+    .inline-actions form {{ margin: 0; }}
+    .inline-actions button {{
+      border: 1px solid var(--phosphor-bright);
+      background: transparent;
+      color: var(--phosphor-bright);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      letter-spacing: 1.5px;
+      padding: 7px 10px;
+      text-transform: uppercase;
+    }}
+    .inline-actions button:hover {{ background: rgba(0, 255, 65, 0.1); }}
     /* HEADINGS */
     h1, h2, h3, p {{ margin: 0; }}
     h2 {{
@@ -548,7 +570,8 @@ def render_dashboard_html(
       {metric_panel("Security Events", counts["security_events"])}
       {provider_panel(provider_config, provider_profile, provider_verification)}
       {operator_panel(operator_goals, app_token)}
-      {runs_panel(runs, store, app_token)}
+      {needs_you_panel(needs_you_items, app_token)}
+      {runs_panel(runs, store, app_token, pending_actions=pending_actions)}
       {agents_panel(agents, app_token)}
       {security_panel(security_events)}
       {prompt_blocks_panel(prompt_blocks)}
@@ -614,11 +637,17 @@ def render_dashboard_html(
 """
 
 
-def control_panel(app_token: str | None) -> str:
+def control_panel(app_token: str | None, needs_you_count: int = 0) -> str:
     stop_html = ""
     if app_token:
         actions = [
             ("Mission Console", "/?token=" + app_token, "Ask for work in plain English."),
+            (
+                f"Needs You ({needs_you_count})",
+                "#needs-you",
+                "Review pending approvals, clarifications, and activations.",
+            ),
+            ("Ask the Oracle", "/oracle?token=" + app_token, "Ask any read-only question."),
             ("The Operator", "/operator?token=" + app_token, "See recurring goals and controls."),
             ("Change Model", "/settings?token=" + app_token, "Switch local or cloud provider."),
             ("System Check", "/diagnostics?token=" + app_token, "Check setup health and safety state."),
@@ -635,7 +664,9 @@ def control_panel(app_token: str | None) -> str:
     else:
         actions = [
             ("Start App", "#start-app", "Run the beginner launcher command."),
+            ("Needs You", "#start-app", "Pending user actions appear after launch."),
             ("Ask Agent", "#start-app", "Use the app console after launch."),
+            ("Ask Oracle", "#start-app", "Ask read-only questions after launch."),
             ("The Operator", "#start-app", "Manage recurring goals after launch."),
             ("Change Model", "#start-app", "Open provider settings after launch."),
             ("System Check", "#start-app", "Run diagnostics from the app or terminal."),
@@ -744,8 +775,25 @@ def operator_panel(goals: list, app_token: str | None = None) -> str:
 """
 
 
-def runs_panel(runs: list[dict], store: RuntimeStore, app_token: str | None = None) -> str:
+def needs_you_panel(actions: list[dict[str, str]], app_token: str | None = None) -> str:
+    items = [_pending_action_item(action, app_token, "dashboard") for action in actions]
+    return f"""
+      <section id="needs-you" class="panel span-12">
+        <div class="row"><h2>Needs You</h2><span class="tag warn">{len(actions)} pending</span></div>
+        <div class="list">{''.join(items) or empty_text("Nothing is waiting on you right now.")}</div>
+      </section>
+"""
+
+
+def runs_panel(
+    runs: list[dict],
+    store: RuntimeStore,
+    app_token: str | None = None,
+    pending_actions: list[dict[str, str]] | None = None,
+) -> str:
     items = []
+    for action in pending_actions or []:
+        items.append(_pending_action_item(action, app_token, "dashboard"))
     for record in runs:
         result = store.get_run(record["run_id"])
         metadata = result.metadata if result else {}
@@ -774,6 +822,129 @@ def runs_panel(runs: list[dict], store: RuntimeStore, app_token: str | None = No
         <h2>Recent Missions</h2>
         <div class="list">{''.join(items) or empty_text("No missions recorded yet.")}</div>
       </section>
+"""
+
+
+def _needs_you_actions(
+    pending_actions: list[dict[str, str]] | None,
+    operator_goals: list,
+    app_token: str | None,
+) -> list[dict[str, str]]:
+    actions = list(pending_actions or [])
+    for goal in operator_goals:
+        if goal.status != OperatorGoalStatus.PENDING:
+            continue
+        href = "#"
+        if app_token is not None:
+            href = (
+                f"/operator?token={quote(app_token, safe='')}"
+                f"&goal_id={quote(str(goal.goal_id), safe='')}"
+            )
+        actions.append(
+            {
+                "kind": "operator_activation",
+                "title": f"Activate Operator goal: {goal.title}",
+                "href": href,
+                "status": "needs activation",
+                "body": goal.last_result or goal.original_request,
+                "goal_id": str(goal.goal_id),
+            }
+        )
+    return actions
+
+
+def _pending_action_item(
+    action: dict[str, str],
+    app_token: str | None,
+    return_to: str,
+) -> str:
+    href = action["href"]
+    title = escape(action["title"])
+    status = action["status"]
+    body = action["body"]
+    reason = action.get("reason") or ""
+    purpose = action.get("purpose") or ""
+    controls = ""
+    if app_token is not None:
+        title = f'<a class="mission-card" href="{escape(href, quote=True)}">{title}</a>'
+        if action.get("kind") == "approval" and action.get("approval_id"):
+            controls = _approval_inline_forms(
+                app_token,
+                action["approval_id"],
+                return_to=return_to,
+            )
+        elif action.get("kind") == "operator_activation" and action.get("goal_id"):
+            controls = _operator_inline_forms(
+                app_token,
+                action["goal_id"],
+            )
+    consequence = _pending_action_consequence(action)
+    details = "".join(
+        f'<p class="muted">{escape(text)}</p>'
+        for text in [reason, purpose, consequence]
+        if text
+    )
+    return f"""
+          <div class="item">
+            <div class="row">
+              <h3>{title}</h3>
+              <span class="tag warn">{escape(status)}</span>
+            </div>
+            <p class="muted">{escape(_clip(body, 150))}</p>
+            {details}
+            {controls}
+          </div>
+"""
+
+
+def _pending_action_consequence(action: dict[str, str]) -> str:
+    kind = action.get("kind")
+    if kind == "approval":
+        return "Approve lets the agent continue this action. Deny tells it to skip or stop that path."
+    if kind == "clarification":
+        return "The mission will not start until this question is answered."
+    if kind == "operator_activation":
+        return "Activate lets this recurring goal run while the app is open. Cancel stops it."
+    return ""
+
+
+def _approval_inline_forms(app_token: str, approval_id: str, *, return_to: str) -> str:
+    action_url = f"/approval/respond?token={escape(app_token, quote=True)}"
+    return f"""
+            <div class="inline-actions">
+              <form method="post" action="{action_url}">
+                <input type="hidden" name="approval_id" value="{escape(approval_id, quote=True)}">
+                <input type="hidden" name="decision" value="approve">
+                <input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">
+                <button type="submit">Approve</button>
+              </form>
+              <form method="post" action="{action_url}">
+                <input type="hidden" name="approval_id" value="{escape(approval_id, quote=True)}">
+                <input type="hidden" name="decision" value="deny">
+                <input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">
+                <button type="submit">Deny</button>
+              </form>
+            </div>
+"""
+
+
+def _operator_inline_forms(app_token: str, goal_id: str) -> str:
+    action_url = f"/operator/action?token={escape(app_token, quote=True)}"
+    return f"""
+            <div class="inline-actions">
+              <form method="post" action="{action_url}">
+                <input type="hidden" name="goal_id" value="{escape(goal_id, quote=True)}">
+                <input type="hidden" name="action" value="activate">
+                <input type="hidden" name="return_to" value="dashboard">
+                <button type="submit">Activate</button>
+              </form>
+              <form method="post" action="{action_url}">
+                <input type="hidden" name="goal_id" value="{escape(goal_id, quote=True)}">
+                <input type="hidden" name="action" value="cancel">
+                <input type="hidden" name="return_to" value="dashboard">
+                <button type="submit">Cancel</button>
+              </form>
+            </div>
 """
 
 

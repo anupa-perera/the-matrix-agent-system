@@ -224,6 +224,14 @@ class ApprovalRegistry:
                 if approval.job_id == job_id and approval.status == "pending"
             ]
 
+    def pending_all_payloads(self) -> list[dict[str, object]]:
+        with self._lock:
+            return [
+                self._payload(approval)
+                for approval in self._approvals.values()
+                if approval.status == "pending"
+            ]
+
     def _payload(self, approval: ApprovalRequest) -> dict[str, object]:
         return {
             "approval_id": approval.approval_id,
@@ -370,6 +378,10 @@ class ClarificationSessionRegistry:
             self._sessions[context_key] = updated
             return updated
 
+    def list_sessions(self) -> list[ClarificationSession]:
+        with self._lock:
+            return list(self._sessions.values())
+
     def reset(self, context_key: str) -> None:
         with self._lock:
             self._sessions.pop(context_key, None)
@@ -472,6 +484,11 @@ def _handler_factory(
                         store,
                         token,
                         clarification_session=clarification_registry.get("mission"),
+                        pending_actions=_pending_user_actions(
+                            clarification_registry,
+                            approval_registry,
+                            token,
+                        ),
                     ),
                 )
                 return
@@ -488,7 +505,28 @@ def _handler_factory(
                 return
             if parsed.path == "/dashboard":
                 write_dashboard(paths, store)
-                self._send_html(HTTPStatus.OK, render_dashboard_html(paths, store, token))
+                self._send_html(
+                    HTTPStatus.OK,
+                    render_dashboard_html(
+                        paths,
+                        store,
+                        token,
+                        pending_actions=_pending_user_actions(
+                            clarification_registry,
+                            approval_registry,
+                            token,
+                        ),
+                    ),
+                )
+                return
+            if parsed.path == "/oracle":
+                self._send_html(
+                    HTTPStatus.OK,
+                    _oracle_page(
+                        token,
+                        clarification_registry.get("oracle", "oracle"),
+                    ),
+                )
                 return
             if parsed.path == "/mission":
                 query = parse_qs(parsed.query)
@@ -572,7 +610,23 @@ def _handler_factory(
                     return
                 approval_id = form.get("approval_id", "").strip()
                 decision = form.get("decision", "").strip()
+                return_to = form.get("return_to", "").strip()
                 if decision not in {"approve", "deny"}:
+                    if return_to == "dashboard":
+                        self._send_html(
+                            HTTPStatus.BAD_REQUEST,
+                            render_dashboard_html(
+                                paths,
+                                store,
+                                token,
+                                pending_actions=_pending_user_actions(
+                                    clarification_registry,
+                                    approval_registry,
+                                    token,
+                                ),
+                            ),
+                        )
+                        return
                     self._send_json(
                         HTTPStatus.BAD_REQUEST,
                         {"ok": False, "error": "Choose approve or deny."},
@@ -580,9 +634,56 @@ def _handler_factory(
                     return
                 approval = approval_registry.respond(approval_id, decision == "approve")
                 if approval is None:
+                    if return_to == "dashboard":
+                        self._send_html(
+                            HTTPStatus.NOT_FOUND,
+                            render_dashboard_html(
+                                paths,
+                                store,
+                                token,
+                                pending_actions=_pending_user_actions(
+                                    clarification_registry,
+                                    approval_registry,
+                                    token,
+                                ),
+                            ),
+                        )
+                        return
                     self._send_json(
                         HTTPStatus.NOT_FOUND,
                         {"ok": False, "error": "Approval request not found."},
+                    )
+                    return
+                if return_to == "dashboard":
+                    self._send_html(
+                        HTTPStatus.OK,
+                        render_dashboard_html(
+                            paths,
+                            store,
+                            token,
+                            pending_actions=_pending_user_actions(
+                                clarification_registry,
+                                approval_registry,
+                                token,
+                            ),
+                        ),
+                    )
+                    return
+                if return_to == "app":
+                    self._send_html(
+                        HTTPStatus.OK,
+                        render_app_page(
+                            paths,
+                            store,
+                            token,
+                            AppUiResponse(message=f"Approval {approval.status}."),
+                            clarification_session=clarification_registry.get("mission"),
+                            pending_actions=_pending_user_actions(
+                                clarification_registry,
+                                approval_registry,
+                                token,
+                            ),
+                        ),
                     )
                     return
                 self._send_json(
@@ -828,6 +929,56 @@ def _handler_factory(
                     ),
                 )
                 return
+            if parsed.path == "/oracle/ask":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                question = form.get("question", "").strip()
+                session = clarification_registry.get("oracle", "oracle")
+                if not question:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _oracle_page(
+                            token,
+                            session,
+                            AppUiResponse(error="Ask the Oracle a question first."),
+                        ),
+                    )
+                    return
+                try:
+                    clarification = clarifier.answer(
+                        draft="",
+                        question=question,
+                        target="oracle",
+                        transcript=session.turns,
+                    )
+                except (ClarificationError, Exception) as exc:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _oracle_page(
+                            token,
+                            clarification_registry.get("oracle", "oracle"),
+                            AppUiResponse(error=f"Oracle answer failed: {exc}"),
+                        ),
+                    )
+                    return
+                session = clarification_registry.append(
+                    "oracle",
+                    draft="",
+                    target=clarification.target,
+                    question=question,
+                    answer=clarification.answer,
+                    default_target="oracle",
+                )
+                self._send_html(
+                    HTTPStatus.OK,
+                    _oracle_page(
+                        token,
+                        session,
+                        AppUiResponse(message="The Oracle answered."),
+                    ),
+                )
+                return
             if parsed.path == "/ask":
                 form = self._read_form(paths, store, token)
                 if form is None:
@@ -854,6 +1005,31 @@ def _handler_factory(
                             token,
                             AppUiResponse(
                                 error="Answer the Matrix intent question before running."
+                            ),
+                            clarification_session=session,
+                        ),
+                    )
+                    return
+                session, ready = _ensure_ready_or_ask(
+                    clarifier,
+                    clarification_registry,
+                    context_key="mission",
+                    draft=user_request,
+                    target=session.default_target or "auto",
+                    default_target=session.default_target or "auto",
+                )
+                if not ready:
+                    self._send_html(
+                        HTTPStatus.OK,
+                        render_app_page(
+                            paths,
+                            store,
+                            token,
+                            AppUiResponse(
+                                message=(
+                                    "The Matrix needs one more detail before starting "
+                                    "this mission."
+                                ),
                             ),
                             clarification_session=session,
                         ),
@@ -927,6 +1103,7 @@ def _handler_factory(
                     return
                 goal_id = form.get("goal_id", "").strip()
                 action = form.get("action", "").strip()
+                return_to = form.get("return_to", "").strip()
                 try:
                     if action == "activate":
                         operator.activate_goal(goal_id)
@@ -944,6 +1121,21 @@ def _handler_factory(
                     self._send_html(
                         HTTPStatus.BAD_REQUEST,
                         _operator_page(store, token, AppUiResponse(error=str(exc))),
+                    )
+                    return
+                if return_to == "dashboard":
+                    self._send_html(
+                        HTTPStatus.OK,
+                        render_dashboard_html(
+                            paths,
+                            store,
+                            token,
+                            pending_actions=_pending_user_actions(
+                                clarification_registry,
+                                approval_registry,
+                                token,
+                            ),
+                        ),
                     )
                     return
                 self._send_html(
@@ -1141,6 +1333,32 @@ def _handler_factory(
                             agent_id,
                             AppUiResponse(
                                 error="Answer the Matrix intent question before running this agent."
+                            ),
+                            clarification_session=session,
+                        ),
+                    )
+                    return
+                session, ready = _ensure_ready_or_ask(
+                    clarifier,
+                    clarification_registry,
+                    context_key=context_key,
+                    draft=user_request,
+                    target=session.default_target or f"agent:{agent_id}",
+                    default_target=session.default_target or f"agent:{agent_id}",
+                )
+                if not ready:
+                    self._send_html(
+                        HTTPStatus.OK,
+                        _agent_page(
+                            paths,
+                            store,
+                            token,
+                            agent_id,
+                            AppUiResponse(
+                                message=(
+                                    "The Matrix needs one more detail before running "
+                                    "this agent."
+                                ),
                             ),
                             clarification_session=session,
                         ),
@@ -1552,8 +1770,8 @@ def _mission_page(
           <p id="mission-message" class="muted"></p>
           <p id="mission-request" class="request-text"></p>
         </div>
-        <div id="mission-contract"></div>
         <div id="mission-approvals"></div>
+        <div id="mission-contract"></div>
         <div id="mission-result"></div>
         <div class="mission-grid">
           <div>
@@ -2045,6 +2263,14 @@ def _mission_status_script(
         if (!pending.length) return;
         const panel = document.createElement('div');
         panel.className = 'approval-panel';
+        const heading = document.createElement('p');
+        heading.className = 'timeline-title';
+        heading.textContent = 'Waiting On You';
+        const note = document.createElement('p');
+        note.className = 'muted';
+        note.textContent = 'This mission is paused until you approve or deny the pending request.';
+        panel.appendChild(heading);
+        panel.appendChild(note);
         pending.forEach((approval) => panel.appendChild(approvalCard(approval)));
         approvals.appendChild(panel);
       }}
@@ -2194,6 +2420,34 @@ def _clarified_launch_request(
     return clarifier.summarize(draft=draft, transcript=session.turns)
 
 
+def _ensure_ready_or_ask(
+    clarifier: ClarificationService,
+    registry: ClarificationSessionRegistry,
+    *,
+    context_key: str,
+    draft: str,
+    target: str,
+    default_target: str,
+) -> tuple[ClarificationSession, bool]:
+    session = registry.update_draft(context_key, draft, default_target)
+    if _pending_clarification_question(session) is not None:
+        return session, False
+    if session.has_turns:
+        return session, True
+    try:
+        session, _message = _ask_next_intent_question(
+            clarifier,
+            registry,
+            context_key=context_key,
+            draft=draft,
+            target=target,
+            default_target=default_target,
+        )
+    except Exception:
+        return session, True
+    return session, _pending_clarification_question(session) is None
+
+
 def _pending_clarification_question(session: ClarificationSession) -> ClarificationTurn | None:
     if not session.turns:
         return None
@@ -2245,6 +2499,7 @@ def render_app_page(
     token: str,
     response: AppUiResponse | None = None,
     clarification_session: ClarificationSession | None = None,
+    pending_actions: list[dict[str, str]] | None = None,
 ) -> str:
     response = response or AppUiResponse()
     clarification_session = clarification_session or ClarificationSession(context_key="mission")
@@ -2268,7 +2523,14 @@ def render_app_page(
         draft_placeholder="Create a reusable research agent for comparing AI tools",
         submit_hint="Mission accepted. Keep this tab open.",
     )
-    recent_html = _recent_runs_panel(store, token)
+    recent_html = _recent_runs_panel(
+        store,
+        token,
+        pending_actions=pending_actions or _pending_clarification_actions(
+            [clarification_session],
+            token,
+        ),
+    )
     help_html = _help_panel()
     return f"""<!doctype html>
 <html lang="en">
@@ -2554,6 +2816,43 @@ def render_app_page(
     }}
     .intent-actions button {{ margin-top: 0; }}
     .intent-answer {{ display: grid; gap: 12px; }}
+    .clarification-popup {{
+      position: fixed;
+      inset: 0;
+      z-index: 1200;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.74);
+    }}
+    .clarification-dialog {{
+      width: min(720px, 100%);
+      max-height: min(720px, calc(100vh - 48px));
+      overflow: auto;
+      border: 1px solid var(--phosphor-bright);
+      border-left: 2px solid var(--phosphor-bright);
+      background: rgba(0, 14, 4, 0.96);
+      box-shadow: 0 0 0 1px rgba(0,255,65,0.18), 0 0 34px rgba(0,255,65,0.22);
+      padding: 22px;
+    }}
+    .clarification-dialog h3 {{
+      margin: 0 0 12px;
+      color: var(--phosphor-bright);
+      font-size: 16px;
+      font-weight: normal;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }}
+    .clarification-question {{
+      color: var(--phosphor-bright);
+      font-size: 16px;
+      margin-bottom: 18px;
+      white-space: pre-wrap;
+    }}
+    .clarification-inline-note {{
+      border: 1px solid rgba(0,255,65,0.26);
+      padding: 12px;
+    }}
     .transcript {{ display: grid; gap: 10px; }}
     .turn {{
       border-top: 1px dashed var(--line);
@@ -2649,6 +2948,8 @@ def render_app_page(
           if (status) status.hidden = false;
         }});
       }});
+      const popupInput = document.querySelector('[data-clarification-popup] input[name="answer"]');
+      if (popupInput) popupInput.focus();
     }})();
   </script>
 </body>
@@ -2725,7 +3026,6 @@ def _intent_clarification_controls(
     draft: str,
     hidden_agent: str,
 ) -> str:
-    intent_action = f"/clarify/intent?token={escape(token, quote=True)}"
     answer_action = f"/clarify/answer?token={escape(token, quote=True)}"
     reset_action = f"/clarify/reset?token={escape(token, quote=True)}"
     target = session.default_target or _default_target_for_context(session.context_key)
@@ -2737,25 +3037,41 @@ def _intent_clarification_controls(
     )
     pending = _pending_clarification_question(session)
     if pending is None:
-        active_form = f"""
-          <form method="post" action="{intent_action}">
-            {hidden_fields}
-            <div class="intent-actions">
-              <button type="submit">Ask Next Question</button>
-            </div>
-          </form>
+        active_form = """
+          <p class="muted">Click Run Mission. If the brief is missing an important detail, The Matrix will ask before anything starts.</p>
 """
     else:
+        reset_button = f"""
+              <form method="post" action="{reset_action}">
+                <input type="hidden" name="context" value="{escape(context, quote=True)}">
+                {hidden_agent}
+                <button type="submit">Edit Brief Instead</button>
+              </form>
+"""
         active_form = f"""
-          <form method="post" action="{answer_action}" class="intent-answer">
-            {hidden_fields}
-            <label>Your Answer
-              <input name="answer" placeholder="Answer the Matrix question" required>
-            </label>
-            <div class="intent-actions">
-              <button type="submit">Save Answer</button>
+          <div class="clarification-inline-note">
+            <strong>Clarification needed</strong>
+            <p class="muted">The Matrix is waiting for your answer before it starts.</p>
+          </div>
+          <div class="clarification-popup" role="dialog" aria-modal="true" aria-labelledby="clarification-title" data-clarification-popup>
+            <div class="clarification-dialog">
+              <h3 id="clarification-title">Clarification Required</h3>
+              <p class="muted">The mission is paused until this is answered.</p>
+              <div class="clarification-question">{escape(pending.content)}</div>
+              <form method="post" action="{answer_action}" class="intent-answer">
+                {hidden_fields}
+                <label>Your Answer
+                  <input name="answer" placeholder="Answer the Matrix question" required>
+                </label>
+                <div class="intent-actions">
+                  <button type="submit">Save Answer</button>
+                </div>
+              </form>
+              <div class="intent-actions">
+                {reset_button}
+              </div>
             </div>
-          </form>
+          </div>
 """
     transcript_heading = "Intent Transcript"
     transcript = _clarification_transcript_html(session.turns)
@@ -2784,6 +3100,62 @@ def _intent_clarification_controls(
           {reset_form}
         </div>
 """
+
+
+def _pending_clarification_actions(
+    sessions: list[ClarificationSession],
+    token: str,
+) -> list[dict[str, str]]:
+    actions = []
+    for session in sessions:
+        pending = _pending_clarification_question(session)
+        if pending is None:
+            continue
+        context = session.context_key
+        if context == "oracle":
+            continue
+        if context.startswith("agent:") and context != "agent:":
+            agent_id = context.split(":", 1)[1]
+            href = _token_url("/agent", token, agent_id=agent_id)
+            title = f"Clarification needed for {agent_id}"
+        else:
+            href = _token_url("/", token)
+            title = "Clarification needed for mission"
+        actions.append(
+            {
+                "kind": "clarification",
+                "title": title,
+                "href": href,
+                "status": "needs clarification",
+                "body": pending.content,
+            }
+        )
+    return actions
+
+
+def _pending_user_actions(
+    clarification_registry: ClarificationSessionRegistry,
+    approval_registry: ApprovalRegistry,
+    token: str,
+) -> list[dict[str, str]]:
+    sessions = clarification_registry.list_sessions()
+    actions = _pending_clarification_actions(sessions, token)
+    for approval in approval_registry.pending_all_payloads():
+        job_id = str(approval.get("job_id") or "")
+        href = _token_url("/mission", token, job_id=job_id) if job_id else _token_url("/", token)
+        actions.append(
+            {
+                "kind": "approval",
+                "title": "Approval needed",
+                "href": href,
+                "status": "needs approval",
+                "body": str(approval.get("target") or approval.get("reason") or ""),
+                "approval_id": str(approval.get("approval_id") or ""),
+                "reason": str(approval.get("reason") or ""),
+                "purpose": str(approval.get("purpose") or ""),
+            }
+        )
+    return actions
 
 
 def _clarification_target_options(
@@ -2823,8 +3195,8 @@ def _clarification_target_options(
 def _clarification_transcript_html(turns: list[ClarificationTurn]) -> str:
     if not turns:
         return (
-            '<p class="muted">No intent questions yet. Run now, or ask The Matrix to check '
-            "the brief first.</p>"
+            '<p class="muted">No intent questions yet. Run starts only after the brief '
+            "has enough context.</p>"
         )
     items = []
     for turn in turns:
@@ -2886,6 +3258,37 @@ def _result_panel(response: AppUiResponse) -> str:
       <div class="result">{escape(result.response)}</div>
     </section>
 """
+
+
+def _oracle_page(
+    token: str,
+    session: ClarificationSession,
+    response: AppUiResponse | None = None,
+) -> str:
+    response = response or AppUiResponse()
+    content = f"""
+      {_inline_response(response)}
+      <form method="post" action="/oracle/ask?token={escape(token, quote=True)}">
+        <label>Question for the Oracle
+          <textarea name="question" placeholder="Ask anything about the system, agents, strategy, risks, or next steps." required></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit">Ask Oracle</button>
+        </div>
+      </form>
+      <div class="notice">
+        <strong>Oracle Transcript</strong>
+        {_clarification_transcript_html(session.turns)}
+      </div>
+"""
+    return _utility_page(
+        "Ask the Oracle",
+        token,
+        "Ask any read-only question. The Oracle answers, but does not launch missions.",
+        content,
+        primary_action_label="New Mission",
+        primary_action_url=_token_url("/", token),
+    )
 
 
 def _operator_panel(store: RuntimeStore, token: str) -> str:
@@ -2961,9 +3364,35 @@ def _actionable_operator_goals(goals) -> list:
     return [goal for goal in goals if goal.status in actionable]
 
 
-def _recent_runs_panel(store: RuntimeStore, token: str) -> str:
+def _recent_runs_panel(
+    store: RuntimeStore,
+    token: str,
+    pending_actions: list[dict[str, str]] | None = None,
+) -> str:
     runs = store.list_run_records(limit=5)
     items = []
+    for action in pending_actions or []:
+        href = action["href"]
+        title = action["title"]
+        status = action["status"]
+        body = action["body"]
+        approval_controls = ""
+        if action.get("kind") == "approval" and action.get("approval_id"):
+            approval_controls = _approval_inline_forms(
+                token,
+                action["approval_id"],
+                return_to="app",
+            )
+        items.append(
+            f"""
+        <div class="item">
+          <p><a class="run-link" href="{escape(href, quote=True)}"><strong>{escape(title)}</strong></a></p>
+          <p class="muted">{escape(status)}</p>
+          <p class="muted">{escape(_clip(body, 180))}</p>
+          {approval_controls}
+        </div>
+"""
+        )
     for run in runs:
         href = f"/mission?token={escape(token, quote=True)}&run_id={escape(run['run_id'], quote=True)}"
         items.append(
@@ -2980,6 +3409,26 @@ def _recent_runs_panel(store: RuntimeStore, token: str) -> str:
       <h2>Recent Missions</h2>
       <div class="list">{content}</div>
     </section>
+"""
+
+
+def _approval_inline_forms(token: str, approval_id: str, *, return_to: str) -> str:
+    action_url = f"/approval/respond?token={escape(token, quote=True)}"
+    return f"""
+          <div class="operator-actions">
+            <form method="post" action="{action_url}">
+              <input type="hidden" name="approval_id" value="{escape(approval_id, quote=True)}">
+              <input type="hidden" name="decision" value="approve">
+              <input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">
+              <button type="submit">Approve</button>
+            </form>
+            <form method="post" action="{action_url}">
+              <input type="hidden" name="approval_id" value="{escape(approval_id, quote=True)}">
+              <input type="hidden" name="decision" value="deny">
+              <input type="hidden" name="return_to" value="{escape(return_to, quote=True)}">
+              <button type="submit">Deny</button>
+            </form>
+          </div>
 """
 
 
@@ -3293,6 +3742,8 @@ def _mission_submit_script() -> str:
           if (status) status.hidden = false;
         });
       });
+      const popupInput = document.querySelector('[data-clarification-popup] input[name="answer"]');
+      if (popupInput) popupInput.focus();
     })();
   </script>
 """
@@ -3598,6 +4049,11 @@ def _utility_page(
     .notice {{ border-top: 1px dashed rgba(0,255,65,0.16); margin-top: 18px; padding-top: 14px; }}
     .notice.error {{ color: #ff003c; }}
     .notice.busy {{ color: #7cff9d; }}
+    .clarification-popup {{ position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,0.74); }}
+    .clarification-dialog {{ width: min(720px, 100%); max-height: min(720px, calc(100vh - 48px)); overflow: auto; border: 1px solid #00ff41; border-left: 2px solid #00ff41; background: rgba(0,14,4,0.96); box-shadow: 0 0 0 1px rgba(0,255,65,0.18), 0 0 34px rgba(0,255,65,0.22); padding: 22px; }}
+    .clarification-dialog h3 {{ margin: 0 0 12px; color: #00ff41; font-size: 16px; font-weight: normal; letter-spacing: 2px; text-transform: uppercase; }}
+    .clarification-question {{ color: #00ff41; font-size: 16px; margin-bottom: 18px; white-space: pre-wrap; }}
+    .clarification-inline-note {{ border: 1px solid rgba(0,255,65,0.26); padding: 12px; }}
     .result-actions {{ margin-top: 14px; }}
     .operator-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
     .operator-actions form {{ margin: 0; }}

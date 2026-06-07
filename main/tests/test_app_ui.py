@@ -92,8 +92,8 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "Mission Console" in html
     assert "Run Mission" in html
     assert "Intent Check" in html
-    assert "Ask Next Question" in html
-    assert "/clarify/intent?token=token-123" in html
+    assert "Ask Next Question" not in html
+    assert "/clarify/intent?token=token-123" not in html
     assert "Intent Transcript" in html
     assert "Clarify first, optional" not in html
     assert "Clarify with" not in html
@@ -106,6 +106,64 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "the-matrix providers current" not in html
     assert "Recent Missions" in html
     assert "/operator?token=token-123" in html
+
+
+def test_oracle_page_answers_general_questions(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    captured_url: list[str] = []
+    clarifier = FakeClarifier()
+    ready = Event()
+
+    def run_server() -> None:
+        serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=_run_result,
+            clarifier=clarifier,
+            port=0,
+            open_browser=False,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+
+    with urlopen(f"http://{parsed.netloc}/oracle?{parsed.query}", timeout=5) as response:
+        oracle_body = response.read().decode("utf-8")
+
+    assert "Ask the Oracle" in oracle_body
+    assert "Ask Oracle" in oracle_body
+
+    oracle_request = Request(
+        f"http://{parsed.netloc}/oracle/ask?{parsed.query}",
+        data=urlencode({"question": "What should I build next?"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(oracle_request, timeout=5) as response:
+        answer_body = response.read().decode("utf-8")
+
+    assert "The Oracle answered." in answer_body
+    assert "Clarified: What should I build next?" in answer_body
+    assert clarifier.questions == [("", "What should I build next?", "oracle")]
+
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5):
+        pass
+    thread.join(timeout=5)
+    assert not thread.is_alive()
 
 
 def test_app_page_recent_mission_links_do_not_use_default_underline(tmp_path) -> None:
@@ -344,16 +402,21 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
 
     activate_request = Request(
         f"http://{parsed.netloc}/operator/action?{parsed.query}",
-        data=urlencode({"goal_id": pending_goals[0].goal_id, "action": "activate"}).encode(
-            "utf-8"
-        ),
+        data=urlencode(
+            {
+                "goal_id": pending_goals[0].goal_id,
+                "action": "activate",
+                "return_to": "dashboard",
+            }
+        ).encode("utf-8"),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
     with urlopen(activate_request, timeout=5) as response:
         activated_body = response.read().decode("utf-8")
 
-    assert "Operator goal updated." in activated_body
+    assert "The Matrix Dashboard" in activated_body
+    assert "Needs You" in activated_body
     assert store.get_operator_goal(pending_goals[0].goal_id).status == OperatorGoalStatus.ACTIVE
 
     with urlopen(f"http://{parsed.netloc}/settings?{parsed.query}", timeout=5) as response:
@@ -648,6 +711,16 @@ def test_app_ui_clarification_transcript_summarizes_mission_and_agent_runs(tmp_p
             break
         sleep(0.05)
     assert requests == ["SUMMARIZED BRIEF: Build something"]
+    for _ in range(50):
+        one_shot_goals = [
+            goal
+            for goal in store.list_operator_goals()
+            if goal.kind == OperatorGoalKind.ONE_SHOT
+            and goal.status == OperatorGoalStatus.COMPLETED
+        ]
+        if one_shot_goals:
+            break
+        sleep(0.05)
 
     agent_clarify = Request(
         f"http://{parsed.netloc}/clarify?{parsed.query}",
@@ -770,6 +843,8 @@ def test_app_ui_intent_check_asks_question_before_mission_runs(tmp_path) -> None
 
     assert "The Matrix asked the next intent question." in intent_body
     assert "What output should this agent produce?" in intent_body
+    assert "Clarification Required" in intent_body
+    assert 'role="dialog"' in intent_body
     assert "Your Answer" in intent_body
     assert clarifier.intent_checks == [("Build something", "auto", 0)]
 
@@ -787,6 +862,7 @@ def test_app_ui_intent_check_asks_question_before_mission_runs(tmp_path) -> None
     else:
         raise AssertionError("Mission should not run with an unanswered intent question.")
     assert "Answer the Matrix intent question before running." in blocked_body
+    assert "Clarification Required" in blocked_body
 
     answer_request = Request(
         f"http://{parsed.netloc}/clarify/answer?{parsed.query}",
@@ -896,17 +972,32 @@ def test_app_ui_surfaces_runtime_approval_and_resumes_after_response(tmp_path) -
     assert status["approvals"][0]["purpose"] == "Install dependency."
     approval_id = status["approvals"][0]["approval_id"]
 
+    with urlopen(f"http://{parsed.netloc}/dashboard?{parsed.query}", timeout=5) as response:
+        dashboard_body = response.read().decode("utf-8")
+
+    assert "Approval needed" in dashboard_body
+    assert "pip install example-package" in dashboard_body
+    assert "/approval/respond" in dashboard_body
+    assert 'value="approve"' in dashboard_body
+    assert 'value="deny"' in dashboard_body
+
     approve_request = Request(
         f"http://{parsed.netloc}/approval/respond?{parsed.query}",
-        data=urlencode({"approval_id": approval_id, "decision": "approve"}).encode("utf-8"),
+        data=urlencode(
+            {
+                "approval_id": approval_id,
+                "decision": "approve",
+                "return_to": "dashboard",
+            }
+        ).encode("utf-8"),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
     with urlopen(approve_request, timeout=5) as response:
-        approval_body = json.loads(response.read().decode("utf-8"))
+        approval_body = response.read().decode("utf-8")
 
-    assert approval_body["ok"] is True
-    assert approval_body["status"] == "approved"
+    assert "Recent Missions" in approval_body
+    assert 'value="approve"' not in approval_body
 
     for _ in range(50):
         with urlopen(

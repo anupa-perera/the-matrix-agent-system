@@ -146,7 +146,10 @@ This release packages the local-first Matrix-inspired agent framework for normal
 ### What's New
 
 - Browser missions now open a live status cockpit instead of leaving users on a waiting form.
-- Clarification can now happen in the same mission or agent page before launch.
+- Run Mission now pauses for missing details and opens a clarification popup before launch.
+- Dashboard now has a Needs You queue for clarifications, approvals, and Operator activations.
+- Pending approvals can be approved or denied directly from Needs You or Recent Missions.
+- Ask the Oracle is a dedicated read-only Q&A surface that does not launch missions.
 - The Matrix can summarize the clarification transcript into the mission brief automatically.
 - The Operator can draft, activate, pause, resume, and run local recurring notification goals.
 - Mission detail pages show the timeline, task ledger, final result, and links from recent missions.

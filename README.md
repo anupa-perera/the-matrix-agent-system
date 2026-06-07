@@ -145,9 +145,11 @@ the-matrix start
 
 The app opens a local browser dashboard. Type what you want the agents to do, then submit the request.
 
-If the request is not clear yet, use **Intent Check** on the same page. The Matrix asks the next useful question before the mission starts. When you launch the mission, The Matrix folds the draft and intent answers into the mission brief automatically.
+If the request is not clear yet, **Run Mission** pauses before launch and opens a clarification popup. The Matrix asks the next useful question, then folds your answer into the mission brief automatically.
 
-If an agent needs approval while a mission is running, keep the Mission Status page open. The page shows Approve and Deny controls for guarded shell commands or file writes that need your decision.
+Use **Ask the Oracle** for read-only questions about the system, agents, strategy, risks, or next steps. Oracle answers do not launch missions.
+
+If an agent needs approval, clarification, or Operator activation, the dashboard shows it in **Needs You** and in **Recent Missions**. Approve, deny, answer, activate, or cancel from there, or open the Mission Status page for the full timeline.
 
 ## Example Requests
 
