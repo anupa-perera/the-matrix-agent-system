@@ -306,6 +306,76 @@ def test_agent_runner_executes_allowed_file_read_tool(tmp_path) -> None:
     assert "Tool results" in gateway.requests[1].messages[0].content
 
 
+def test_agent_runner_reports_needs_input_outcome(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent"),
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+    gateway = FakeGateway(
+        '{"status":"needs_input","summary":"I need the coverage scope.",'
+        '"open_questions":["All stocks or a watchlist?"]}'
+    )
+
+    execution = AgentRunner(gateway, prompt_library).run(
+        spec,
+        Oracle().assess("Build a planning agent"),
+        "Build a planning agent",
+    )
+
+    assert execution.executed
+    assert execution.outcome == "needs_input"
+    assert execution.open_questions == ["All stocks or a watchlist?"]
+    assert execution.response == "I need the coverage scope."
+
+
+def test_runtime_blocks_when_agent_needs_user_input(tmp_path) -> None:
+    vault = MemoryVault(tmp_path / "vault")
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    vault.initialize()
+    store.initialize()
+    prompt_library.install_defaults()
+    gateway = FakeGateway(
+        '{"status":"needs_input","summary":"I need the coverage scope.",'
+        '"open_questions":["All stocks or a watchlist?"]}'
+    )
+    runtime = Nebuchadnezzar(
+        oracle=Oracle(),
+        architect=Architect(store, prompt_library=prompt_library),
+        neo=Neo(),
+        vault=vault,
+        store=store,
+        agent_runner=AgentRunner(gateway, prompt_library),
+    )
+
+    result = runtime.run(
+        "Build a planning agent",
+        privacy_mode=PrivacyMode.ASK_EACH_TIME,
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+
+    tasks = store.list_mission_tasks(result.run_id)
+    assert tasks[0].status.value == "blocked"
+    assert "All stocks or a watchlist?" in (tasks[0].error or "")
+    assert result.metadata["mission_completed_count"] == 0
+    assert "needs your input" in result.response
+    # The mission stops after the blocked task instead of cascading.
+    assert tasks[1].status.value == "pending"
+    assert len(gateway.requests) == 1
+
+
 def test_agent_runner_returns_error_result_when_gateway_fails(tmp_path) -> None:
     prompt_library = PromptLibrary(tmp_path / "prompts")
     prompt_library.install_defaults()

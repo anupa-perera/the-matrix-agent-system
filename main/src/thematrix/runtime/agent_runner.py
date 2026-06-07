@@ -41,6 +41,8 @@ class AgentExecutionResult:
     model_id: str
     tool_results: list[ShellCommandResult | FileToolResult] | None = None
     error: str | None = None
+    outcome: str = "completed"
+    open_questions: list[str] | None = None
 
 
 class AgentToolRequest(BaseModel):
@@ -54,6 +56,12 @@ class AgentToolRequest(BaseModel):
 class AgentToolPlan(BaseModel):
     response: str = ""
     tool_requests: list[AgentToolRequest] = Field(default_factory=list)
+
+
+class AgentFinalAnswer(BaseModel):
+    status: Literal["completed", "needs_input", "blocked"] = "completed"
+    summary: str = ""
+    open_questions: list[str] = Field(default_factory=list)
 
 
 class AgentRunner:
@@ -106,12 +114,15 @@ class AgentRunner:
 
         plan = self._parse_tool_plan(response.text)
         if not plan.tool_requests:
+            final = self._parse_final_answer(plan.response or response.text)
             return AgentExecutionResult(
                 executed=True,
-                response=plan.response or response.text,
+                response=final.summary or plan.response or response.text,
                 provider_id=response.provider_id,
                 model_id=response.model,
                 tool_results=[],
+                outcome=final.status,
+                open_questions=final.open_questions,
             )
 
         tool_results = self._run_tool_requests(spec, plan.tool_requests)
@@ -140,12 +151,15 @@ class AgentRunner:
                 error=type(exc).__name__,
             )
 
+        final = self._parse_final_answer(final_response.text)
         return AgentExecutionResult(
             executed=True,
-            response=final_response.text,
+            response=final.summary or final_response.text,
             provider_id=final_response.provider_id,
             model_id=final_response.model,
             tool_results=tool_results,
+            outcome=final.status,
+            open_questions=final.open_questions,
         )
 
     def _execution_prompt(
@@ -169,8 +183,15 @@ class AgentRunner:
             '[{"kind":"file_read","path":"README.md","purpose":"Read project docs"}]}\n\n'
             "For file writes use `file_write` with `path`, `content`, and `purpose`. "
             "File writes may require user approval.\n\n"
-            "Only request commands that fit the blueprint. Do not request commands for secrets. "
-            "If no tool is needed, answer normally."
+            "Only request commands that fit the blueprint. Do not request commands for secrets.\n\n"
+            "When you are giving your final answer (no tool needed), return exactly one JSON "
+            "object in this shape:\n"
+            '{"status":"completed","summary":"the user-facing answer",'
+            '"open_questions":[]}\n'
+            "Use `\"needs_input\"` (and list the unresolved decisions in `open_questions`) when "
+            "you cannot finish without more information from the user. Use `\"blocked\"` when a "
+            "guardrail or missing permission stops you. Only use `\"completed\"` when the task is "
+            "actually done."
         )
 
     def _parse_tool_plan(self, text: str) -> AgentToolPlan:
@@ -178,6 +199,15 @@ class AgentRunner:
             return AgentToolPlan.model_validate(extract_json_object(text))
         except Exception:
             return AgentToolPlan(response=text)
+
+    def _parse_final_answer(self, text: str) -> AgentFinalAnswer:
+        try:
+            answer = AgentFinalAnswer.model_validate(extract_json_object(text))
+        except Exception:
+            return AgentFinalAnswer(status="completed", summary=text.strip())
+        if not answer.summary.strip():
+            answer.summary = text.strip()
+        return answer
 
     def _run_tool_requests(
         self,
@@ -287,8 +317,12 @@ class AgentRunner:
             f"{plan.response}\n\n"
             "Tool results:\n"
             f"{result_json}\n\n"
-            "Now give the final user-facing answer. Mention blocked or approval-needed commands "
-            "plainly if they affected the result."
+            "Now give the final answer as exactly one JSON object in this shape:\n"
+            '{"status":"completed","summary":"the user-facing answer","open_questions":[]}\n'
+            "Use `\"needs_input\"` with `open_questions` when you still need decisions from the "
+            "user, or `\"blocked\"` when a guardrail or approval-needed command stopped you. "
+            "Mention blocked or approval-needed commands plainly in the summary if they affected "
+            "the result."
         )
 
     def _fallback_blueprint(self, spec: AgentSpec) -> str:

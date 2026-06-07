@@ -38,6 +38,45 @@ def test_oracle_uses_model_when_json_is_valid() -> None:
     assert gateway.requests
 
 
+def test_oracle_parses_clarifying_questions() -> None:
+    gateway = FakeGateway(
+        """
+        {
+          "intent": "Research CSE stocks",
+          "ethical_status": "needs_clarification",
+          "user_interaction_required": true,
+          "human_need": "Ask before spawning.",
+          "constraints": [],
+          "success_criteria": [],
+          "clarifying_questions": [
+            {
+              "id": "coverage",
+              "question": "All listed stocks or a watchlist?",
+              "why": "Changes the agent's coverage.",
+              "options": ["All", "Watchlist"],
+              "recommended": "Watchlist"
+            }
+          ]
+        }
+        """
+    )
+
+    brief = Oracle(model_gateway=gateway).assess("Research CSE stocks")
+
+    assert len(brief.clarifying_questions) == 1
+    question = brief.clarifying_questions[0]
+    assert question.id == "coverage"
+    assert question.recommended == "Watchlist"
+    assert question.options == ["All", "Watchlist"]
+
+
+def test_oracle_heuristics_ask_questions_for_vague_request() -> None:
+    brief = Oracle().assess("research stocks")
+
+    assert brief.clarifying_questions
+    assert any(q.id == "expected_output" for q in brief.clarifying_questions)
+
+
 def test_oracle_falls_back_when_model_json_is_invalid() -> None:
     oracle = Oracle(model_gateway=FakeGateway("not json"))
 

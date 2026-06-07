@@ -427,12 +427,29 @@ class Nebuchadnezzar:
             task.tool_result_count = len(execution.tool_results or [])
             tool_results.extend(execution.tool_results or [])
             task.result_summary = execution.response
-            task.status = TaskStatus.COMPLETED if execution.executed else TaskStatus.FAILED
-            task.error = execution.error
+            needs_input = execution.executed and execution.outcome in {"needs_input", "blocked"}
+            if not execution.executed:
+                task.status = TaskStatus.FAILED
+            elif needs_input:
+                task.status = TaskStatus.BLOCKED
+            else:
+                task.status = TaskStatus.COMPLETED
+            open_questions = execution.open_questions or []
+            if needs_input:
+                task.error = "; ".join(open_questions) if open_questions else execution.outcome
+                execution_status = "needs_input"
+            else:
+                task.error = execution.error
             task.updated_at = datetime.now(UTC)
             previous_results.append(f"{task.title}: {execution.response}")
+            if needs_input:
+                event_stage = "blocked"
+            elif execution.executed:
+                event_stage = "task_completed"
+            else:
+                event_stage = "task_failed"
             self._emit_progress(
-                "task_completed" if execution.executed else "task_failed",
+                event_stage,
                 f"Task {task.sequence} {task.status.value}: {task.title}",
                 mission_id=plan.mission_id,
                 task_id=task.task_id,
@@ -440,8 +457,9 @@ class Nebuchadnezzar:
                 agent_id=task.agent_spec.agent_id,
                 tool_result_count=task.tool_result_count,
                 error=task.error,
+                open_questions=open_questions,
             )
-            if not execution.executed:
+            if not execution.executed or needs_input:
                 break
         return {
             "preflight_report": first_preflight,
@@ -604,6 +622,15 @@ class Nebuchadnezzar:
                 f"{task.sequence}. {task.title} - {task.status.value} "
                 f"via `{task.agent_spec.agent_id}`"
             )
+        blocked = [task for task in plan.tasks if task.status == TaskStatus.BLOCKED]
+        if blocked:
+            task = blocked[0]
+            lines.extend(["", f"Task {task.sequence} needs your input before it can finish:"])
+            if task.result_summary:
+                lines.extend(["", task.result_summary])
+            if task.error:
+                lines.extend(["", "Open questions:", task.error])
+            return "\n".join(lines)
         completed = [task for task in plan.tasks if task.status == TaskStatus.COMPLETED]
         if completed:
             lines.extend(["", "Final sequential result:", "", completed[-1].result_summary])

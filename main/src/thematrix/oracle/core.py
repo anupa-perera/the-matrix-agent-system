@@ -8,6 +8,7 @@ from thematrix.prompts import PromptLibrary
 from thematrix.prompts.json_tools import extract_json_object
 from thematrix.schemas import (
     AgentSpec,
+    ClarifyingQuestion,
     EthicalStatus,
     MatrixRunResult,
     ModelRequest,
@@ -72,6 +73,13 @@ class Oracle:
                 human_need="Ask for the missing request in plain language.",
                 constraints=["Do not spawn an agent without a real request."],
                 success_criteria=["The user provides a concrete request."],
+                clarifying_questions=[
+                    ClarifyingQuestion(
+                        id="goal",
+                        question="What do you want the agent or mission to do?",
+                        why="Without a concrete goal the agent has nothing to run.",
+                    )
+                ],
             )
 
         blocked_terms = ["steal", "exfiltrate", "credential dump", "malware", "ransomware"]
@@ -97,7 +105,26 @@ class Oracle:
                 "The user understands what the spawned agent is for.",
                 "The agent stays inside its approved scope.",
             ],
+            clarifying_questions=self._heuristic_questions(request),
         )
+
+    def _heuristic_questions(self, request: str) -> list[ClarifyingQuestion]:
+        # Offline fallback: only a vague/short request needs intake. A detailed
+        # request is assumed specific enough to run without a popup.
+        if len(request.split()) >= 12:
+            return []
+        return [
+            ClarifyingQuestion(
+                id="expected_output",
+                question="What should the agent produce, and in what form?",
+                why="Defines the deliverable the agent works toward.",
+            ),
+            ClarifyingQuestion(
+                id="boundaries",
+                question="What boundaries or limits should the agent respect?",
+                why="Keeps the agent inside the scope you intend.",
+            ),
+        ]
 
     def shape_human_layer(self, brief: OracleBrief, spec: AgentSpec) -> OracleHumanLayer:
         temperament = "patient guide"

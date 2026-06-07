@@ -10,6 +10,7 @@ from thematrix.config import MatrixPaths
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.schemas import (
     AgentSpec,
+    ClarifyingQuestion,
     EthicalStatus,
     MatrixRunResult,
     MissionTask,
@@ -912,6 +913,96 @@ def test_app_ui_intent_check_asks_question_before_mission_runs(tmp_path) -> None
             break
         sleep(0.05)
     assert requests == ["SUMMARIZED BRIEF: Build something"]
+
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5):
+        pass
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_app_ui_intake_gate_collects_answers_before_launch(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    captured_url: list[str] = []
+    requests: list[str] = []
+    clarifier = FakeClarifier()
+    questions = [
+        ClarifyingQuestion(
+            id="coverage",
+            question="All listed stocks or a watchlist?",
+            why="Sets the agent's coverage.",
+            options=["All", "Watchlist"],
+            recommended="Watchlist",
+        )
+    ]
+    ready = Event()
+
+    def run_server() -> None:
+        serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=lambda request: requests.append(request) or _run_result(request),
+            intake_runner=lambda draft: questions,
+            clarifier=clarifier,
+            port=0,
+            open_browser=False,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+
+    ask_request = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=urlencode({"request": "Research CSE stocks"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(ask_request, timeout=5) as response:
+        ask_body = response.read().decode("utf-8")
+
+    assert "Mission Intake" in ask_body
+    assert "All listed stocks or a watchlist?" in ask_body
+    assert "Start Mission" in ask_body
+    assert "Accept Recommended Defaults" in ask_body
+    assert "/intake/submit?token=" in ask_body
+    assert requests == []  # Nothing spawned until the user answers.
+
+    submit_request = Request(
+        f"http://{parsed.netloc}/intake/submit?{parsed.query}",
+        data=urlencode(
+            {
+                "request": "Research CSE stocks",
+                "question_keys": "coverage",
+                "qtext__coverage": "All listed stocks or a watchlist?",
+                "ans__coverage": "Watchlist",
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(submit_request, timeout=5) as response:
+        submit_body = response.read().decode("utf-8")
+
+    assert "Mission Status" in submit_body
+    for _ in range(50):
+        if requests:
+            break
+        sleep(0.05)
+    assert requests == ["SUMMARIZED BRIEF: Research CSE stocks"]
+    assert clarifier.summaries == ["Research CSE stocks"]
 
     shutdown_request = Request(
         f"http://{parsed.netloc}/shutdown?{parsed.query}",

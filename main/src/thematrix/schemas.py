@@ -59,6 +59,14 @@ class AuthMode(StrEnum):
     EXTERNAL = "external"
 
 
+class ClarifyingQuestion(BaseModel):
+    id: str
+    question: str
+    why: str = ""
+    options: list[str] = Field(default_factory=list)
+    recommended: str = ""
+
+
 class OracleBrief(BaseModel):
     intent: str
     ethical_status: EthicalStatus
@@ -66,6 +74,7 @@ class OracleBrief(BaseModel):
     human_need: str
     constraints: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
+    clarifying_questions: list[ClarifyingQuestion] = Field(default_factory=list)
 
 
 class AgentSpec(BaseModel):

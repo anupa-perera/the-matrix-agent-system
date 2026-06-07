@@ -25,6 +25,7 @@ from thematrix.runtime import AgentRunner, Nebuchadnezzar
 from thematrix.schemas import (
     AgentSpec,
     AuthMode,
+    ClarifyingQuestion,
     FileChangeConsent,
     MatrixRunResult,
     ModelRequest,
@@ -221,6 +222,7 @@ def start(
                 progress_callback=progress_callback,
                 approval_callback=approval_callback,
             ),
+            intake_runner=lambda draft: _assess_intake(paths, vault, store, draft),
             open_browser=open_browser,
             url_callback=lambda value: typer.echo(f"App UI: {value}"),
             timeout_seconds=app_timeout,
@@ -495,6 +497,18 @@ def _build_runtime(
         ),
     )
     return oracle, runtime
+
+
+def _assess_intake(
+    paths: MatrixPaths,
+    vault: MemoryVault,
+    store: RuntimeStore,
+    draft: str,
+) -> list[ClarifyingQuestion]:
+    """Ask Oracle which clarifying questions to resolve before spawning agents."""
+    provider_config = store.get_default_provider_config()
+    oracle, _ = _build_runtime(paths, vault, store, provider_config)
+    return oracle.assess(draft).clarifying_questions
 
 
 def _run_browser_request(

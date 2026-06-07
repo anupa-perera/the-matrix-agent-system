@@ -33,6 +33,7 @@ from thematrix.schemas import (
     ClarificationRole,
     ClarificationSession,
     ClarificationTurn,
+    ClarifyingQuestion,
     MatrixRunResult,
     MissionTask,
     OperatorGoalKind,
@@ -420,6 +421,44 @@ class ClarificationSessionRegistry:
             self._sessions[context_key] = updated
             return updated
 
+    def append_intake_answers(
+        self,
+        context_key: str,
+        *,
+        draft: str,
+        pairs: list[tuple[str, str]],
+        target: str = "oracle",
+        default_target: str = "auto",
+    ) -> ClarificationSession:
+        with self._lock:
+            session = self._sessions.get(context_key)
+            turns = list(session.turns) if session else []
+            for question, answer in pairs:
+                turns.append(
+                    ClarificationTurn(
+                        role=ClarificationRole.ASSISTANT,
+                        content=question,
+                        target=target,
+                        kind="system_question",
+                    )
+                )
+                turns.append(
+                    ClarificationTurn(
+                        role=ClarificationRole.USER,
+                        content=answer,
+                        target=target,
+                        kind="user_answer",
+                    )
+                )
+            updated = ClarificationSession(
+                context_key=context_key,
+                draft=draft,
+                default_target=default_target,
+                turns=turns,
+            )
+            self._sessions[context_key] = updated
+            return updated
+
     def list_sessions(self) -> list[ClarificationSession]:
         with self._lock:
             return list(self._sessions.values())
@@ -435,6 +474,7 @@ def serve_app_ui(
     store: RuntimeStore,
     request_runner: Callable[..., MatrixRunResult],
     agent_request_runner: Callable[..., MatrixRunResult] | None = None,
+    intake_runner: Callable[[str], list[ClarifyingQuestion]] | None = None,
     operator: TheOperator | None = None,
     clarifier: ClarificationService | None = None,
     port: int = 0,
@@ -460,6 +500,7 @@ def serve_app_ui(
             token,
             request_runner,
             agent_request_runner,
+            intake_runner,
             active_operator,
             active_clarifier,
             run_lock,
@@ -498,6 +539,7 @@ def _handler_factory(
     token: str,
     request_runner: Callable[..., MatrixRunResult],
     agent_request_runner: Callable[..., MatrixRunResult] | None,
+    intake_runner: Callable[[str], list[ClarifyingQuestion]] | None,
     operator: TheOperator,
     clarifier: ClarificationService,
     run_lock: Lock,
@@ -1044,92 +1086,71 @@ def _handler_factory(
                         ),
                     )
                     return
-                session, ready = _ensure_ready_or_ask(
-                    clarifier,
-                    clarification_registry,
-                    context_key="mission",
-                    draft=user_request,
-                    target=session.default_target or "auto",
-                    default_target=session.default_target or "auto",
-                )
-                if not ready:
-                    self._send_html(
-                        HTTPStatus.OK,
-                        render_app_page(
-                            paths,
-                            store,
-                            token,
-                            AppUiResponse(
-                                message=(
-                                    "The Matrix needs one more detail before starting "
-                                    "this mission."
+                if intake_runner is not None and not session.has_turns:
+                    questions = self._intake_questions(intake_runner, user_request)
+                    if questions:
+                        self._send_html(
+                            HTTPStatus.OK,
+                            render_app_page(
+                                paths,
+                                store,
+                                token,
+                                AppUiResponse(
+                                    message=(
+                                        "The Matrix needs a few details before spawning "
+                                        "agents for this mission."
+                                    ),
                                 ),
+                                clarification_session=session,
+                                intake_questions=questions,
                             ),
-                            clarification_session=session,
-                        ),
+                        )
+                        return
+                elif intake_runner is None:
+                    session, ready = _ensure_ready_or_ask(
+                        clarifier,
+                        clarification_registry,
+                        context_key="mission",
+                        draft=user_request,
+                        target=session.default_target or "auto",
+                        default_target=session.default_target or "auto",
                     )
-                    return
+                    if not ready:
+                        self._send_html(
+                            HTTPStatus.OK,
+                            render_app_page(
+                                paths,
+                                store,
+                                token,
+                                AppUiResponse(
+                                    message=(
+                                        "The Matrix needs one more detail before starting "
+                                        "this mission."
+                                    ),
+                                ),
+                                clarification_session=session,
+                            ),
+                        )
+                        return
                 launch_request = _clarified_launch_request(clarifier, user_request, session)
-                operator_goal = operator.create_from_request(launch_request)
-                if operator_goal is not None:
-                    clarification_registry.reset("mission")
-                    self._send_html(
-                        HTTPStatus.OK,
-                        render_app_page(
-                            paths,
-                            store,
-                            token,
-                            AppUiResponse(
-                                message=(
-                                    "The Operator drafted a recurring goal. "
-                                    "Open The Operator to review and activate it if it should keep running."
-                                ),
-                            ),
-                        ),
-                    )
+                self._launch_mission(launch_request)
+                return
+            if parsed.path == "/intake/submit":
+                form = self._read_form(paths, store, token)
+                if form is None:
                     return
-                if not run_lock.acquire(blocking=False):
-                    self._send_html(
-                        HTTPStatus.CONFLICT,
-                        render_app_page(
-                            paths,
-                            store,
-                            token,
-                            AppUiResponse(
-                                busy=True,
-                                message=(
-                                    "A mission is already running. This click did not start "
-                                    "a duplicate mission."
-                                ),
-                            ),
-                        ),
-                    )
-                    return
-                goal = operator.create_one_shot_goal(launch_request)
-                job = mission_registry.create("mission", launch_request)
-                Thread(
-                    target=_run_background_mission,
-                    args=(
-                        job,
-                        request_runner,
-                        launch_request,
-                        run_lock,
-                        approval_registry,
-                        operator,
-                        goal.goal_id,
-                    ),
-                    daemon=True,
-                ).start()
-                clarification_registry.reset("mission")
-                self._send_html(
-                    HTTPStatus.ACCEPTED,
-                    _mission_page(
-                        store,
-                        token,
-                        job,
-                        approval_registry=approval_registry,
-                    ),
+                user_request = (
+                    form.get("request", "").strip()
+                    or clarification_registry.get("mission").draft
                 )
+                pairs = _intake_pairs_from_form(form)
+                session = clarification_registry.append_intake_answers(
+                    "mission",
+                    draft=user_request,
+                    pairs=pairs,
+                )
+                launch_request = _clarified_launch_request(clarifier, user_request, session)
+                self._launch_mission(launch_request)
                 return
             if parsed.path == "/operator/action":
                 form = self._read_form(paths, store, token)
@@ -1565,6 +1586,78 @@ def _handler_factory(
 
             raw = self.rfile.read(length).decode("utf-8")
             return {key: values[-1] for key, values in parse_qs(raw).items()}
+
+        def _intake_questions(
+            self,
+            runner: Callable[[str], list[ClarifyingQuestion]],
+            draft: str,
+        ) -> list[ClarifyingQuestion]:
+            try:
+                return list(runner(draft) or [])
+            except Exception:
+                return []
+
+        def _launch_mission(self, launch_request: str) -> None:
+            operator_goal = operator.create_from_request(launch_request)
+            if operator_goal is not None:
+                clarification_registry.reset("mission")
+                self._send_html(
+                    HTTPStatus.OK,
+                    render_app_page(
+                        paths,
+                        store,
+                        token,
+                        AppUiResponse(
+                            message=(
+                                "The Operator drafted a recurring goal. "
+                                "Open The Operator to review and activate it if it should keep running."
+                            ),
+                        ),
+                    ),
+                )
+                return
+            if not run_lock.acquire(blocking=False):
+                self._send_html(
+                    HTTPStatus.CONFLICT,
+                    render_app_page(
+                        paths,
+                        store,
+                        token,
+                        AppUiResponse(
+                            busy=True,
+                            message=(
+                                "A mission is already running. This click did not start "
+                                "a duplicate mission."
+                            ),
+                        ),
+                    ),
+                )
+                return
+            goal = operator.create_one_shot_goal(launch_request)
+            job = mission_registry.create("mission", launch_request)
+            Thread(
+                target=_run_background_mission,
+                args=(
+                    job,
+                    request_runner,
+                    launch_request,
+                    run_lock,
+                    approval_registry,
+                    operator,
+                    goal.goal_id,
+                ),
+                daemon=True,
+            ).start()
+            clarification_registry.reset("mission")
+            self._send_html(
+                HTTPStatus.ACCEPTED,
+                _mission_page(
+                    store,
+                    token,
+                    job,
+                    approval_registry=approval_registry,
+                ),
+            )
 
         def _discard_request_body(self) -> None:
             try:
@@ -2498,6 +2591,23 @@ def _clarified_launch_request(
     return clarifier.summarize(draft=draft, transcript=session.turns)
 
 
+def _intake_pairs_from_form(form: dict[str, str]) -> list[tuple[str, str]]:
+    """Rebuild (question, answer) pairs from a submitted intake form."""
+    keys = [key.strip() for key in form.get("question_keys", "").split(",") if key.strip()]
+    pairs: list[tuple[str, str]] = []
+    for key in keys:
+        question = form.get(f"qtext__{key}", "").strip()
+        if not question:
+            continue
+        answer = form.get(f"ans__{key}", "").strip()
+        if answer == "__other__":
+            answer = form.get(f"other__{key}", "").strip()
+        if not answer:
+            answer = "(no preference - use your best judgment)"
+        pairs.append((question, answer))
+    return pairs
+
+
 def _ensure_ready_or_ask(
     clarifier: ClarificationService,
     registry: ClarificationSessionRegistry,
@@ -2578,6 +2688,7 @@ def render_app_page(
     response: AppUiResponse | None = None,
     clarification_session: ClarificationSession | None = None,
     pending_actions: list[dict[str, str]] | None = None,
+    intake_questions: list[ClarifyingQuestion] | None = None,
 ) -> str:
     response = response or AppUiResponse()
     clarification_session = clarification_session or ClarificationSession(context_key="mission")
@@ -2600,6 +2711,7 @@ def render_app_page(
         draft_label="What do you want the agents to do?",
         draft_placeholder="Create a reusable research agent for comparing AI tools",
         submit_hint="Mission accepted. Keep this tab open.",
+        intake_questions=intake_questions,
     )
     recent_html = _recent_runs_panel(
         store,
@@ -2935,6 +3047,92 @@ def render_app_page(
       border: 1px solid rgba(0,255,65,0.26);
       padding: 12px;
     }}
+    .intake-dialog {{
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow: hidden;
+    }}
+    .intake-header {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    .intake-header h3 {{ margin: 0; }}
+    .intake-progress {{
+      color: var(--phosphor-title);
+      font-size: 12px;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }}
+    .intake-body {{
+      display: grid;
+      gap: 16px;
+      overflow: auto;
+      padding-right: 4px;
+    }}
+    .intake-question {{
+      border: 0;
+      border-top: 1px dashed var(--line);
+      margin: 0;
+      padding: 14px 0 0;
+    }}
+    .intake-question legend {{
+      color: var(--phosphor-bright);
+      font-size: 15px;
+      padding: 0;
+    }}
+    .intake-why {{ margin: 4px 0 10px; font-size: 13px; }}
+    .intake-options {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+    .option-chip {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid rgba(0,255,65,0.32);
+      padding: 6px 12px;
+      cursor: pointer;
+      user-select: none;
+    }}
+    .option-chip input {{ accent-color: var(--phosphor-bright); margin: 0; }}
+    .option-chip:has(input:checked) {{
+      border-color: var(--phosphor-bright);
+      background: rgba(0,255,65,0.12);
+      box-shadow: 0 0 14px rgba(0,255,65,0.18);
+    }}
+    .chip-rec {{
+      color: var(--phosphor-title);
+      font-size: 10px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      font-style: normal;
+    }}
+    .intake-text {{
+      width: 100%;
+      margin-top: 8px;
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(0,255,65,0.32);
+      color: var(--phosphor-bright);
+      padding: 8px 10px;
+      font: inherit;
+    }}
+    .intake-footer {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      border-top: 1px solid rgba(0,255,65,0.26);
+      padding-top: 12px;
+    }}
+    .intake-footer button {{ margin: 0; cursor: pointer; }}
+    .intake-start[disabled] {{ opacity: 0.45; cursor: not-allowed; }}
+    .intake-defaults, .intake-edit {{
+      background: transparent;
+      border: 1px solid rgba(0,255,65,0.32);
+      color: var(--phosphor);
+    }}
+    .intake-edit {{ margin-left: auto; }}
     .transcript {{ display: grid; gap: 10px; }}
     .turn {{
       border-top: 1px dashed var(--line);
@@ -3023,6 +3221,7 @@ def _clarification_composer(
     submit_hint: str,
     agent_id: str = "",
     disabled: bool = False,
+    intake_questions: list[ClarifyingQuestion] | None = None,
 ) -> str:
     draft = session.draft
     hidden_agent = (
@@ -3030,13 +3229,22 @@ def _clarification_composer(
         if agent_id
         else ""
     )
-    intent_html = _intent_clarification_controls(
-        token,
-        session=session,
-        context=context,
-        draft=draft,
-        hidden_agent=hidden_agent,
-    )
+    if intake_questions:
+        intent_html = _intake_form(
+            token,
+            context=context,
+            draft=draft,
+            questions=intake_questions,
+            hidden_agent=hidden_agent,
+        )
+    else:
+        intent_html = _intent_clarification_controls(
+            token,
+            session=session,
+            context=context,
+            draft=draft,
+            hidden_agent=hidden_agent,
+        )
     disabled_attr = " disabled" if disabled else ""
     heading = "Mission Console" if context == "mission" else "Agent Console"
     return f"""
@@ -3143,6 +3351,117 @@ def _intent_clarification_controls(
             {transcript}
           </div>
           {reset_form}
+        </div>
+"""
+
+
+def _intake_field_key(question_id: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in question_id.strip())
+    return cleaned or "q"
+
+
+def _intake_question_block(index: int, question: ClarifyingQuestion) -> str:
+    key = _intake_field_key(question.id)
+    why = (
+        f'<p class="muted intake-why">{escape(question.why)}</p>' if question.why else ""
+    )
+    hidden_text = (
+        f'<input type="hidden" name="qtext__{escape(key, quote=True)}" '
+        f'value="{escape(question.question, quote=True)}">'
+    )
+    if not question.options:
+        body = (
+            '<input type="text" class="intake-text" '
+            f'name="ans__{escape(key, quote=True)}" '
+            'placeholder="Your answer" data-intake-input>'
+        )
+    else:
+        checked_value = (
+            question.recommended
+            if question.recommended in question.options
+            else question.options[0]
+        )
+        chips = []
+        for option in question.options:
+            checked = " checked" if option == checked_value else ""
+            recommended_tag = (
+                ' <em class="chip-rec">recommended</em>'
+                if option == checked_value
+                else ""
+            )
+            chips.append(
+                '<label class="option-chip">'
+                f'<input type="radio" name="ans__{escape(key, quote=True)}" '
+                f'value="{escape(option, quote=True)}"{checked} data-intake-input>'
+                f"<span>{escape(option)}{recommended_tag}</span>"
+                "</label>"
+            )
+        chips.append(
+            '<label class="option-chip option-other">'
+            f'<input type="radio" name="ans__{escape(key, quote=True)}" '
+            'value="__other__" data-intake-input data-intake-other>'
+            "<span>Other&hellip;</span>"
+            "</label>"
+        )
+        other_input = (
+            '<input type="text" class="intake-text intake-other-input" '
+            f'name="other__{escape(key, quote=True)}" '
+            'placeholder="Type your own answer" hidden>'
+        )
+        body = f'<div class="intake-options">{"".join(chips)}</div>{other_input}'
+    return f"""
+            <fieldset class="intake-question" data-intake-question>
+              <legend>{index}. {escape(question.question)}</legend>
+              {why}
+              {hidden_text}
+              {body}
+            </fieldset>
+"""
+
+
+def _intake_form(
+    token: str,
+    *,
+    context: str,
+    draft: str,
+    questions: list[ClarifyingQuestion],
+    hidden_agent: str,
+) -> str:
+    submit_action = f"/intake/submit?token={escape(token, quote=True)}"
+    reset_action = f"/clarify/reset?token={escape(token, quote=True)}"
+    keys = ",".join(_intake_field_key(question.id) for question in questions)
+    blocks = "".join(
+        _intake_question_block(index, question)
+        for index, question in enumerate(questions, start=1)
+    )
+    total = len(questions)
+    return f"""
+        <div class="intent-check">
+          <div class="intent-check-head">
+            <strong>Mission Intake</strong>
+            <p class="muted">Answer these before the agents are spawned so they can run on their own.</p>
+          </div>
+          <div class="clarification-popup" role="dialog" aria-modal="true" aria-labelledby="intake-title" data-intake-popup>
+            <form class="clarification-dialog intake-dialog" method="post" action="{submit_action}" data-intake-form>
+              <div class="intake-header">
+                <h3 id="intake-title">Before The Matrix Spawns Agents</h3>
+                <span class="intake-progress" data-intake-progress>{total} of {total} answered</span>
+              </div>
+              <p class="muted">Defaults are pre-selected. Adjust anything, or accept the recommended set.</p>
+              <input type="hidden" name="context" value="{escape(context, quote=True)}">
+              <input type="hidden" name="request" value="{escape(draft, quote=True)}">
+              <input type="hidden" name="question_keys" value="{escape(keys, quote=True)}">
+              {hidden_agent}
+              <div class="intake-body">
+                {blocks}
+              </div>
+              <div class="intake-footer">
+                <button type="submit" class="intake-start" data-intake-start>Start Mission</button>
+                <button type="submit" class="intake-defaults" data-intake-defaults formnovalidate>Accept Recommended Defaults</button>
+                <button type="submit" class="intake-edit" formaction="{reset_action}" formnovalidate>Edit Brief Instead</button>
+              </div>
+            </form>
+          </div>
         </div>
 """
 
@@ -3896,6 +4215,71 @@ def _submit_feedback_script() -> str:
       });
       const popupInput = document.querySelector('[data-clarification-popup] input[name="answer"]');
       if (popupInput) popupInput.focus();
+
+      const intakeForm = document.querySelector('[data-intake-form]');
+      if (intakeForm) {
+        const progress = intakeForm.querySelector('[data-intake-progress]');
+        const startBtn = intakeForm.querySelector('[data-intake-start]');
+        const defaultsBtn = intakeForm.querySelector('[data-intake-defaults]');
+        const questions = Array.from(intakeForm.querySelectorAll('[data-intake-question]'));
+        const isAnswered = (q) => {
+          const radios = q.querySelectorAll('input[type="radio"]');
+          if (radios.length) {
+            const checked = q.querySelector('input[type="radio"]:checked');
+            if (!checked) return false;
+            if (checked.hasAttribute('data-intake-other')) {
+              const other = q.querySelector('.intake-other-input');
+              return !!other && other.value.trim().length > 0;
+            }
+            return true;
+          }
+          const text = q.querySelector('input[type="text"]');
+          return text ? text.value.trim().length > 0 : true;
+        };
+        const refresh = () => {
+          let answered = 0;
+          questions.forEach((q) => {
+            const otherRadio = q.querySelector('input[data-intake-other]');
+            const otherInput = q.querySelector('.intake-other-input');
+            if (otherRadio && otherInput) otherInput.hidden = !otherRadio.checked;
+            if (isAnswered(q)) answered += 1;
+          });
+          if (progress) progress.textContent = answered + ' of ' + questions.length + ' answered';
+          if (startBtn) startBtn.disabled = answered < questions.length;
+        };
+        intakeForm.addEventListener('change', (event) => {
+          refresh();
+          if (event.target && event.target.hasAttribute('data-intake-other')) {
+            const other = event.target.closest('[data-intake-question]').querySelector('.intake-other-input');
+            if (other) other.focus();
+          }
+        });
+        intakeForm.addEventListener('input', refresh);
+        if (defaultsBtn) {
+          defaultsBtn.addEventListener('click', () => {
+            questions.forEach((q) => {
+              const rec = q.querySelector('.chip-rec');
+              if (rec) {
+                const radio = rec.closest('label').querySelector('input[type="radio"]');
+                if (radio) radio.checked = true;
+              }
+              const otherInput = q.querySelector('.intake-other-input');
+              if (otherInput) otherInput.hidden = true;
+            });
+            refresh();
+          });
+        }
+        intakeForm.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            const edit = intakeForm.querySelector('.intake-edit');
+            if (edit) edit.click();
+          }
+        });
+        const firstControl = intakeForm.querySelector('input[type="radio"], .intake-text:not([hidden])');
+        if (firstControl) firstControl.focus();
+        refresh();
+      }
     })();
   </script>
 """
