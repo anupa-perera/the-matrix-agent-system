@@ -602,7 +602,7 @@ def render_dashboard_html(
       {metric_panel("Security Events", counts["security_events"])}
       {provider_panel(provider_config, provider_profile, provider_verification)}
       {operator_panel(operator_goals, app_token)}
-      {needs_you_panel(needs_you_items, app_token)}
+      {needs_you_panel(needs_you_items, app_token) if needs_you_items else ""}
       {runs_panel(runs, store, app_token, pending_actions=pending_actions)}
       {agents_panel(agents, app_token)}
       {security_panel(security_events)}

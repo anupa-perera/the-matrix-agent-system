@@ -3574,24 +3574,36 @@ def _clarification_target_options(
     )
 
 
-def _clarification_transcript_html(turns: list[ClarificationTurn]) -> str:
+def _clarification_transcript_html(
+    turns: list[ClarificationTurn],
+    empty_text: str | None = None,
+) -> str:
     if not turns:
-        return (
-            '<p class="muted">No intent questions yet. Run starts only after the brief '
-            "has enough context.</p>"
+        message = empty_text or (
+            "No intent questions yet. Run starts only after the brief has enough context."
         )
+        return f'<p class="muted">{escape(message)}</p>'
     items = []
     for turn in turns:
         label = _clarification_turn_label(turn)
+        side = _clarification_turn_side(turn)
         items.append(
             f"""
-          <div class="turn">
+          <div class="turn turn-{side}">
             <div class="turn-label">{escape(label)}</div>
             <div class="result">{escape(turn.content)}</div>
           </div>
 """
         )
     return f'<div class="transcript">{"".join(items)}</div>'
+
+
+def _clarification_turn_side(turn: ClarificationTurn) -> str:
+    if turn.kind in {"system_question", "assistant_answer"}:
+        return "matrix"
+    if turn.kind in {"user_question", "user_answer"}:
+        return "user"
+    return "user" if turn.role == ClarificationRole.USER else "matrix"
 
 
 def _clarification_turn_label(turn: ClarificationTurn) -> str:
@@ -3642,6 +3654,20 @@ def _result_panel(response: AppUiResponse) -> str:
 """
 
 
+def _oracle_example_chips() -> str:
+    examples = [
+        "What agents do I already have, and what are they for?",
+        "What are the biggest risks in my current setup?",
+        "Suggest a good next mission for this project.",
+        "How does a mission flow from request to result?",
+    ]
+    return "".join(
+        '<button type="button" class="example-chip" '
+        f'data-q="{escape(text, quote=True)}">{escape(text)}</button>'
+        for text in examples
+    )
+
+
 def _oracle_page(
     token: str,
     session: ClarificationSession,
@@ -3672,14 +3698,30 @@ def _oracle_page(
         <label>Question for the Oracle
           <textarea name="question" placeholder="Ask anything about the system, agents, strategy, risks, or next steps." required></textarea>
         </label>
+        <div class="oracle-examples" data-oracle-examples>
+          <span class="kicker">Try asking</span>
+          {_oracle_example_chips()}
+        </div>
         <div class="actions">
           <button type="submit">Ask Oracle</button>
         </div>
       </form>
       <div class="notice">
         <strong>Oracle Transcript</strong>
-        {_clarification_transcript_html(session.turns)}
+        {_clarification_transcript_html(session.turns, empty_text="Your conversation with the Oracle will appear here.")}
       </div>
+      <script>
+        (function () {{
+          document.querySelectorAll('[data-oracle-examples] .example-chip').forEach(function (chip) {{
+            chip.addEventListener('click', function () {{
+              var box = document.querySelector('textarea[name="question"]');
+              if (!box) return;
+              box.value = chip.dataset.q || chip.textContent;
+              box.focus();
+            }});
+          }});
+        }})();
+      </script>
 """
     return _utility_page(
         "Ask the Oracle",
@@ -4584,6 +4626,16 @@ def _utility_page(
     h1 {{ margin: 0 0 8px; color: #00ff41; font-size: 38px; }}
     p {{ margin: 0 0 18px; color: #7cff9d; }}
     .actions {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 22px; }}
+    .oracle-examples {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 4px; }}
+    .oracle-examples .kicker {{ color: #7cff9d; font-size: 11px; letter-spacing: 1.6px; text-transform: uppercase; margin-right: 2px; }}
+    .example-chip {{ padding: 6px 11px; font-size: 12px; text-transform: none; color: #7cff9d; border-color: rgba(0,255,65,0.3); letter-spacing: 0.2px; }}
+    .example-chip:hover {{ background: rgba(0,255,65,0.1); border-color: #00ff41; color: #00ff41; }}
+    .transcript {{ display: grid; gap: 12px; margin-top: 4px; }}
+    .turn {{ border: 1px solid rgba(0,255,65,0.16); border-left: 2px solid #1f5530; padding: 12px 14px; }}
+    .turn-user {{ border-left-color: #7cff9d; background: rgba(0,255,65,0.035); }}
+    .turn-matrix {{ border-left-color: #00ff41; background: rgba(0,255,65,0.07); }}
+    .turn-label {{ color: #7cff9d; font-size: 11px; letter-spacing: 1.6px; text-transform: uppercase; margin-bottom: 6px; }}
+    .turn .result {{ white-space: pre-wrap; line-height: 1.6; }}
     a {{ color: #00ff41; }}
     .button-link {{ border: 1px solid #00ff41; padding: 10px 13px; text-decoration: none; text-transform: uppercase; font-size: 13px; }}
     .button-link:hover {{ background: rgba(0,255,65,0.1); }}
