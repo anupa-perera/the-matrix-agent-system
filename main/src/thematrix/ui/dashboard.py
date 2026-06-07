@@ -678,7 +678,7 @@ def metric_panel(title: str, value: int) -> str:
 def provider_panel(provider_config, provider_profile, provider_verification) -> str:
     if provider_config is None:
         return """
-      <section class="panel span-4">
+      <section class="panel span-6">
         <div class="row"><h2>Provider</h2><span class="tag warn">not configured</span></div>
         <p class="muted">Run <code>the-matrix setup</code> to connect a local or cloud model.</p>
       </section>
@@ -699,7 +699,7 @@ def provider_panel(provider_config, provider_profile, provider_verification) -> 
         verification_class = "ok" if provider_verification.get("ok") else "risk"
     reasoning = str(provider_config.reasoning_effort or "provider default")
     return f"""
-      <section class="panel span-4">
+      <section class="panel span-6">
         <div class="row"><h2>Provider</h2><span class="tag {verification_class}">configured</span></div>
         <p><strong>{escape(display)}</strong></p>
         <p class="muted">Model: <code>{escape(provider_config.selected_model)}</code></p>
@@ -737,7 +737,7 @@ def operator_panel(goals: list, app_token: str | None = None) -> str:
 """
         )
     return f"""
-      <section class="panel span-4">
+      <section class="panel span-6">
         <h2>The Operator</h2>
         <div class="list">{''.join(items) or empty_text("No recurring goals active yet.")}</div>
       </section>
@@ -770,7 +770,7 @@ def runs_panel(runs: list[dict], store: RuntimeStore, app_token: str | None = No
 """
         )
     return f"""
-      <section class="panel span-8">
+      <section class="panel span-12">
         <h2>Recent Missions</h2>
         <div class="list">{''.join(items) or empty_text("No missions recorded yet.")}</div>
       </section>
