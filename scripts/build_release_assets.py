@@ -146,6 +146,9 @@ This release packages the local-first Matrix-inspired agent framework for normal
 ### What's New
 
 - Browser missions now open a live status cockpit instead of leaving users on a waiting form.
+- Ask the Oracle now starts immediately and streams the answer in a Matrix-style transmission.
+- Oracle answers now use a warmer, more human plain-language tone.
+- Dashboard navigation now puts Ask the Oracle before Mission Console for read-only questions first.
 - Run Mission now pauses for missing details and opens a clarification popup before launch.
 - Dashboard now has a Needs You queue for clarifications, approvals, and Operator activations.
 - Pending approvals can be approved or denied directly from Needs You or Recent Missions.

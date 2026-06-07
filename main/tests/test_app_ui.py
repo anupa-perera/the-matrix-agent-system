@@ -105,7 +105,7 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "Useful terminal commands" not in html
     assert "the-matrix providers current" not in html
     assert "Recent Missions" in html
-    assert "/operator?token=token-123" in html
+    assert "/operator?token=token-123" not in html
 
 
 def test_oracle_page_answers_general_questions(tmp_path) -> None:
@@ -151,8 +151,25 @@ def test_oracle_page_answers_general_questions(tmp_path) -> None:
     with urlopen(oracle_request, timeout=5) as response:
         answer_body = response.read().decode("utf-8")
 
-    assert "The Oracle answered." in answer_body
-    assert "Clarified: What should I build next?" in answer_body
+    assert "Oracle transmission started." in answer_body
+    assert "Oracle Signal" in answer_body
+    assert "/oracle/status?token=" in answer_body
+    match = re.search(r"/oracle/status\?token=[^&\"']+(?:&amp;|&)job_id=([^\"']+)", answer_body)
+    assert match is not None
+    job_id = match.group(1)
+
+    status = {}
+    for _ in range(50):
+        with urlopen(
+            f"http://{parsed.netloc}/oracle/status?{parsed.query}&job_id={job_id}",
+            timeout=5,
+        ) as response:
+            status = json.loads(response.read().decode("utf-8"))
+        if status.get("status") == "completed":
+            break
+        sleep(0.05)
+
+    assert status["answer"] == "Clarified: What should I build next?"
     assert clarifier.questions == [("", "What should I build next?", "oracle")]
 
     shutdown_request = Request(

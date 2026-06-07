@@ -148,6 +148,48 @@ class MissionRegistry:
 
 
 @dataclass
+class OracleJob:
+    job_id: str
+    question: str
+    status: str = "running"
+    message: str = "Oracle signal acquired."
+    answer: str = ""
+    error: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    completed_at: str | None = None
+    lock: Lock = field(default_factory=Lock)
+
+    def complete(self, answer: str) -> None:
+        with self.lock:
+            self.status = "completed"
+            self.message = "Oracle transmission complete."
+            self.answer = answer
+            self.completed_at = datetime.now(UTC).isoformat()
+
+    def fail(self, error: str) -> None:
+        with self.lock:
+            self.status = "failed"
+            self.message = "Oracle transmission failed."
+            self.error = error
+            self.completed_at = datetime.now(UTC).isoformat()
+
+
+class OracleJobRegistry:
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._jobs: dict[str, OracleJob] = {}
+
+    def create(self, question: str) -> OracleJob:
+        job = OracleJob(job_id=token_urlsafe(12), question=question)
+        with self._lock:
+            self._jobs[job.job_id] = job
+        return job
+
+    def get(self, job_id: str) -> OracleJob | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+@dataclass
 class ApprovalRequest:
     approval_id: str
     job_id: str
@@ -403,6 +445,7 @@ def serve_app_ui(
     token = token_urlsafe(24)
     run_lock = Lock()
     mission_registry = MissionRegistry()
+    oracle_registry = OracleJobRegistry()
     clarification_registry = ClarificationSessionRegistry()
     approval_registry = ApprovalRegistry()
     active_operator = operator or TheOperator(store)
@@ -421,6 +464,7 @@ def serve_app_ui(
             active_clarifier,
             run_lock,
             mission_registry,
+            oracle_registry,
             clarification_registry,
             approval_registry,
         ),
@@ -458,6 +502,7 @@ def _handler_factory(
     clarifier: ClarificationService,
     run_lock: Lock,
     mission_registry: MissionRegistry,
+    oracle_registry: OracleJobRegistry,
     clarification_registry: ClarificationSessionRegistry,
     approval_registry: ApprovalRegistry,
 ) -> AgentSpec:
@@ -527,6 +572,13 @@ def _handler_factory(
                         clarification_registry.get("oracle", "oracle"),
                     ),
                 )
+                return
+            if parsed.path == "/oracle/status":
+                query = parse_qs(parsed.query)
+                job_id = query.get("job_id", [""])[-1].strip()
+                payload = _oracle_job_payload(oracle_registry.get(job_id))
+                status = HTTPStatus.OK if payload["found"] else HTTPStatus.NOT_FOUND
+                self._send_json(status, payload)
                 return
             if parsed.path == "/mission":
                 query = parse_qs(parsed.query)
@@ -945,37 +997,19 @@ def _handler_factory(
                         ),
                     )
                     return
-                try:
-                    clarification = clarifier.answer(
-                        draft="",
-                        question=question,
-                        target="oracle",
-                        transcript=session.turns,
-                    )
-                except (ClarificationError, Exception) as exc:
-                    self._send_html(
-                        HTTPStatus.BAD_REQUEST,
-                        _oracle_page(
-                            token,
-                            clarification_registry.get("oracle", "oracle"),
-                            AppUiResponse(error=f"Oracle answer failed: {exc}"),
-                        ),
-                    )
-                    return
-                session = clarification_registry.append(
-                    "oracle",
-                    draft="",
-                    target=clarification.target,
-                    question=question,
-                    answer=clarification.answer,
-                    default_target="oracle",
-                )
+                job = oracle_registry.create(question)
+                Thread(
+                    target=_run_oracle_question,
+                    args=(job, clarifier, clarification_registry, session.turns),
+                    daemon=True,
+                ).start()
                 self._send_html(
                     HTTPStatus.OK,
                     _oracle_page(
                         token,
                         session,
-                        AppUiResponse(message="The Oracle answered."),
+                        AppUiResponse(message="Oracle transmission started."),
+                        oracle_job=job,
                     ),
                 )
                 return
@@ -1682,6 +1716,33 @@ def _run_background_agent_mission(
         run_lock.release()
 
 
+def _run_oracle_question(
+    job: OracleJob,
+    clarifier: ClarificationService,
+    clarification_registry: ClarificationSessionRegistry,
+    transcript: list[ClarificationTurn],
+) -> None:
+    try:
+        clarification = clarifier.answer(
+            draft="",
+            question=job.question,
+            target="oracle",
+            transcript=transcript,
+        )
+    except (ClarificationError, Exception) as exc:
+        job.fail(str(exc))
+        return
+    clarification_registry.append(
+        "oracle",
+        draft="",
+        target=clarification.target,
+        question=job.question,
+        answer=clarification.answer,
+        default_target="oracle",
+    )
+    job.complete(clarification.answer)
+
+
 def _call_runner(
     runner: Callable[..., MatrixRunResult],
     request: str,
@@ -1869,6 +1930,23 @@ def _mission_payload(
             "approvals": [],
         }
     return {"found": False}
+
+
+def _oracle_job_payload(job: OracleJob | None) -> dict[str, object]:
+    if job is None:
+        return {"found": False}
+    with job.lock:
+        return {
+            "found": True,
+            "job_id": job.job_id,
+            "question": job.question,
+            "status": job.status,
+            "message": job.message,
+            "answer": job.answer,
+            "error": job.error,
+            "created_at": job.created_at,
+            "completed_at": job.completed_at,
+        }
 
 
 def _result_agent_id(result: MatrixRunResult | None) -> str | None:
@@ -2987,11 +3065,6 @@ def _clarification_composer(
         hidden_agent=hidden_agent,
     )
     disabled_attr = " disabled" if disabled else ""
-    operator_link = (
-        f'<a class="button-link" href="/operator?token={escape(token)}">The Operator</a>'
-        if context == "mission"
-        else ""
-    )
     heading = "Mission Console" if context == "mission" else "Agent Console"
     return f"""
     <section class="panel">
@@ -3006,7 +3079,6 @@ def _clarification_composer(
             <button type="submit" data-running-label="{escape(running_label, quote=True)}"{disabled_attr}>{escape(run_label)}</button>
             <a class="button-link" href="/dashboard?token={escape(token)}">Back to Dashboard</a>
             <a class="button-link" href="/settings?token={escape(token)}">Provider Settings</a>
-            {operator_link}
             <span class="submit-status" hidden aria-live="polite">
               {escape(submit_hint)}
             </span>
@@ -3264,10 +3336,28 @@ def _oracle_page(
     token: str,
     session: ClarificationSession,
     response: AppUiResponse | None = None,
+    oracle_job: OracleJob | None = None,
 ) -> str:
     response = response or AppUiResponse()
+    stream_panel = ""
+    extra_script = ""
+    if oracle_job is not None:
+        stream_panel = """
+      <div class="oracle-stream" data-oracle-stream>
+        <p class="kicker">Oracle Signal</p>
+        <div class="oracle-scan" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <p class="muted" data-oracle-message>Receiving transmission...</p>
+        <div class="result oracle-output" data-oracle-output></div>
+      </div>
+"""
+        extra_script = _oracle_stream_script(
+            f"/oracle/status?token={token}&job_id={oracle_job.job_id}"
+        )
     content = f"""
       {_inline_response(response)}
+      {stream_panel}
       <form method="post" action="/oracle/ask?token={escape(token, quote=True)}">
         <label>Question for the Oracle
           <textarea name="question" placeholder="Ask anything about the system, agents, strategy, risks, or next steps." required></textarea>
@@ -3288,7 +3378,78 @@ def _oracle_page(
         content,
         primary_action_label="New Mission",
         primary_action_url=_token_url("/", token),
+        extra_script=extra_script,
     )
+
+
+def _oracle_stream_script(status_url: str) -> str:
+    return f"""
+  <script>
+    (function () {{
+      const statusUrl = {json.dumps(status_url)};
+      const output = document.querySelector('[data-oracle-output]');
+      const message = document.querySelector('[data-oracle-message]');
+      if (!output || !message) return;
+      const glyphs = '01AI<>/\\\\|=+-*THEMATRIXORACLE';
+      let revealed = '';
+      let answer = '';
+      let done = false;
+
+      function scrambleLine() {{
+        if (done || revealed) return;
+        let text = '';
+        for (let i = 0; i < 54; i++) {{
+          text += glyphs.charAt(Math.floor(Math.random() * glyphs.length));
+        }}
+        output.textContent = text;
+      }}
+
+      function typeAnswer(index) {{
+        done = true;
+        if (index === 0) output.textContent = '';
+        if (index >= answer.length) {{
+          output.textContent = answer;
+          message.textContent = 'Oracle transmission complete.';
+          return;
+        }}
+        revealed += answer.charAt(index);
+        output.textContent = revealed + ' _';
+        const delay = answer.charAt(index) === '\\n' ? 90 : 18 + Math.floor(Math.random() * 28);
+        window.setTimeout(() => typeAnswer(index + 1), delay);
+      }}
+
+      async function refresh() {{
+        try {{
+          const response = await fetch(statusUrl);
+          const payload = await response.json();
+          if (!payload.found) {{
+            message.textContent = 'Oracle signal lost.';
+            done = true;
+            return;
+          }}
+          message.textContent = payload.message || 'Receiving transmission...';
+          if (payload.status === 'failed') {{
+            done = true;
+            output.textContent = payload.error || 'The Oracle could not answer this question.';
+            return;
+          }}
+          if (payload.status === 'completed') {{
+            answer = payload.answer || '';
+            typeAnswer(0);
+            return;
+          }}
+          window.setTimeout(refresh, 700);
+        }} catch (error) {{
+          message.textContent = 'Oracle signal interrupted. Retrying...';
+          window.setTimeout(refresh, 900);
+        }}
+      }}
+
+      window.setInterval(scrambleLine, 90);
+      refresh();
+    }})();
+  </script>
+"""
 
 
 def _operator_panel(store: RuntimeStore, token: str) -> str:
@@ -4054,6 +4215,13 @@ def _utility_page(
     .clarification-dialog h3 {{ margin: 0 0 12px; color: #00ff41; font-size: 16px; font-weight: normal; letter-spacing: 2px; text-transform: uppercase; }}
     .clarification-question {{ color: #00ff41; font-size: 16px; margin-bottom: 18px; white-space: pre-wrap; }}
     .clarification-inline-note {{ border: 1px solid rgba(0,255,65,0.26); padding: 12px; }}
+    .oracle-stream {{ border: 1px solid rgba(0,255,65,0.32); border-left: 2px solid #00ff41; margin: 0 0 22px; padding: 16px; box-shadow: 0 0 22px rgba(0,255,65,0.12); }}
+    .oracle-scan {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 14px; }}
+    .oracle-scan span {{ height: 2px; background: linear-gradient(90deg, transparent, #00ff41, transparent); animation: scanPulse 1.2s ease-in-out infinite; }}
+    .oracle-scan span:nth-child(2) {{ animation-delay: 180ms; }}
+    .oracle-scan span:nth-child(3) {{ animation-delay: 360ms; }}
+    .oracle-output {{ min-height: 96px; overflow-wrap: anywhere; }}
+    @keyframes scanPulse {{ 0%, 100% {{ opacity: 0.25; transform: scaleX(0.55); }} 50% {{ opacity: 1; transform: scaleX(1); }} }}
     .result-actions {{ margin-top: 14px; }}
     .operator-actions {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }}
     .operator-actions form {{ margin: 0; }}

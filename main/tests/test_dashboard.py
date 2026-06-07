@@ -70,6 +70,7 @@ def test_dashboard_renders_live_app_actions(tmp_path) -> None:
     assert "Mission Console" in html
     assert "Needs You (0)" in html
     assert "Ask the Oracle" in html
+    assert html.index("Ask the Oracle") < html.index("Mission Console")
     assert "The Operator" in html
     assert "/?token=token-123" in html
     assert "/oracle?token=token-123" in html

@@ -641,13 +641,13 @@ def control_panel(app_token: str | None, needs_you_count: int = 0) -> str:
     stop_html = ""
     if app_token:
         actions = [
+            ("Ask the Oracle", "/oracle?token=" + app_token, "Ask any read-only question."),
             ("Mission Console", "/?token=" + app_token, "Ask for work in plain English."),
             (
                 f"Needs You ({needs_you_count})",
                 "#needs-you",
                 "Review pending approvals, clarifications, and activations.",
             ),
-            ("Ask the Oracle", "/oracle?token=" + app_token, "Ask any read-only question."),
             ("The Operator", "/operator?token=" + app_token, "See recurring goals and controls."),
             ("Change Model", "/settings?token=" + app_token, "Switch local or cloud provider."),
             ("System Check", "/diagnostics?token=" + app_token, "Check setup health and safety state."),
@@ -664,9 +664,9 @@ def control_panel(app_token: str | None, needs_you_count: int = 0) -> str:
     else:
         actions = [
             ("Start App", "#start-app", "Run the beginner launcher command."),
-            ("Needs You", "#start-app", "Pending user actions appear after launch."),
-            ("Ask Agent", "#start-app", "Use the app console after launch."),
             ("Ask Oracle", "#start-app", "Ask read-only questions after launch."),
+            ("Ask Agent", "#start-app", "Use the app console after launch."),
+            ("Needs You", "#start-app", "Pending user actions appear after launch."),
             ("The Operator", "#start-app", "Manage recurring goals after launch."),
             ("Change Model", "#start-app", "Open provider settings after launch."),
             ("System Check", "#start-app", "Run diagnostics from the app or terminal."),
