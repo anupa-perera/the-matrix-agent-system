@@ -11,7 +11,7 @@ import hmac
 from inspect import Parameter, signature
 import json
 from secrets import token_urlsafe
-from threading import Lock, Thread, Timer
+from threading import Event, Lock, Thread, Timer
 from urllib.parse import parse_qs, urlencode, urlparse
 import webbrowser
 
@@ -147,6 +147,96 @@ class MissionRegistry:
             return self._jobs.get(job_id)
 
 
+@dataclass
+class ApprovalRequest:
+    approval_id: str
+    job_id: str
+    target: str
+    reason: str
+    purpose: str
+    status: str = "pending"
+    approved: bool | None = None
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    decided_at: str | None = None
+    event: Event = field(default_factory=Event, repr=False)
+
+
+class ApprovalRegistry:
+    def __init__(self, timeout_seconds: int = 15 * 60) -> None:
+        self._lock = Lock()
+        self._approvals: dict[str, ApprovalRequest] = {}
+        self.timeout_seconds = timeout_seconds
+
+    def request(self, job: MissionJob, target: str, reason: str, purpose: str) -> bool:
+        approval = ApprovalRequest(
+            approval_id=token_urlsafe(12),
+            job_id=job.job_id,
+            target=target,
+            reason=reason,
+            purpose=purpose,
+        )
+        with self._lock:
+            self._approvals[approval.approval_id] = approval
+        job.record(
+            "approval_required",
+            "Agent requested user approval.",
+            self._payload(approval),
+        )
+        if not approval.event.wait(self.timeout_seconds):
+            with self._lock:
+                if approval.status == "pending":
+                    approval.status = "timed_out"
+                    approval.approved = False
+                    approval.decided_at = datetime.now(UTC).isoformat()
+                    approval.event.set()
+            job.record(
+                "approval_timeout",
+                "Approval timed out and was denied.",
+                self._payload(approval),
+            )
+            return False
+        with self._lock:
+            approved = bool(approval.approved)
+            payload = self._payload(approval)
+        job.record(
+            "approval_granted" if approved else "approval_denied",
+            "User approved the request." if approved else "User denied the request.",
+            payload,
+        )
+        return approved
+
+    def respond(self, approval_id: str, approved: bool) -> ApprovalRequest | None:
+        with self._lock:
+            approval = self._approvals.get(approval_id)
+            if approval is None or approval.status != "pending":
+                return approval
+            approval.status = "approved" if approved else "denied"
+            approval.approved = approved
+            approval.decided_at = datetime.now(UTC).isoformat()
+            approval.event.set()
+            return approval
+
+    def pending_payloads(self, job_id: str) -> list[dict[str, object]]:
+        with self._lock:
+            return [
+                self._payload(approval)
+                for approval in self._approvals.values()
+                if approval.job_id == job_id and approval.status == "pending"
+            ]
+
+    def _payload(self, approval: ApprovalRequest) -> dict[str, object]:
+        return {
+            "approval_id": approval.approval_id,
+            "job_id": approval.job_id,
+            "target": approval.target,
+            "reason": approval.reason,
+            "purpose": approval.purpose,
+            "status": approval.status,
+            "created_at": approval.created_at,
+            "decided_at": approval.decided_at,
+        }
+
+
 class ClarificationSessionRegistry:
     def __init__(self) -> None:
         self._lock = Lock()
@@ -203,13 +293,73 @@ class ClarificationSessionRegistry:
                         role=ClarificationRole.USER,
                         content=question,
                         target=target,
+                        kind="user_question",
                     ),
                     ClarificationTurn(
                         role=ClarificationRole.ASSISTANT,
                         content=answer,
                         target=target,
+                        kind="assistant_answer",
                     ),
                 ]
+            )
+            updated = ClarificationSession(
+                context_key=context_key,
+                draft=draft,
+                default_target=default_target,
+                turns=turns,
+            )
+            self._sessions[context_key] = updated
+            return updated
+
+    def append_system_question(
+        self,
+        context_key: str,
+        *,
+        draft: str,
+        target: str,
+        question: str,
+        default_target: str = "auto",
+    ) -> ClarificationSession:
+        with self._lock:
+            session = self._sessions.get(context_key)
+            turns = list(session.turns) if session else []
+            turns.append(
+                ClarificationTurn(
+                    role=ClarificationRole.ASSISTANT,
+                    content=question,
+                    target=target,
+                    kind="system_question",
+                )
+            )
+            updated = ClarificationSession(
+                context_key=context_key,
+                draft=draft,
+                default_target=default_target,
+                turns=turns,
+            )
+            self._sessions[context_key] = updated
+            return updated
+
+    def append_user_answer(
+        self,
+        context_key: str,
+        *,
+        draft: str,
+        answer: str,
+        target: str,
+        default_target: str = "auto",
+    ) -> ClarificationSession:
+        with self._lock:
+            session = self._sessions.get(context_key)
+            turns = list(session.turns) if session else []
+            turns.append(
+                ClarificationTurn(
+                    role=ClarificationRole.USER,
+                    content=answer,
+                    target=target,
+                    kind="user_answer",
+                )
             )
             updated = ClarificationSession(
                 context_key=context_key,
@@ -242,6 +392,7 @@ def serve_app_ui(
     run_lock = Lock()
     mission_registry = MissionRegistry()
     clarification_registry = ClarificationSessionRegistry()
+    approval_registry = ApprovalRegistry()
     active_operator = operator or TheOperator(store)
     active_clarifier = clarifier or ClarificationService(store, default_model_gateway(store))
     active_operator.start()
@@ -259,6 +410,7 @@ def serve_app_ui(
             run_lock,
             mission_registry,
             clarification_registry,
+            approval_registry,
         ),
     )
     host, bound_port = server.server_address
@@ -295,6 +447,7 @@ def _handler_factory(
     run_lock: Lock,
     mission_registry: MissionRegistry,
     clarification_registry: ClarificationSessionRegistry,
+    approval_registry: ApprovalRegistry,
 ) -> AgentSpec:
     oauth_flows: dict[str, OAuthPendingSetup] = {}
     oauth_lock = Lock()
@@ -343,14 +496,25 @@ def _handler_factory(
                 run_id = query.get("run_id", [""])[-1].strip()
                 self._send_html(
                     HTTPStatus.OK,
-                    _mission_page(store, token, mission_registry.get(job_id), run_id=run_id),
+                    _mission_page(
+                        store,
+                        token,
+                        mission_registry.get(job_id),
+                        run_id=run_id,
+                        approval_registry=approval_registry,
+                    ),
                 )
                 return
             if parsed.path == "/mission/status":
                 query = parse_qs(parsed.query)
                 job_id = query.get("job_id", [""])[-1].strip()
                 run_id = query.get("run_id", [""])[-1].strip()
-                payload = _mission_payload(store, mission_registry.get(job_id), run_id=run_id)
+                payload = _mission_payload(
+                    store,
+                    mission_registry.get(job_id),
+                    run_id=run_id,
+                    approval_registry=approval_registry,
+                )
                 status = HTTPStatus.OK if payload["found"] else HTTPStatus.NOT_FOUND
                 self._send_json(status, payload)
                 return
@@ -402,6 +566,34 @@ def _handler_factory(
                 )
                 Thread(target=self.server.shutdown, daemon=True).start()
                 return
+            if parsed.path == "/approval/respond":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                approval_id = form.get("approval_id", "").strip()
+                decision = form.get("decision", "").strip()
+                if decision not in {"approve", "deny"}:
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"ok": False, "error": "Choose approve or deny."},
+                    )
+                    return
+                approval = approval_registry.respond(approval_id, decision == "approve")
+                if approval is None:
+                    self._send_json(
+                        HTTPStatus.NOT_FOUND,
+                        {"ok": False, "error": "Approval request not found."},
+                    )
+                    return
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "approval_id": approval.approval_id,
+                        "status": approval.status,
+                    },
+                )
+                return
             if parsed.path == "/save":
                 form = self._read_form(paths, store, token)
                 if form is None:
@@ -422,6 +614,137 @@ def _handler_factory(
                 self._send_html(
                     HTTPStatus.OK,
                     render_app_page(paths, store, token, AppUiResponse(message=result.message)),
+                )
+                return
+            if parsed.path == "/clarify/intent":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                context_key = _clarification_context_from_form(form)
+                default_target = _default_target_for_context(context_key)
+                draft = form.get("draft", "").strip()
+                target = form.get("target", default_target).strip() or default_target
+                agent_id = form.get("agent_id", "").strip()
+                if not draft:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _render_context_page(
+                            paths,
+                            store,
+                            token,
+                            context_key,
+                            agent_id,
+                            clarification_registry.get(context_key, default_target),
+                            AppUiResponse(error="Describe the mission before checking intent."),
+                        ),
+                    )
+                    return
+                try:
+                    session, message = _ask_next_intent_question(
+                        clarifier,
+                        clarification_registry,
+                        context_key=context_key,
+                        draft=draft,
+                        target=target,
+                        default_target=default_target,
+                    )
+                except (ClarificationError, Exception) as exc:
+                    response = AppUiResponse(error=f"Intent check failed: {exc}")
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _render_context_page(
+                            paths,
+                            store,
+                            token,
+                            context_key,
+                            agent_id,
+                            clarification_registry.get(context_key, default_target),
+                            response,
+                        ),
+                    )
+                    return
+                self._send_html(
+                    HTTPStatus.OK,
+                    _render_context_page(
+                        paths,
+                        store,
+                        token,
+                        context_key,
+                        agent_id,
+                        session,
+                        AppUiResponse(message=message),
+                    ),
+                )
+                return
+            if parsed.path == "/clarify/answer":
+                form = self._read_form(paths, store, token)
+                if form is None:
+                    return
+                context_key = _clarification_context_from_form(form)
+                default_target = _default_target_for_context(context_key)
+                draft = form.get("draft", "").strip()
+                answer = form.get("answer", "").strip()
+                agent_id = form.get("agent_id", "").strip()
+                session = clarification_registry.update_draft(context_key, draft, default_target)
+                pending = _pending_clarification_question(session)
+                if pending is None:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _render_context_page(
+                            paths,
+                            store,
+                            token,
+                            context_key,
+                            agent_id,
+                            session,
+                            AppUiResponse(error="Ask The Matrix for an intent question first."),
+                        ),
+                    )
+                    return
+                if not answer:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _render_context_page(
+                            paths,
+                            store,
+                            token,
+                            context_key,
+                            agent_id,
+                            session,
+                            AppUiResponse(error="Answer the Matrix question before continuing."),
+                        ),
+                    )
+                    return
+                answered = clarification_registry.append_user_answer(
+                    context_key,
+                    draft=draft,
+                    answer=answer,
+                    target=pending.target,
+                    default_target=pending.target,
+                )
+                try:
+                    session, message = _ask_next_intent_question(
+                        clarifier,
+                        clarification_registry,
+                        context_key=context_key,
+                        draft=draft,
+                        target=pending.target,
+                        default_target=pending.target,
+                    )
+                except (ClarificationError, Exception) as exc:
+                    session = answered
+                    message = f"Answer saved, but the follow-up intent check failed: {exc}"
+                self._send_html(
+                    HTTPStatus.OK,
+                    _render_context_page(
+                        paths,
+                        store,
+                        token,
+                        context_key,
+                        agent_id,
+                        session,
+                        AppUiResponse(message=message),
+                    ),
                 )
                 return
             if parsed.path == "/clarify":
@@ -522,6 +845,20 @@ def _handler_factory(
                     )
                     return
                 session = clarification_registry.update_draft("mission", user_request)
+                if _pending_clarification_question(session) is not None:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        render_app_page(
+                            paths,
+                            store,
+                            token,
+                            AppUiResponse(
+                                error="Answer the Matrix intent question before running."
+                            ),
+                            clarification_session=session,
+                        ),
+                    )
+                    return
                 launch_request = _clarified_launch_request(clarifier, user_request, session)
                 operator_goal = operator.create_from_request(launch_request)
                 if operator_goal is not None:
@@ -562,11 +899,27 @@ def _handler_factory(
                 job = mission_registry.create("mission", launch_request)
                 Thread(
                     target=_run_background_mission,
-                    args=(job, request_runner, launch_request, run_lock, operator, goal.goal_id),
+                    args=(
+                        job,
+                        request_runner,
+                        launch_request,
+                        run_lock,
+                        approval_registry,
+                        operator,
+                        goal.goal_id,
+                    ),
                     daemon=True,
                 ).start()
                 clarification_registry.reset("mission")
-                self._send_html(HTTPStatus.ACCEPTED, _mission_page(store, token, job))
+                self._send_html(
+                    HTTPStatus.ACCEPTED,
+                    _mission_page(
+                        store,
+                        token,
+                        job,
+                        approval_registry=approval_registry,
+                    ),
+                )
                 return
             if parsed.path == "/operator/action":
                 form = self._read_form(paths, store, token)
@@ -772,6 +1125,27 @@ def _handler_factory(
                         ),
                     )
                     return
+                context_key = _agent_context_key(agent_id)
+                session = clarification_registry.update_draft(
+                    context_key,
+                    user_request,
+                    f"agent:{agent_id}",
+                )
+                if _pending_clarification_question(session) is not None:
+                    self._send_html(
+                        HTTPStatus.BAD_REQUEST,
+                        _agent_page(
+                            paths,
+                            store,
+                            token,
+                            agent_id,
+                            AppUiResponse(
+                                error="Answer the Matrix intent question before running this agent."
+                            ),
+                            clarification_session=session,
+                        ),
+                    )
+                    return
                 if not run_lock.acquire(blocking=False):
                     self._send_html(
                         HTTPStatus.CONFLICT,
@@ -794,12 +1168,6 @@ def _handler_factory(
                         ),
                     )
                     return
-                context_key = _agent_context_key(agent_id)
-                session = clarification_registry.update_draft(
-                    context_key,
-                    user_request,
-                    f"agent:{agent_id}",
-                )
                 launch_request = _clarified_launch_request(clarifier, user_request, session)
                 goal = operator.create_one_shot_goal(
                     launch_request,
@@ -815,13 +1183,22 @@ def _handler_factory(
                         agent_id,
                         launch_request,
                         run_lock,
+                        approval_registry,
                         operator,
                         goal.goal_id,
                     ),
                     daemon=True,
                 ).start()
                 clarification_registry.reset(context_key)
-                self._send_html(HTTPStatus.ACCEPTED, _mission_page(store, token, job))
+                self._send_html(
+                    HTTPStatus.ACCEPTED,
+                    _mission_page(
+                        store,
+                        token,
+                        job,
+                        approval_registry=approval_registry,
+                    ),
+                )
                 return
             self._send_html(HTTPStatus.NOT_FOUND, _message_page("Not Found", "Unknown route."))
 
@@ -1014,12 +1391,23 @@ def _run_background_mission(
     request_runner: Callable[..., MatrixRunResult],
     request: str,
     run_lock: Lock,
+    approval_registry: ApprovalRegistry,
     operator: TheOperator | None = None,
     goal_id: str | None = None,
 ) -> None:
     job.start()
     try:
-        result = _call_runner(request_runner, request, job.record)
+        result = _call_runner(
+            request_runner,
+            request,
+            job.record,
+            approval_callback=lambda target, reason, purpose: approval_registry.request(
+                job,
+                target,
+                reason,
+                purpose,
+            ),
+        )
     except Exception as exc:
         job.fail(f"Mission failed: {exc}")
         if operator is not None and goal_id:
@@ -1042,12 +1430,24 @@ def _run_background_agent_mission(
     agent_id: str,
     request: str,
     run_lock: Lock,
+    approval_registry: ApprovalRegistry,
     operator: TheOperator | None = None,
     goal_id: str | None = None,
 ) -> None:
     job.start()
     try:
-        result = _call_agent_runner(agent_request_runner, agent_id, request, job.record)
+        result = _call_agent_runner(
+            agent_request_runner,
+            agent_id,
+            request,
+            job.record,
+            approval_callback=lambda target, reason, purpose: approval_registry.request(
+                job,
+                target,
+                reason,
+                purpose,
+            ),
+        )
     except Exception as exc:
         job.fail(f"Agent run failed: {exc}")
         if operator is not None and goal_id:
@@ -1068,9 +1468,15 @@ def _call_runner(
     runner: Callable[..., MatrixRunResult],
     request: str,
     progress_callback: Callable[[str, str, dict[str, object]], None],
+    approval_callback: Callable[[str, str, str], bool] | None = None,
 ) -> MatrixRunResult:
-    if _accepts_progress_callback(runner):
-        return runner(request, progress_callback=progress_callback)
+    kwargs = {}
+    if _accepts_callback(runner, "progress_callback"):
+        kwargs["progress_callback"] = progress_callback
+    if approval_callback is not None and _accepts_callback(runner, "approval_callback"):
+        kwargs["approval_callback"] = approval_callback
+    if kwargs:
+        return runner(request, **kwargs)
     return runner(request)
 
 
@@ -1079,13 +1485,19 @@ def _call_agent_runner(
     agent_id: str,
     request: str,
     progress_callback: Callable[[str, str, dict[str, object]], None],
+    approval_callback: Callable[[str, str, str], bool] | None = None,
 ) -> MatrixRunResult:
-    if _accepts_progress_callback(runner):
-        return runner(agent_id, request, progress_callback=progress_callback)
+    kwargs = {}
+    if _accepts_callback(runner, "progress_callback"):
+        kwargs["progress_callback"] = progress_callback
+    if approval_callback is not None and _accepts_callback(runner, "approval_callback"):
+        kwargs["approval_callback"] = approval_callback
+    if kwargs:
+        return runner(agent_id, request, **kwargs)
     return runner(agent_id, request)
 
 
-def _accepts_progress_callback(runner: Callable[..., MatrixRunResult]) -> bool:
+def _accepts_callback(runner: Callable[..., MatrixRunResult], name: str) -> bool:
     try:
         parameters = signature(runner).parameters.values()
     except (TypeError, ValueError):
@@ -1093,7 +1505,7 @@ def _accepts_progress_callback(runner: Callable[..., MatrixRunResult]) -> bool:
     for parameter in parameters:
         if parameter.kind == Parameter.VAR_KEYWORD:
             return True
-        if parameter.name == "progress_callback":
+        if parameter.name == name:
             return True
     return False
 
@@ -1103,8 +1515,14 @@ def _mission_page(
     token: str,
     job: MissionJob | None,
     run_id: str = "",
+    approval_registry: ApprovalRegistry | None = None,
 ) -> str:
-    payload = _mission_payload(store, job, run_id=run_id)
+    payload = _mission_payload(
+        store,
+        job,
+        run_id=run_id,
+        approval_registry=approval_registry,
+    )
     if not payload["found"]:
         return _utility_page(
             "Mission Not Found",
@@ -1135,6 +1553,7 @@ def _mission_page(
           <p id="mission-request" class="request-text"></p>
         </div>
         <div id="mission-contract"></div>
+        <div id="mission-approvals"></div>
         <div id="mission-result"></div>
         <div class="mission-grid">
           <div>
@@ -1157,6 +1576,7 @@ def _mission_page(
             status_url,
             payload,
             _token_url("/agent", token),
+            f"/approval/respond?token={token}",
         ),
         primary_action_label=primary_action_label,
         primary_action_url=primary_action_url,
@@ -1167,6 +1587,7 @@ def _mission_payload(
     store: RuntimeStore,
     job: MissionJob | None,
     run_id: str = "",
+    approval_registry: ApprovalRegistry | None = None,
 ) -> dict[str, object]:
     if job is not None:
         with job.lock:
@@ -1195,6 +1616,9 @@ def _mission_payload(
                 "tasks": _task_payloads(store, resolved_run_id),
                 "result": _result_payload(result),
                 "error": job.error,
+                "approvals": approval_registry.pending_payloads(job.job_id)
+                if approval_registry is not None
+                else [],
             }
             if not payload["tasks"]:
                 payload["tasks"] = _task_payloads_from_events(events)
@@ -1224,6 +1648,7 @@ def _mission_payload(
             "tasks": _task_payloads(store, result.run_id),
             "result": _result_payload(result),
             "error": result.metadata.get("agent_execution_error"),
+            "approvals": [],
         }
     return {"found": False}
 
@@ -1391,12 +1816,14 @@ def _mission_status_script(
     status_url: str,
     payload: dict[str, object],
     agent_action_base_url: str,
+    approval_action_url: str,
 ) -> str:
     return f"""
   <script>
     (function () {{
       const statusUrl = {json.dumps(status_url)};
       const agentActionBaseUrl = {json.dumps(agent_action_base_url)};
+      const approvalActionUrl = {json.dumps(approval_action_url)};
       let payload = {_script_json(payload)};
       const primaryAction = document.getElementById('primary-action-link');
       const state = document.getElementById('mission-state');
@@ -1406,6 +1833,7 @@ def _mission_status_script(
       const tasks = document.getElementById('mission-tasks');
       const result = document.getElementById('mission-result');
       const contract = document.getElementById('mission-contract');
+      const approvals = document.getElementById('mission-approvals');
 
       function clear(node) {{
         while (node && node.firstChild) node.removeChild(node.firstChild);
@@ -1559,6 +1987,68 @@ def _mission_status_script(
         primaryAction.textContent = 'Ask This Agent';
       }}
 
+      async function answerApproval(approvalId, decision, button) {{
+        if (button) button.disabled = true;
+        const body = new URLSearchParams();
+        body.set('approval_id', approvalId);
+        body.set('decision', decision);
+        try {{
+          await fetch(approvalActionUrl, {{
+            method: 'POST',
+            headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+            body: body.toString()
+          }});
+          await refresh();
+        }} catch (error) {{
+          if (button) button.disabled = false;
+        }}
+      }}
+
+      function approvalCard(approval) {{
+        const box = document.createElement('div');
+        box.className = 'approval-card';
+        const title = document.createElement('p');
+        title.className = 'timeline-title';
+        title.textContent = 'User Approval Needed';
+        const target = document.createElement('p');
+        target.className = 'request-text';
+        target.textContent = approval.target || 'Unknown target';
+        const reason = document.createElement('p');
+        reason.className = 'muted';
+        reason.textContent = approval.reason || 'The agent requested approval.';
+        const purpose = document.createElement('p');
+        purpose.className = 'muted';
+        purpose.textContent = approval.purpose ? 'Purpose: ' + approval.purpose : '';
+        const actions = document.createElement('div');
+        actions.className = 'approval-actions';
+        const approve = document.createElement('button');
+        approve.type = 'button';
+        approve.textContent = 'Approve';
+        approve.addEventListener('click', () => answerApproval(approval.approval_id, 'approve', approve));
+        const deny = document.createElement('button');
+        deny.type = 'button';
+        deny.textContent = 'Deny';
+        deny.addEventListener('click', () => answerApproval(approval.approval_id, 'deny', deny));
+        actions.appendChild(approve);
+        actions.appendChild(deny);
+        box.appendChild(title);
+        box.appendChild(target);
+        box.appendChild(reason);
+        if (approval.purpose) box.appendChild(purpose);
+        box.appendChild(actions);
+        return box;
+      }}
+
+      function renderApprovals() {{
+        clear(approvals);
+        const pending = payload.approvals || [];
+        if (!pending.length) return;
+        const panel = document.createElement('div');
+        panel.className = 'approval-panel';
+        pending.forEach((approval) => panel.appendChild(approvalCard(approval)));
+        approvals.appendChild(panel);
+      }}
+
       function render(next) {{
         payload = next;
         updatePrimaryAction();
@@ -1566,6 +2056,7 @@ def _mission_status_script(
         message.textContent = payload.message || '';
         request.textContent = payload.request || '';
         renderContract();
+        renderApprovals();
         clear(events);
         (payload.events || []).forEach((event) => {{
           events.appendChild(line(event.stage || 'event', event.message || '', event.created_at || ''));
@@ -1701,6 +2192,51 @@ def _clarified_launch_request(
     if not session.has_turns:
         return draft
     return clarifier.summarize(draft=draft, transcript=session.turns)
+
+
+def _pending_clarification_question(session: ClarificationSession) -> ClarificationTurn | None:
+    if not session.turns:
+        return None
+    latest = session.turns[-1]
+    if latest.role == ClarificationRole.ASSISTANT and latest.kind == "system_question":
+        return latest
+    return None
+
+
+def _is_ready_clarification(value: str) -> bool:
+    return value.strip().upper().startswith("READY")
+
+
+def _ask_next_intent_question(
+    clarifier: ClarificationService,
+    registry: ClarificationSessionRegistry,
+    *,
+    context_key: str,
+    draft: str,
+    target: str,
+    default_target: str,
+) -> tuple[ClarificationSession, str]:
+    session = registry.update_draft(context_key, draft, default_target)
+    if _pending_clarification_question(session) is not None:
+        return session, "Answer the current Matrix question before asking for another one."
+    clarification = clarifier.ask_next(
+        draft=draft,
+        target=target,
+        transcript=session.turns,
+    )
+    question = clarification.answer.strip()
+    if _is_ready_clarification(question):
+        return session, "The Matrix has enough context. You can run this mission now."
+    if not question:
+        question = "What outcome should this agent produce, and what boundaries should it follow?"
+    updated = registry.append_system_question(
+        context_key,
+        draft=draft,
+        target=clarification.target,
+        question=question,
+        default_target=clarification.target,
+    )
+    return updated, "The Matrix asked the next intent question."
 
 
 def render_app_page(
@@ -1997,6 +2533,27 @@ def render_app_page(
     }}
     .clarify-box summary::before {{ content: 'â–¸ '; color: var(--phosphor-title); }}
     .clarify-box[open] summary::before {{ content: 'â–¾ '; }}
+    .intent-check {{
+      border-top: 1px dashed var(--line);
+      margin-top: 18px;
+      padding-top: 16px;
+      display: grid;
+      gap: 12px;
+    }}
+    .intent-check-head {{ display: grid; gap: 4px; }}
+    .intent-check-head strong {{
+      color: var(--phosphor-bright);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }}
+    .intent-actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }}
+    .intent-actions button {{ margin-top: 0; }}
+    .intent-answer {{ display: grid; gap: 12px; }}
     .transcript {{ display: grid; gap: 10px; }}
     .turn {{
       border-top: 1px dashed var(--line);
@@ -2116,15 +2673,17 @@ def _clarification_composer(
     disabled: bool = False,
 ) -> str:
     draft = session.draft
-    selected = session.default_target
-    target_options = _clarification_target_options(store, selected, agent_id=agent_id)
-    transcript = _clarification_transcript_html(session.turns)
-    clarify_action = f"/clarify?token={escape(token, quote=True)}"
-    reset_action = f"/clarify/reset?token={escape(token, quote=True)}"
     hidden_agent = (
         f'<input type="hidden" name="agent_id" value="{escape(agent_id, quote=True)}">'
         if agent_id
         else ""
+    )
+    intent_html = _intent_clarification_controls(
+        token,
+        session=session,
+        context=context,
+        draft=draft,
+        hidden_agent=hidden_agent,
     )
     disabled_attr = " disabled" if disabled else ""
     operator_link = (
@@ -2152,39 +2711,78 @@ def _clarification_composer(
             </span>
           </div>
         </form>
-        <details class="clarify-box">
-          <summary>Clarify first, optional</summary>
-          <form method="post" action="{clarify_action}">
-            <input type="hidden" name="context" value="{escape(context, quote=True)}">
-            <input type="hidden" name="draft" value="{escape(draft, quote=True)}" data-draft-sync>
-            {hidden_agent}
-            <div class="clarify-row">
-              <label>Clarify with
-                <select name="target">{target_options}</select>
-              </label>
-              <label>Question before running
-                <input name="question" placeholder="What should be clarified before this runs?" required>
-              </label>
-            </div>
-            <div class="actions">
-              <button type="submit">Clarify</button>
+        {intent_html}
+      </div>
+    </section>
+"""
+
+
+def _intent_clarification_controls(
+    token: str,
+    *,
+    session: ClarificationSession,
+    context: str,
+    draft: str,
+    hidden_agent: str,
+) -> str:
+    intent_action = f"/clarify/intent?token={escape(token, quote=True)}"
+    answer_action = f"/clarify/answer?token={escape(token, quote=True)}"
+    reset_action = f"/clarify/reset?token={escape(token, quote=True)}"
+    target = session.default_target or _default_target_for_context(session.context_key)
+    hidden_fields = (
+        f'<input type="hidden" name="context" value="{escape(context, quote=True)}">'
+        f'<input type="hidden" name="draft" value="{escape(draft, quote=True)}" data-draft-sync>'
+        f'<input type="hidden" name="target" value="{escape(target, quote=True)}">'
+        f"{hidden_agent}"
+    )
+    pending = _pending_clarification_question(session)
+    if pending is None:
+        active_form = f"""
+          <form method="post" action="{intent_action}">
+            {hidden_fields}
+            <div class="intent-actions">
+              <button type="submit">Ask Next Question</button>
             </div>
           </form>
-          <div class="notice">
-            <strong>Clarification Transcript</strong>
-            {transcript}
-          </div>
+"""
+    else:
+        active_form = f"""
+          <form method="post" action="{answer_action}" class="intent-answer">
+            {hidden_fields}
+            <label>Your Answer
+              <input name="answer" placeholder="Answer the Matrix question" required>
+            </label>
+            <div class="intent-actions">
+              <button type="submit">Save Answer</button>
+            </div>
+          </form>
+"""
+    transcript_heading = "Intent Transcript"
+    transcript = _clarification_transcript_html(session.turns)
+    reset_form = ""
+    if session.turns:
+        reset_form = f"""
           <form method="post" action="{reset_action}">
             <input type="hidden" name="context" value="{escape(context, quote=True)}">
             {hidden_agent}
-            <div class="actions">
-              <button type="submit">Reset Transcript</button>
+            <div class="intent-actions">
+              <button type="submit">Reset Intent</button>
             </div>
           </form>
-          <p class="muted">If this transcript has turns, The Matrix composes a clean mission brief before running. You can skip this section completely.</p>
-        </details>
-      </div>
-    </section>
+"""
+    return f"""
+        <div class="intent-check">
+          <div class="intent-check-head">
+            <strong>Intent Check</strong>
+            <p class="muted">The Matrix can ask what it needs before building or running the agent.</p>
+          </div>
+          {active_form}
+          <div class="notice">
+            <strong>{transcript_heading}</strong>
+            {transcript}
+          </div>
+          {reset_form}
+        </div>
 """
 
 
@@ -2224,11 +2822,13 @@ def _clarification_target_options(
 
 def _clarification_transcript_html(turns: list[ClarificationTurn]) -> str:
     if not turns:
-        return '<p class="muted">No clarification yet. Ask Oracle, Architect, Neo, The Matrix, or a reusable agent before running.</p>'
+        return (
+            '<p class="muted">No intent questions yet. Run now, or ask The Matrix to check '
+            "the brief first.</p>"
+        )
     items = []
     for turn in turns:
-        speaker = "You" if turn.role == ClarificationRole.USER else "Matrix"
-        label = f"{speaker} / {turn.target}"
+        label = _clarification_turn_label(turn)
         items.append(
             f"""
           <div class="turn">
@@ -2238,6 +2838,20 @@ def _clarification_transcript_html(turns: list[ClarificationTurn]) -> str:
 """
         )
     return f'<div class="transcript">{"".join(items)}</div>'
+
+
+def _clarification_turn_label(turn: ClarificationTurn) -> str:
+    target = f" / {turn.target}" if turn.target else ""
+    if turn.kind == "system_question":
+        return f"Matrix asks{target}"
+    if turn.kind == "user_answer":
+        return f"You answer{target}"
+    if turn.kind == "user_question":
+        return f"You ask{target}"
+    if turn.kind == "assistant_answer":
+        return f"Matrix answers{target}"
+    speaker = "You" if turn.role == ClarificationRole.USER else "Matrix"
+    return f"{speaker}{target}"
 
 
 def _result_panel(response: AppUiResponse) -> str:
@@ -2376,11 +2990,15 @@ def _help_panel() -> str:
       <div class="list help-list">
         <div class="item">
           <p><strong>Run from browser</strong></p>
-          <p class="muted">Use the request box above for normal agent missions. Ask a clarification question first when the request needs shaping.</p>
+          <p class="muted">Use the request box above for normal agent missions. Ask The Matrix to check intent when the request needs shaping.</p>
         </div>
         <div class="item">
-          <p><strong>Clarify first</strong></p>
-          <p class="muted">Ask The Matrix, Oracle, Architect, Neo, or a reusable agent. Run uses a clean brief composed from the draft and transcript.</p>
+          <p><strong>Intent check</strong></p>
+          <p class="muted">The Matrix asks the next useful question. Run uses a clean brief composed from the draft and answers.</p>
+        </div>
+        <div class="item">
+          <p><strong>Approvals</strong></p>
+          <p class="muted">When an agent needs approval during a mission, the Mission Status page shows Approve and Deny controls.</p>
         </div>
         <div class="item">
           <p><strong>The Operator</strong></p>
@@ -2992,6 +3610,11 @@ def _utility_page(
     .turn-label {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.3px; text-transform: uppercase; }}
     .mission-summary {{ border-bottom: 1px dashed rgba(0,255,65,0.16); margin-bottom: 18px; padding-bottom: 16px; }}
     .mission-summary h2 {{ border: 0; margin: 0 0 8px; padding: 0; color: #00ff41; font-size: 24px; }}
+    .approval-panel {{ border: 1px solid rgba(0,255,65,0.28); margin: 0 0 18px; padding: 16px; box-shadow: 0 0 18px rgba(0,255,65,0.12); }}
+    .approval-card {{ border-top: 1px dashed rgba(0,255,65,0.16); padding-top: 12px; }}
+    .approval-card:first-child {{ border-top: 0; padding-top: 0; }}
+    .approval-actions {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }}
+    .approval-actions button {{ margin-top: 0; }}
     .kicker {{ color: #7cff9d; font-size: 12px; letter-spacing: 1.4px; text-transform: uppercase; }}
     .request-text {{ color: #00ff41; overflow-wrap: anywhere; }}
     .mission-contract {{ border-bottom: 1px dashed rgba(0,255,65,0.16); margin-bottom: 18px; padding-bottom: 18px; }}

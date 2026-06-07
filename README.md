@@ -145,7 +145,9 @@ the-matrix start
 
 The app opens a local browser dashboard. Type what you want the agents to do, then submit the request.
 
-If the request is not clear yet, use the clarification composer on the same page. You can ask The Matrix, Oracle, Architect, Neo, or a reusable agent a question before running. When you launch the mission, The Matrix folds the draft and clarification transcript into the mission brief automatically.
+If the request is not clear yet, use **Intent Check** on the same page. The Matrix asks the next useful question before the mission starts. When you launch the mission, The Matrix folds the draft and intent answers into the mission brief automatically.
+
+If an agent needs approval while a mission is running, keep the Mission Status page open. The page shows Approve and Deny controls for guarded shell commands or file writes that need your decision.
 
 ## Example Requests
 

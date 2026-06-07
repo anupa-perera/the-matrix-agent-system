@@ -53,6 +53,19 @@ def test_clarification_service_frames_matrix_as_read_only(tmp_path) -> None:
     assert gateway.requests[-1].metadata == {"purpose": "clarification", "target": "auto"}
 
 
+def test_clarification_service_can_ask_next_intent_question(tmp_path) -> None:
+    store = _store(tmp_path)
+    gateway = FakeGateway("Which AI tools should the research agent compare?")
+    service = ClarificationService(store, gateway)
+
+    response = service.ask_next(draft="Create a reusable research agent", target="auto")
+
+    assert response.answer == "Which AI tools should the research agent compare?"
+    request = gateway.requests[-1]
+    assert request.metadata == {"purpose": "clarification_question", "target": "auto"}
+    assert "ask the user exactly one concise question" in request.messages[-1].content
+
+
 @pytest.mark.parametrize(
     ("target", "expected"),
     [

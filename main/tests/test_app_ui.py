@@ -54,6 +54,8 @@ def _run_result(request: str) -> MatrixRunResult:
 class FakeClarifier:
     def __init__(self) -> None:
         self.questions: list[tuple[str, str, str]] = []
+        self.intent_checks: list[tuple[str, str, int]] = []
+        self.next_questions: list[str] = ["What output should this agent produce?", "READY"]
         self.summaries: list[str] = []
 
     def answer(self, *, draft, question, target="auto", transcript=None):
@@ -61,6 +63,14 @@ class FakeClarifier:
 
         self.questions.append((draft, question, target))
         return ClarificationResponse(target=target, answer=f"Clarified: {question}")
+
+    def ask_next(self, *, draft, target="auto", transcript=None):
+        from thematrix.schemas import ClarificationResponse
+
+        turns = transcript or []
+        self.intent_checks.append((draft, target, len(turns)))
+        answer = self.next_questions.pop(0) if self.next_questions else "READY"
+        return ClarificationResponse(target=target, answer=answer)
 
     def summarize(self, *, draft, transcript):
         self.summaries.append(draft)
@@ -81,14 +91,16 @@ def test_app_page_renders_request_form(tmp_path) -> None:
     assert "/settings?token=token-123" in html
     assert "Mission Console" in html
     assert "Run Mission" in html
-    assert "Clarify first, optional" in html
-    assert "Clarify with" in html
-    assert "/clarify?token=token-123" in html
-    assert "/clarify/reset?token=token-123" in html
-    assert "Clarification Transcript" in html
+    assert "Intent Check" in html
+    assert "Ask Next Question" in html
+    assert "/clarify/intent?token=token-123" in html
+    assert "Intent Transcript" in html
+    assert "Clarify first, optional" not in html
+    assert "Clarify with" not in html
+    assert "Question before running" not in html
     assert "data-mission-form" in html
     assert "Mission accepted. Keep this tab open." in html
-    assert html.index("Run Mission") < html.index("Clarify first, optional")
+    assert html.index("Run Mission") < html.index("Intent Check")
     assert "Help / Commands" in html
     assert "Useful terminal commands" not in html
     assert "the-matrix providers current" not in html
@@ -671,7 +683,7 @@ def test_app_ui_clarification_transcript_summarizes_mission_and_agent_runs(tmp_p
         reset_body = response.read().decode("utf-8")
 
     assert "Clarification transcript cleared." in reset_body
-    assert "No clarification yet" in reset_body
+    assert "No intent questions yet" in reset_body
 
     agent_clarify_again = Request(
         f"http://{parsed.netloc}/clarify?{parsed.query}",
@@ -706,6 +718,210 @@ def test_app_ui_clarification_transcript_summarizes_mission_and_agent_runs(tmp_p
             break
         sleep(0.05)
     assert agent_requests == [("test-agent", "SUMMARIZED BRIEF: Use this stored agent")]
+
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5):
+        pass
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_app_ui_intent_check_asks_question_before_mission_runs(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    captured_url: list[str] = []
+    requests: list[str] = []
+    clarifier = FakeClarifier()
+    ready = Event()
+
+    def run_server() -> None:
+        serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=lambda request: requests.append(request) or _run_result(request),
+            clarifier=clarifier,
+            port=0,
+            open_browser=False,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+
+    intent_request = Request(
+        f"http://{parsed.netloc}/clarify/intent?{parsed.query}",
+        data=urlencode({"draft": "Build something"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(intent_request, timeout=5) as response:
+        intent_body = response.read().decode("utf-8")
+
+    assert "The Matrix asked the next intent question." in intent_body
+    assert "What output should this agent produce?" in intent_body
+    assert "Your Answer" in intent_body
+    assert clarifier.intent_checks == [("Build something", "auto", 0)]
+
+    blocked_run = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=urlencode({"request": "Build something"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        urlopen(blocked_run, timeout=5)
+    except HTTPError as exc:
+        blocked_body = exc.read().decode("utf-8")
+        assert exc.code == 400
+    else:
+        raise AssertionError("Mission should not run with an unanswered intent question.")
+    assert "Answer the Matrix intent question before running." in blocked_body
+
+    answer_request = Request(
+        f"http://{parsed.netloc}/clarify/answer?{parsed.query}",
+        data=urlencode({"draft": "Build something", "answer": "A short implementation plan"}).encode(
+            "utf-8"
+        ),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(answer_request, timeout=5) as response:
+        answer_body = response.read().decode("utf-8")
+
+    assert "The Matrix has enough context. You can run this mission now." in answer_body
+    assert "A short implementation plan" in answer_body
+    assert clarifier.intent_checks[-1] == ("Build something", "auto", 2)
+
+    run_request = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=urlencode({"request": "Build something"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(run_request, timeout=5):
+        pass
+
+    for _ in range(50):
+        if requests:
+            break
+        sleep(0.05)
+    assert requests == ["SUMMARIZED BRIEF: Build something"]
+
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5):
+        pass
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_app_ui_surfaces_runtime_approval_and_resumes_after_response(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    captured_url: list[str] = []
+    approvals: list[bool] = []
+    ready = Event()
+
+    def approval_runner(request: str, approval_callback=None) -> MatrixRunResult:
+        assert approval_callback is not None
+        approvals.append(
+            approval_callback(
+                "pip install example-package",
+                "Command needs explicit user approval.",
+                "Install dependency.",
+            )
+        )
+        return _run_result(request)
+
+    def run_server() -> None:
+        serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=approval_runner,
+            port=0,
+            open_browser=False,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+
+    mission_request = Request(
+        f"http://{parsed.netloc}/ask?{parsed.query}",
+        data=urlencode({"request": "Needs approval"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(mission_request, timeout=5) as response:
+        body = response.read().decode("utf-8")
+
+    match = re.search(r"job_id=([^\"&]+)", body)
+    assert match is not None
+    job_id = match.group(1)
+
+    status = {}
+    for _ in range(50):
+        with urlopen(
+            f"http://{parsed.netloc}/mission/status?{parsed.query}&job_id={job_id}",
+            timeout=5,
+        ) as response:
+            status = json.loads(response.read().decode("utf-8"))
+        if status.get("approvals"):
+            break
+        sleep(0.05)
+
+    assert status["status"] == "running"
+    assert status["approvals"][0]["target"] == "pip install example-package"
+    assert status["approvals"][0]["purpose"] == "Install dependency."
+    approval_id = status["approvals"][0]["approval_id"]
+
+    approve_request = Request(
+        f"http://{parsed.netloc}/approval/respond?{parsed.query}",
+        data=urlencode({"approval_id": approval_id, "decision": "approve"}).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urlopen(approve_request, timeout=5) as response:
+        approval_body = json.loads(response.read().decode("utf-8"))
+
+    assert approval_body["ok"] is True
+    assert approval_body["status"] == "approved"
+
+    for _ in range(50):
+        with urlopen(
+            f"http://{parsed.netloc}/mission/status?{parsed.query}&job_id={job_id}",
+            timeout=5,
+        ) as response:
+            status = json.loads(response.read().decode("utf-8"))
+        if status["status"] == "completed":
+            break
+        sleep(0.05)
+
+    assert approvals == [True]
+    assert status["status"] == "completed"
+    assert any(event["stage"] == "approval_required" for event in status["events"])
+    assert any(event["stage"] == "approval_granted" for event in status["events"])
 
     shutdown_request = Request(
         f"http://{parsed.netloc}/shutdown?{parsed.query}",

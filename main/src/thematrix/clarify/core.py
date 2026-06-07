@@ -58,6 +58,30 @@ class ClarificationService:
         )
         return ClarificationResponse(target=target, answer=response.text.strip())
 
+    def ask_next(
+        self,
+        *,
+        draft: str,
+        target: str = "auto",
+        transcript: list[ClarificationTurn] | None = None,
+    ) -> ClarificationResponse:
+        target = _normalize_target(target)
+        system = self._role_frame(target)
+        prompt = self._next_question_prompt(draft=draft, transcript=transcript or [])
+        response = self.model_gateway.generate(
+            ModelRequest(
+                messages=[
+                    ModelMessage(role="system", content=system),
+                    ModelMessage(role="user", content=prompt),
+                ],
+                temperature=0.2,
+                max_tokens=300,
+                metadata={"purpose": "clarification_question", "target": target},
+            )
+        )
+        answer = response.text.strip() or deterministic_next_question(draft, transcript or [])
+        return ClarificationResponse(target=target, answer=answer)
+
     def summarize(
         self,
         *,
@@ -168,6 +192,24 @@ class ClarificationService:
             "what must be clarified before running. Do not claim you performed any action."
         )
 
+    def _next_question_prompt(
+        self,
+        *,
+        draft: str,
+        transcript: list[ClarificationTurn],
+    ) -> str:
+        return (
+            "Review this mission draft and the intent transcript.\n\n"
+            f"Mission draft:\n{draft.strip() or '(empty)'}\n\n"
+            f"Intent transcript:\n{_format_transcript(transcript) or '(none)'}\n\n"
+            "If the request is clear enough for a local agent mission to start, return "
+            "exactly READY. Otherwise ask the user exactly one concise question that "
+            "would clarify the highest-impact missing detail before the system builds "
+            "or runs the agent. Prefer questions about goal, scope, expected output, "
+            "data sources, permissions, schedule, or safety boundaries. Do not answer "
+            "the mission. Do not claim you performed any action."
+        )
+
 
 def deterministic_summary(draft: str, transcript: list[ClarificationTurn]) -> str:
     turns = _format_transcript(transcript) or "(none)"
@@ -179,13 +221,33 @@ def deterministic_summary(draft: str, transcript: list[ClarificationTurn]) -> st
     )
 
 
+def deterministic_next_question(draft: str, transcript: list[ClarificationTurn]) -> str:
+    if not draft.strip():
+        return "What do you want the agent or mission to do?"
+    if transcript and transcript[-1].role.value == "user":
+        return "READY"
+    return "What outcome should this agent produce, and what boundaries should it follow?"
+
+
 def _format_transcript(turns: list[ClarificationTurn]) -> str:
     lines = []
     for turn in turns:
-        label = "User" if turn.role.value == "user" else "Matrix"
+        label = _turn_label(turn)
         target = f" [{turn.target}]" if turn.target else ""
         lines.append(f"{label}{target}: {turn.content.strip()}")
     return "\n".join(lines)
+
+
+def _turn_label(turn: ClarificationTurn) -> str:
+    if turn.kind == "system_question":
+        return "Matrix question"
+    if turn.kind == "user_answer":
+        return "User answer"
+    if turn.kind == "user_question":
+        return "User question"
+    if turn.kind == "assistant_answer":
+        return "Matrix answer"
+    return "User" if turn.role.value == "user" else "Matrix"
 
 
 def _normalize_target(target: str) -> str:

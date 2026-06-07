@@ -204,20 +204,22 @@ def start(
             paths,
             vault,
             store,
-            request_runner=lambda request, progress_callback=None: _run_browser_request(
+            request_runner=lambda request, progress_callback=None, approval_callback=None: _run_browser_request(
                 paths,
                 vault,
                 store,
                 request,
                 progress_callback=progress_callback,
+                approval_callback=approval_callback,
             ),
-            agent_request_runner=lambda agent_id, request, progress_callback=None: _run_browser_agent_request(
+            agent_request_runner=lambda agent_id, request, progress_callback=None, approval_callback=None: _run_browser_agent_request(
                 paths,
                 vault,
                 store,
                 agent_id,
                 request,
                 progress_callback=progress_callback,
+                approval_callback=approval_callback,
             ),
             open_browser=open_browser,
             url_callback=lambda value: typer.echo(f"App UI: {value}"),
@@ -501,6 +503,7 @@ def _run_browser_request(
     store: RuntimeStore,
     request: str,
     progress_callback=None,
+    approval_callback=None,
 ) -> MatrixRunResult:
     provider_config = store.get_default_provider_config()
     selected_privacy = _default_privacy_mode(store)
@@ -509,7 +512,7 @@ def _run_browser_request(
         vault,
         store,
         provider_config,
-        approval_callback=_deny_browser_approval,
+        approval_callback=approval_callback or _deny_browser_approval,
         progress_callback=progress_callback,
     )
     return runtime.run(
@@ -526,6 +529,7 @@ def _run_browser_agent_request(
     agent_id: str,
     request: str,
     progress_callback=None,
+    approval_callback=None,
 ) -> MatrixRunResult:
     provider_config = store.get_default_provider_config()
     selected_privacy = _default_privacy_mode(store)
@@ -534,7 +538,7 @@ def _run_browser_agent_request(
         vault,
         store,
         provider_config,
-        approval_callback=_deny_browser_approval,
+        approval_callback=approval_callback or _deny_browser_approval,
         progress_callback=progress_callback,
     )
     return runtime.run_agent(

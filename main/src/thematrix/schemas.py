@@ -155,6 +155,7 @@ class ClarificationTurn(BaseModel):
     role: ClarificationRole
     content: str
     target: str = "auto"
+    kind: str = "message"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
