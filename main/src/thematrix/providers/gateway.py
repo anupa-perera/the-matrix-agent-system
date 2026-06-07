@@ -14,7 +14,7 @@ from thematrix.schemas import (
     ProviderHealth,
     ProviderProfile,
 )
-from thematrix.security import Keymaker
+from thematrix.security import Keymaker, SecretStoreError
 
 
 class ModelGatewayError(RuntimeError):
@@ -52,10 +52,10 @@ class ModelGateway:
         if profile is None:
             raise ModelGatewayError(f"Unknown provider: {provider_config.provider_id}")
 
-        credential = self._resolve_credential(provider_config)
         adapter = self.adapters.for_profile(profile)
         started = perf_counter()
         try:
+            credential = self._resolve_credential(provider_config)
             response = adapter.generate(request, profile, provider_config, credential)
         except Exception as exc:
             self.store.record_model_call(
@@ -69,6 +69,8 @@ class ModelGateway:
             )
             if isinstance(exc, ModelGatewayError):
                 raise
+            if isinstance(exc, SecretStoreError):
+                raise ModelGatewayError(str(exc)) from exc
             raise ModelGatewayError(str(exc)) from exc
 
         self.store.record_model_call(

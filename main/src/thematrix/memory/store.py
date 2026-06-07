@@ -22,13 +22,17 @@ from thematrix.schemas import (
 class RuntimeStore:
     """SQLite-backed runtime index for exact lookup and audit metadata."""
 
+    SQLITE_BUSY_TIMEOUT_MS = 5000
+
     def __init__(self, db_path: Path):
         self.db_path = db_path
 
     def connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(self.db_path, timeout=self.SQLITE_BUSY_TIMEOUT_MS / 1000)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(f"PRAGMA busy_timeout={self.SQLITE_BUSY_TIMEOUT_MS}")
         return connection
 
     def initialize(self) -> None:
@@ -552,6 +556,7 @@ class RuntimeStore:
 
     def configure_provider(self, config: ProviderConfig) -> None:
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             if config.is_default:
                 conn.execute("UPDATE provider_settings SET is_default = 0")
             conn.execute(

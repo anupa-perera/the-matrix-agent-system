@@ -11,6 +11,7 @@ from thematrix.providers.adapters import (
     CodexExecResult,
     GeminiGenerateContentAdapter,
     OpenAICompatibleAdapter,
+    ProviderAdapterError,
     ProviderAdapterRegistry,
 )
 from thematrix.providers.gateway import ModelGateway, ModelGatewayError
@@ -22,7 +23,7 @@ from thematrix.schemas import (
     ProviderConfig,
     ReasoningEffort,
 )
-from thematrix.security import InMemorySecretStore, Keymaker
+from thematrix.security import InMemorySecretStore, Keymaker, SecretStoreError
 
 
 class FakeTransport:
@@ -45,6 +46,32 @@ class FakeTransport:
                 "timeout_seconds": timeout_seconds,
             }
         )
+        return self.response
+
+
+class FlakyTransport(FakeTransport):
+    def __init__(self, failures: int, response: dict[str, Any], message: str = "HTTP 500: busy"):
+        super().__init__(response)
+        self.failures = failures
+        self.message = message
+
+    def post_json(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "payload": payload,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        if len(self.calls) <= self.failures:
+            raise ProviderAdapterError(self.message)
         return self.response
 
 
@@ -93,6 +120,53 @@ def test_openai_compatible_adapter_translates_request() -> None:
     assert transport.calls[0]["payload"]["model"] == "openai/gpt-5-mini"
 
 
+def test_openai_compatible_adapter_retries_transient_provider_errors() -> None:
+    transport = FlakyTransport(
+        failures=2,
+        response={"choices": [{"message": {"content": "ready"}}]},
+    )
+    profile = _profile("openrouter")
+    config = ProviderConfig(
+        provider_id="openrouter",
+        selected_model="openai/gpt-5-mini",
+        auth_mode=AuthMode.API_KEY,
+    )
+
+    response = OpenAICompatibleAdapter(transport, retry_delay_seconds=0).generate(
+        ModelRequest.from_prompt("test"),
+        profile,
+        config,
+        "secret",
+    )
+
+    assert response.text == "ready"
+    assert len(transport.calls) == 3
+
+
+def test_openai_compatible_adapter_does_not_retry_non_transient_errors() -> None:
+    transport = FlakyTransport(
+        failures=1,
+        response={"choices": [{"message": {"content": "ready"}}]},
+        message="Provider returned invalid JSON.",
+    )
+    profile = _profile("openrouter")
+    config = ProviderConfig(
+        provider_id="openrouter",
+        selected_model="openai/gpt-5-mini",
+        auth_mode=AuthMode.API_KEY,
+    )
+
+    with pytest.raises(ProviderAdapterError, match="invalid JSON"):
+        OpenAICompatibleAdapter(transport, retry_delay_seconds=0).generate(
+            ModelRequest.from_prompt("test"),
+            profile,
+            config,
+            "secret",
+        )
+
+    assert len(transport.calls) == 1
+
+
 def test_anthropic_adapter_translates_request() -> None:
     transport = FakeTransport({"content": [{"type": "text", "text": "ready"}]})
     profile = _profile("anthropic")
@@ -113,6 +187,24 @@ def test_anthropic_adapter_translates_request() -> None:
     assert transport.calls[0]["url"] == "https://api.anthropic.com/v1/messages"
     assert transport.calls[0]["headers"]["x-api-key"] == "secret"
     assert transport.calls[0]["headers"]["anthropic-version"] == "2023-06-01"
+
+
+def test_anthropic_adapter_surfaces_empty_response_reason() -> None:
+    transport = FakeTransport({"content": [], "stop_reason": "refusal"})
+    profile = _profile("anthropic")
+    config = ProviderConfig(
+        provider_id="anthropic",
+        selected_model="claude-sonnet-4.5",
+        auth_mode=AuthMode.API_KEY,
+    )
+
+    with pytest.raises(ProviderAdapterError, match="refusal"):
+        AnthropicMessagesAdapter(transport).generate(
+            ModelRequest.from_prompt("test"),
+            profile,
+            config,
+            "secret",
+        )
 
 
 def test_gemini_adapter_translates_api_key_request() -> None:
@@ -137,6 +229,24 @@ def test_gemini_adapter_translates_api_key_request() -> None:
     assert "models/gemini-2.5-flash:generateContent" in transport.calls[0]["url"]
     assert "key=secret" in transport.calls[0]["url"]
     assert transport.calls[0]["payload"]["contents"][0]["parts"][0]["text"] == "test"
+
+
+def test_gemini_adapter_surfaces_safety_finish_reason() -> None:
+    transport = FakeTransport({"candidates": [{"finishReason": "SAFETY"}]})
+    profile = _profile("gemini")
+    config = ProviderConfig(
+        provider_id="gemini",
+        selected_model="gemini-2.5-flash",
+        auth_mode=AuthMode.API_KEY,
+    )
+
+    with pytest.raises(ProviderAdapterError, match="SAFETY"):
+        GeminiGenerateContentAdapter(transport).generate(
+            ModelRequest.from_prompt("test"),
+            profile,
+            config,
+            "secret",
+        )
 
 
 def test_codex_exec_adapter_runs_read_only_ephemeral_without_secret() -> None:
@@ -364,6 +474,42 @@ def test_gateway_rejects_missing_required_secret(tmp_path) -> None:
     )
 
     with pytest.raises(ModelGatewayError, match="no credential"):
+        gateway.generate(ModelRequest.from_prompt("test"))
+
+
+def test_gateway_reports_secret_store_errors_cleanly(tmp_path) -> None:
+    class BrokenSecretStore:
+        backend_name = "broken"
+        can_write = True
+
+        def get_secret(self, secret_ref: str) -> str | None:
+            raise SecretStoreError("credential store is locked")
+
+        def set_secret(self, secret_ref: str, value: str) -> None:
+            raise SecretStoreError("credential store is locked")
+
+        def delete_secret(self, secret_ref: str) -> None:
+            raise SecretStoreError("credential store is locked")
+
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    for profile in provider_catalog():
+        store.upsert_provider(profile)
+    store.configure_provider(
+        ProviderConfig(
+            provider_id="openai",
+            selected_model="gpt-5-mini",
+            auth_mode=AuthMode.API_KEY,
+            secret_ref="broken:provider:openai:api_key",
+        )
+    )
+    gateway = ModelGateway(
+        store=store,
+        keymaker=Keymaker(BrokenSecretStore()),
+        adapters=ProviderAdapterRegistry.default(),
+    )
+
+    with pytest.raises(ModelGatewayError, match="credential store is locked"):
         gateway.generate(ModelRequest.from_prompt("test"))
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
@@ -48,6 +49,8 @@ from thematrix.ui.matrix_background import (
 
 MAX_SETUP_BODY_BYTES = 64 * 1024
 DEFAULT_SETUP_TIMEOUT_SECONDS = 15 * 60
+SETUP_SESSION_COOKIE_NAME = "thematrix_setup_session"
+SESSION_COOKIE_ATTRIBUTES = "Path=/; HttpOnly; SameSite=Strict"
 
 
 @dataclass
@@ -321,10 +324,10 @@ def _handler_factory(
             form = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
             host, port = self.server.server_address[:2]
 
-            def callback_url_for_flow(flow_id: str) -> str:
+            def callback_url_for_flow(flow_id: str, state: str) -> str:
                 return (
                     f"http://{host}:{port}/oauth/openrouter/callback?"
-                    + urlencode({"flow": flow_id})
+                    + urlencode({"flow": flow_id, "state": state})
                 )
 
             try:
@@ -342,21 +345,31 @@ def _handler_factory(
         def _complete_openrouter_oauth(self, parsed) -> None:
             query = parse_qs(parsed.query)
             flow_id = query.get("flow", [""])[-1]
+            state = query.get("state", [""])[-1]
             code = query.get("code", [""])[-1]
-            if not flow_id or not code:
+            if not flow_id or not state or not code:
                 self._send_html(
                     HTTPStatus.BAD_REQUEST,
                     _message_page("OAuth incomplete", "The provider did not return a usable code."),
                 )
                 return
             with oauth_lock:
-                pending = oauth_flows.pop(flow_id, None)
+                pending = oauth_flows.get(flow_id)
             if pending is None:
                 self._send_html(
                     HTTPStatus.BAD_REQUEST,
                     _message_page("OAuth expired", "Start provider sign-in again from setup."),
                 )
                 return
+            if not hmac.compare_digest(state, pending.callback_state):
+                self._send_html(
+                    HTTPStatus.FORBIDDEN,
+                    _message_page("OAuth rejected", "The provider sign-in state did not match."),
+                )
+                return
+            self._session_verified = True
+            with oauth_lock:
+                oauth_flows.pop(flow_id, None)
             try:
                 api_key = exchange_openrouter_code(code, pending.code_verifier)
             except (OAuthProviderError, OSError, ValueError) as exc:
@@ -396,7 +409,29 @@ def _handler_factory(
         def _token_ok(self) -> bool:
             query = parse_qs(urlparse(self.path).query)
             supplied = query.get("token", [""])[-1]
-            return hmac.compare_digest(supplied, token)
+            if hmac.compare_digest(supplied, token) or self._session_cookie_ok():
+                self._session_verified = True
+                return True
+            return False
+
+        def _session_cookie_ok(self) -> bool:
+            cookie_header = self.headers.get("Cookie", "")
+            if not cookie_header:
+                return False
+            cookie = SimpleCookie()
+            try:
+                cookie.load(cookie_header)
+            except Exception:
+                return False
+            morsel = cookie.get(SETUP_SESSION_COOKIE_NAME)
+            return bool(morsel) and hmac.compare_digest(morsel.value, token)
+
+        def _send_session_cookie_if_verified(self) -> None:
+            if getattr(self, "_session_verified", False):
+                self.send_header(
+                    "Set-Cookie",
+                    f"{SETUP_SESSION_COOKIE_NAME}={token}; {SESSION_COOKIE_ATTRIBUTES}",
+                )
 
         def _send_redirect(self, location: str) -> None:
             self.send_response(HTTPStatus.FOUND.value)
@@ -404,6 +439,7 @@ def _handler_factory(
             self.send_header("Content-Length", "0")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Referrer-Policy", "no-referrer")
+            self._send_session_cookie_if_verified()
             self.end_headers()
 
         def _send_html(self, status: HTTPStatus, body: str) -> None:
@@ -412,6 +448,8 @@ def _handler_factory(
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self._send_session_cookie_if_verified()
             self.end_headers()
             self.wfile.write(payload)
 

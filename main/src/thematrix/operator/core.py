@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime, timedelta
 from threading import Event, Thread
@@ -14,6 +15,9 @@ from thematrix.schemas import (
     OperatorSchedule,
 )
 from thematrix.tools import DesktopNotifier, NotificationResult
+
+
+logger = logging.getLogger(__name__)
 
 
 class TheOperator:
@@ -279,11 +283,21 @@ class TheOperator:
         return goal
 
     def _loop(self) -> None:
+        consecutive_failures = 0
         while not self._stop.wait(self.tick_seconds):
             try:
                 self.run_due_goals()
+                consecutive_failures = 0
             except Exception:
-                continue
+                consecutive_failures += 1
+                logger.exception(
+                    "Operator scheduler failed while checking due goals; backing off."
+                )
+                backoff_seconds = min(
+                    self.tick_seconds * (2 ** min(consecutive_failures, 5)),
+                    300.0,
+                )
+                self._stop.wait(backoff_seconds)
 
     def _interval_minutes(self, lowered: str) -> int | None:
         match = re.search(r"\b(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs)\b", lowered)

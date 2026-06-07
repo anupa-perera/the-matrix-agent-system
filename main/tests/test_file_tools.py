@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from thematrix.schemas import FileChangeConsent
 from thematrix.tools import FileDecision, FileExecutor, FileOperation, FilePolicy
 
@@ -18,6 +20,34 @@ def test_file_policy_blocks_path_escape(tmp_path) -> None:
 
 def test_file_policy_blocks_sensitive_paths(tmp_path) -> None:
     review = FilePolicy(tmp_path).review(".env", FileOperation.READ)
+
+    assert review.decision == FileDecision.BLOCK
+
+
+def test_file_policy_does_not_block_secret_as_plain_substring(tmp_path) -> None:
+    review = FilePolicy(tmp_path).review("docs/secret_notes.md", FileOperation.READ)
+
+    assert review.decision == FileDecision.ALLOW
+
+
+def test_file_policy_blocks_sensitive_components_and_suffixes(tmp_path) -> None:
+    policy = FilePolicy(tmp_path)
+
+    assert policy.review("docs/secret.md", FileOperation.READ).decision == FileDecision.BLOCK
+    assert policy.review("certs/local.pem", FileOperation.READ).decision == FileDecision.BLOCK
+    assert policy.review("config/.env.local", FileOperation.READ).decision == FileDecision.BLOCK
+
+
+def test_file_policy_blocks_symlinked_components(tmp_path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Symlink creation is unavailable: {exc}")
+
+    review = FilePolicy(tmp_path).review("linked/notes.md", FileOperation.READ)
 
     assert review.decision == FileDecision.BLOCK
 

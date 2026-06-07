@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from time import sleep
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -81,6 +82,8 @@ class UrlLibJsonTransport:
             raise ProviderAdapterError(f"HTTP {exc.code}: {detail}") from exc
         except URLError as exc:
             raise ProviderAdapterError(str(exc.reason)) from exc
+        except TimeoutError as exc:
+            raise ProviderAdapterError("Provider request timed out.") from exc
 
         try:
             return json.loads(raw)
@@ -132,6 +135,8 @@ class SubprocessCodexExecRunner:
 class OpenAICompatibleAdapter:
     transport: JsonTransport
     timeout_seconds: int = 60
+    retry_attempts: int = 3
+    retry_delay_seconds: float = 0.25
 
     def generate(
         self,
@@ -150,11 +155,14 @@ class OpenAICompatibleAdapter:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
         }
-        raw = self.transport.post_json(
+        raw = _post_json_with_retries(
+            self.transport,
             url=f"{base_url}/chat/completions",
             headers=headers,
             payload=payload,
             timeout_seconds=self.timeout_seconds,
+            attempts=self.retry_attempts,
+            delay_seconds=self.retry_delay_seconds,
         )
         text = _extract_openai_compatible_text(raw)
         return ModelResponse(
@@ -307,6 +315,8 @@ class CodexExecAdapter:
 class AnthropicMessagesAdapter:
     transport: JsonTransport
     timeout_seconds: int = 60
+    retry_attempts: int = 3
+    retry_delay_seconds: float = 0.25
 
     def generate(
         self,
@@ -329,11 +339,14 @@ class AnthropicMessagesAdapter:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
         }
-        raw = self.transport.post_json(
+        raw = _post_json_with_retries(
+            self.transport,
             url=f"{base_url}/messages",
             headers=headers,
             payload=payload,
             timeout_seconds=self.timeout_seconds,
+            attempts=self.retry_attempts,
+            delay_seconds=self.retry_delay_seconds,
         )
         text = _extract_anthropic_text(raw)
         usage = raw.get("usage", {})
@@ -350,6 +363,8 @@ class AnthropicMessagesAdapter:
 class GeminiGenerateContentAdapter:
     transport: JsonTransport
     timeout_seconds: int = 60
+    retry_attempts: int = 3
+    retry_delay_seconds: float = 0.25
 
     def generate(
         self,
@@ -375,11 +390,14 @@ class GeminiGenerateContentAdapter:
                 "maxOutputTokens": request.max_tokens,
             },
         }
-        raw = self.transport.post_json(
+        raw = _post_json_with_retries(
+            self.transport,
             url=url,
             headers=headers,
             payload=payload,
             timeout_seconds=self.timeout_seconds,
+            attempts=self.retry_attempts,
+            delay_seconds=self.retry_delay_seconds,
         )
         text = _extract_gemini_text(raw)
         return ModelResponse(
@@ -423,6 +441,47 @@ def _base_url(config: ProviderConfig, profile: ProviderProfile) -> str:
     return base_url.rstrip("/")
 
 
+def _post_json_with_retries(
+    transport: JsonTransport,
+    *,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout_seconds: int,
+    attempts: int,
+    delay_seconds: float,
+) -> dict[str, Any]:
+    total_attempts = max(1, attempts)
+    for attempt_index in range(total_attempts):
+        try:
+            return transport.post_json(
+                url=url,
+                headers=headers,
+                payload=payload,
+                timeout_seconds=timeout_seconds,
+            )
+        except ProviderAdapterError as exc:
+            if attempt_index == total_attempts - 1 or not _is_retryable_provider_error(exc):
+                raise
+            if delay_seconds > 0:
+                sleep(delay_seconds * (2**attempt_index))
+    raise ProviderAdapterError("Provider request failed.")
+
+
+def _is_retryable_provider_error(exc: ProviderAdapterError) -> bool:
+    message = str(exc).casefold()
+    if message.startswith("http 429") or message.startswith("http 5"):
+        return True
+    retryable_fragments = (
+        "timed out",
+        "temporarily unavailable",
+        "connection reset",
+        "connection aborted",
+        "remote end closed",
+    )
+    return any(fragment in message for fragment in retryable_fragments)
+
+
 def _extract_openai_compatible_text(raw: dict[str, Any]) -> str:
     try:
         return str(raw["choices"][0]["message"]["content"])
@@ -438,20 +497,38 @@ def _extract_anthropic_text(raw: dict[str, Any]) -> str:
         raise ProviderAdapterError("Anthropic response did not contain text content.") from exc
     text = "".join(texts).strip()
     if not text:
+        stop_reason = raw.get("stop_reason")
+        if stop_reason:
+            raise ProviderAdapterError(f"Anthropic response was empty: {stop_reason}.")
         raise ProviderAdapterError("Anthropic response text was empty.")
     return text
 
 
 def _extract_gemini_text(raw: dict[str, Any]) -> str:
+    finish_reason = _gemini_finish_reason(raw)
     try:
         parts = raw["candidates"][0]["content"]["parts"]
         texts = [part.get("text", "") for part in parts]
     except (KeyError, IndexError, TypeError) as exc:
+        if finish_reason:
+            raise ProviderAdapterError(
+                f"Gemini response stopped before text: {finish_reason}."
+            ) from exc
         raise ProviderAdapterError("Gemini response did not contain text content.") from exc
     text = "".join(texts).strip()
     if not text:
+        if finish_reason:
+            raise ProviderAdapterError(f"Gemini response was empty: {finish_reason}.")
         raise ProviderAdapterError("Gemini response text was empty.")
     return text
+
+
+def _gemini_finish_reason(raw: dict[str, Any]) -> str:
+    try:
+        reason = raw["candidates"][0].get("finishReason", "")
+    except (KeyError, IndexError, TypeError):
+        return ""
+    return str(reason).strip()
 
 
 def _anthropic_messages(messages: list[ModelMessage]) -> list[dict[str, str]]:

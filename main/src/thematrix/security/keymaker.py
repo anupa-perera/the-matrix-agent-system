@@ -45,11 +45,17 @@ class KeyringSecretStore:
 
     def get_secret(self, secret_ref: str) -> str | None:
         username = _strip_ref_prefix(secret_ref, "keyring")
-        return self._keyring.get_password(self.service_name, username)
+        try:
+            return self._keyring.get_password(self.service_name, username)
+        except Exception as exc:
+            raise SecretStoreError(f"Keyring could not read `{username}`: {exc}") from exc
 
     def set_secret(self, secret_ref: str, value: str) -> None:
         username = _strip_ref_prefix(secret_ref, "keyring")
-        self._keyring.set_password(self.service_name, username, value)
+        try:
+            self._keyring.set_password(self.service_name, username, value)
+        except Exception as exc:
+            raise SecretStoreError(f"Keyring could not store `{username}`: {exc}") from exc
 
     def delete_secret(self, secret_ref: str) -> None:
         username = _strip_ref_prefix(secret_ref, "keyring")
@@ -57,6 +63,8 @@ class KeyringSecretStore:
             self._keyring.delete_password(self.service_name, username)
         except self._keyring.errors.PasswordDeleteError:
             return
+        except Exception as exc:
+            raise SecretStoreError(f"Keyring could not delete `{username}`: {exc}") from exc
 
 
 class EnvironmentSecretStore:
@@ -128,13 +136,23 @@ class Keymaker:
         if not api_key.strip():
             raise SecretStoreError("API key cannot be empty.")
         secret_ref = self.api_key_ref(provider_id)
-        self.store.set_secret(secret_ref, api_key.strip())
+        try:
+            self.store.set_secret(secret_ref, api_key.strip())
+        except SecretStoreError:
+            raise
+        except Exception as exc:
+            raise SecretStoreError(f"Secret store could not save the API key: {exc}") from exc
         return SecretRecord(secret_ref=secret_ref, backend_name=self.store.backend_name)
 
     def resolve_api_key(self, secret_ref: str | None) -> str | None:
         if secret_ref is None:
             return None
-        return self.store.get_secret(secret_ref)
+        try:
+            return self.store.get_secret(secret_ref)
+        except SecretStoreError:
+            raise
+        except Exception as exc:
+            raise SecretStoreError(f"Secret store could not read the API key: {exc}") from exc
 
     @staticmethod
     def env_var_name(provider_id: str) -> str:

@@ -402,9 +402,10 @@ def test_setup_ui_server_openrouter_oauth_callback_saves_form(tmp_path, monkeypa
     callback_url = auth_query["callback_url"][0]
     callback_query = parse_qs(urlparse(callback_url).query)
     flow_id = callback_query["flow"][0]
+    state = callback_query["state"][0]
     assert "token" not in callback_query
 
-    callback_query_text = urlencode({"flow": flow_id, "code": "provider-code"})
+    callback_query_text = urlencode({"flow": flow_id, "state": state, "code": "provider-code"})
     with urlopen(
         f"http://{parsed.netloc}/oauth/openrouter/callback?{callback_query_text}",
         timeout=5,
@@ -422,6 +423,105 @@ def test_setup_ui_server_openrouter_oauth_callback_saves_form(tmp_path, monkeypa
     assert "sk-oauth-callback" not in (paths.vault / "log.md").read_text(encoding="utf-8")
 
     with urlopen(f"http://{parsed.netloc}/dashboard?token={token}", timeout=5):
+        pass
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_setup_ui_rejects_oauth_callback_without_valid_state(tmp_path, monkeypatch) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    keymaker = Keymaker(InMemorySecretStore())
+    captured_url: list[str] = []
+    ready = Event()
+
+    monkeypatch.setattr(
+        "thematrix.ui.setup_server.exchange_openrouter_code",
+        lambda code, verifier: "sk-oauth-callback",
+    )
+
+    def run_server() -> None:
+        serve_setup_ui(
+            paths,
+            vault,
+            store,
+            port=0,
+            open_browser=False,
+            keymaker_factory=lambda: keymaker,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+    token = parse_qs(parsed.query)["token"][0]
+
+    import http.client
+
+    start_query = urlencode(
+        {
+            "token": token,
+            "provider_id": "openrouter",
+            "model": "openai/gpt-5-mini",
+            "auth_mode": "oauth",
+            "privacy_mode": "ask_each_time",
+            "file_change_consent": "ask_each_time",
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+    )
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    conn.request("GET", f"/oauth/openrouter/start?{start_query}")
+    response = conn.getresponse()
+    location = response.getheader("Location")
+    set_cookie = response.getheader("Set-Cookie")
+    response.read()
+    conn.close()
+    assert response.status == 302
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=Strict" in set_cookie
+    assert location is not None
+
+    auth_query = parse_qs(urlparse(location).query)
+    callback_query = parse_qs(urlparse(auth_query["callback_url"][0]).query)
+    flow_id = callback_query["flow"][0]
+    callback_query_text = urlencode({"flow": flow_id, "state": "wrong", "code": "provider-code"})
+    try:
+        urlopen(
+            f"http://{parsed.netloc}/oauth/openrouter/callback?{callback_query_text}",
+            timeout=5,
+        )
+    except HTTPError as exc:
+        assert exc.code == 403
+    else:
+        raise AssertionError("OAuth callback accepted a forged state.")
+
+    assert store.get_default_provider_config() is None
+
+    payload = urlencode(
+        {
+            "provider_id": "ollama",
+            "model": "llama3.2",
+            "auth_mode": "none",
+            "privacy_mode": "local_only",
+            "file_change_consent": "ask_each_time",
+        }
+    ).encode("utf-8")
+    with urlopen(
+        Request(
+            f"http://{parsed.netloc}/save?{parsed.query}",
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        ),
+        timeout=5,
+    ):
+        pass
+    with urlopen(f"http://{parsed.netloc}/dashboard?{parsed.query}", timeout=5):
         pass
     thread.join(timeout=5)
     assert not thread.is_alive()

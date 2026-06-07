@@ -3,7 +3,7 @@ import re
 from threading import Event, Thread
 from time import sleep
 from urllib.error import HTTPError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from thematrix.config import MatrixPaths
@@ -476,6 +476,86 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
 
     thread.join(timeout=5)
     assert "App stopped" in shutdown_body
+    assert not thread.is_alive()
+
+
+def test_app_ui_rejects_oauth_callback_without_valid_state(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    vault = MemoryVault(paths.vault)
+    store = RuntimeStore(paths.runtime_db)
+    vault.initialize()
+    store.initialize()
+    captured_url: list[str] = []
+    ready = Event()
+
+    def run_server() -> None:
+        serve_app_ui(
+            paths,
+            vault,
+            store,
+            request_runner=lambda request: _run_result(request),
+            port=0,
+            open_browser=False,
+            url_callback=lambda url: (captured_url.append(url), ready.set()),
+            timeout_seconds=30,
+        )
+
+    thread = Thread(target=run_server, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=5)
+    parsed = urlparse(captured_url[0])
+    token = parse_qs(parsed.query)["token"][0]
+
+    import http.client
+
+    start_query = urlencode(
+        {
+            "token": token,
+            "provider_id": "openrouter",
+            "model": "openai/gpt-5-mini",
+            "auth_mode": "oauth",
+            "privacy_mode": "ask_each_time",
+            "file_change_consent": "ask_each_time",
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+    )
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    conn.request("GET", f"/oauth/openrouter/start?{start_query}")
+    response = conn.getresponse()
+    location = response.getheader("Location")
+    set_cookie = response.getheader("Set-Cookie")
+    response.read()
+    conn.close()
+    assert response.status == 302
+    assert response.getheader("Referrer-Policy") == "no-referrer"
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=Strict" in set_cookie
+    assert location is not None
+
+    auth_query = parse_qs(urlparse(location).query)
+    callback_query = parse_qs(urlparse(auth_query["callback_url"][0]).query)
+    flow_id = callback_query["flow"][0]
+    callback_query_text = urlencode({"flow": flow_id, "state": "wrong", "code": "provider-code"})
+    try:
+        urlopen(
+            f"http://{parsed.netloc}/oauth/openrouter/callback?{callback_query_text}",
+            timeout=5,
+        )
+    except HTTPError as exc:
+        assert exc.code == 403
+    else:
+        raise AssertionError("OAuth callback accepted a forged state.")
+
+    assert store.get_default_provider_config() is None
+
+    shutdown_request = Request(
+        f"http://{parsed.netloc}/shutdown?{parsed.query}",
+        data=b"",
+        method="POST",
+    )
+    with urlopen(shutdown_request, timeout=5):
+        pass
+    thread.join(timeout=5)
     assert not thread.is_alive()
 
 

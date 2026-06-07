@@ -31,6 +31,7 @@ class OAuthPendingSetup:
     guarded_shell_enabled: bool
     test_provider: bool
     code_verifier: str
+    callback_state: str
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ def start_openrouter_oauth(callback_url: str, flow_id: str | None = None) -> OAu
 
 def build_openrouter_oauth_setup(
     form: dict[str, str],
-    callback_url_for_flow: Callable[[str], str],
+    callback_url_for_flow: Callable[[str, str], str],
 ) -> tuple[OAuthStart, OAuthPendingSetup]:
     profile = next(
         (item for item in provider_catalog() if item.provider_id == OPENROUTER_PROVIDER_ID),
@@ -91,7 +92,11 @@ def build_openrouter_oauth_setup(
     except ValueError as exc:
         raise OAuthProviderError("Choose valid safety settings.") from exc
     flow_id = create_oauth_flow_id()
-    start = start_openrouter_oauth(callback_url_for_flow(flow_id), flow_id=flow_id)
+    callback_state = token_urlsafe(24)
+    start = start_openrouter_oauth(
+        callback_url_for_flow(flow_id, callback_state),
+        flow_id=flow_id,
+    )
     selected_model = form.get("model", "").strip() or (
         profile.suggested_models[0] if profile.suggested_models else "default"
     )
@@ -104,6 +109,7 @@ def build_openrouter_oauth_setup(
         guarded_shell_enabled=form.get("guarded_shell_enabled") == "on",
         test_provider=form.get("test_provider") == "on",
         code_verifier=start.code_verifier,
+        callback_state=callback_state,
     )
     return start, pending
 
@@ -139,8 +145,15 @@ def exchange_openrouter_code(code: str, code_verifier: str) -> str:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+    except OSError as exc:
+        raise OAuthProviderError(f"OpenRouter token exchange failed: {exc}") from exc
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise OAuthProviderError("OpenRouter returned invalid JSON during sign-in.") from exc
     key = payload.get("key")
     if not isinstance(key, str) or not key.strip():
         raise OAuthProviderError("OpenRouter did not return an API key.")

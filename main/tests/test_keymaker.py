@@ -20,3 +20,24 @@ def test_environment_store_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None
     with pytest.raises(SecretStoreError):
         keymaker.store_api_key("openai", "sk-test")
 
+
+def test_keymaker_wraps_unexpected_store_errors() -> None:
+    class BrokenStore:
+        backend_name = "broken"
+        can_write = True
+
+        def get_secret(self, secret_ref: str) -> str | None:
+            raise RuntimeError("locked")
+
+        def set_secret(self, secret_ref: str, value: str) -> None:
+            raise RuntimeError("locked")
+
+        def delete_secret(self, secret_ref: str) -> None:
+            raise RuntimeError("locked")
+
+    keymaker = Keymaker(BrokenStore())
+
+    with pytest.raises(SecretStoreError, match="could not save"):
+        keymaker.store_api_key("openai", "sk-test")
+    with pytest.raises(SecretStoreError, match="could not read"):
+        keymaker.resolve_api_key("broken:provider:openai:api_key")

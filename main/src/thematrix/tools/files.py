@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import BaseModel
 
@@ -40,11 +41,8 @@ class FileToolResult(BaseModel):
 class FilePolicy:
     """Guard file reads and writes to the current workspace boundary."""
 
-    blocked_path_fragments = [
+    blocked_names: ClassVar[tuple[str, ...]] = (
         ".env",
-        ".pem",
-        ".p12",
-        ".pfx",
         ".ssh",
         "id_rsa",
         "id_dsa",
@@ -53,21 +51,28 @@ class FilePolicy:
         "secret",
         "api_key",
         "runtime.sqlite",
-    ]
+    )
+    blocked_suffixes: ClassVar[tuple[str, ...]] = (".pem", ".p12", ".pfx")
 
     def __init__(self, root: Path):
         self.root = root.resolve()
 
     def review(self, path: str, operation: FileOperation) -> FileReview:
-        resolved = self._resolve(path)
+        candidate = self._candidate(path)
+        resolved = candidate.resolve()
         if not resolved.is_relative_to(self.root):
             return FileReview(
                 decision=FileDecision.BLOCK,
                 reason="File path is outside the allowed workspace.",
                 resolved_path=str(resolved),
             )
-        lowered = str(resolved).lower()
-        if any(fragment in lowered for fragment in self.blocked_path_fragments):
+        if self._has_symlink_component(candidate):
+            return FileReview(
+                decision=FileDecision.BLOCK,
+                reason="File path crosses a symlink and cannot be accessed by an agent.",
+                resolved_path=str(resolved),
+            )
+        if self._looks_sensitive(candidate):
             return FileReview(
                 decision=FileDecision.BLOCK,
                 reason="File path looks sensitive and cannot be accessed by an agent.",
@@ -85,11 +90,40 @@ class FilePolicy:
             resolved_path=str(resolved),
         )
 
-    def _resolve(self, path: str) -> Path:
+    def _candidate(self, path: str) -> Path:
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = self.root / candidate
-        return candidate.resolve()
+        return candidate.absolute()
+
+    def _has_symlink_component(self, candidate: Path) -> bool:
+        try:
+            relative = candidate.relative_to(self.root)
+        except ValueError:
+            return False
+        current = self.root
+        for part in relative.parts:
+            if part in {"", ".", ".."}:
+                continue
+            current = current / part
+            if current.is_symlink():
+                return True
+        return False
+
+    def _looks_sensitive(self, candidate: Path) -> bool:
+        try:
+            parts = candidate.relative_to(self.root).parts
+        except ValueError:
+            parts = candidate.parts
+        for part in parts:
+            name = part.casefold()
+            suffixes = tuple(suffix.casefold() for suffix in Path(name).suffixes)
+            stem = Path(name).stem.casefold()
+            if name in self.blocked_names or stem in self.blocked_names:
+                return True
+            if any(suffix in self.blocked_suffixes for suffix in suffixes):
+                return True
+        return False
 
 
 class FileExecutor:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from time import sleep
 
 from thematrix.memory import RuntimeStore
 from thematrix.operator import TheOperator
@@ -157,3 +158,23 @@ def test_operator_tracks_one_shot_goal_completion_and_failure(tmp_path) -> None:
     assert failed.status == OperatorGoalStatus.FAILED
     assert failed.failure_count == 1
     assert len(store.list_operator_goal_runs(goal.goal_id)) == 1
+
+
+def test_operator_scheduler_logs_store_failures(tmp_path, caplog) -> None:
+    class FailingStore(RuntimeStore):
+        def list_due_operator_goals(self, now, limit: int = 20):
+            raise RuntimeError("store unavailable")
+
+    caplog.set_level("ERROR")
+    operator = TheOperator(
+        FailingStore(tmp_path / "runtime.sqlite"),
+        notifier=FakeNotifier(),
+        tick_seconds=0.01,
+    )
+
+    operator.start()
+    sleep(0.05)
+    operator.stop()
+
+    assert "Operator scheduler failed" in caplog.text
+    assert "store unavailable" in caplog.text
