@@ -145,25 +145,22 @@ This release packages the local-first Matrix-inspired agent framework for normal
 
 ### What's New
 
-- Browser missions now open a live status cockpit instead of leaving users on a waiting form.
-- Ask the Oracle now starts immediately and streams the answer in a Matrix-style transmission.
-- Oracle answers now use a warmer, more human plain-language tone.
-- Dashboard navigation now puts Ask the Oracle before Mission Console for read-only questions first.
-- Slow app actions now show immediate Matrix-style working feedback instead of looking idle.
-- Run Mission now pauses for missing details and opens a clarification popup before launch.
-- Dashboard now has a Needs You queue for clarifications, approvals, and Operator activations.
-- Pending approvals can be approved or denied directly from Needs You or Recent Missions.
-- Ask the Oracle is a dedicated read-only Q&A surface that does not launch missions.
-- The Matrix can summarize the clarification transcript into the mission brief automatically.
-- The Operator can draft, activate, pause, resume, and run local recurring notification goals.
-- Mission detail pages show the timeline, task ledger, final result, and links from recent missions.
-- Completed mission pages now route `Ask This Agent` back to the reusable agent that handled the mission.
-- Browser help stays focused on app actions instead of terminal commands.
+- Recurring requests now start automatically: ask once and The Operator schedules and runs the goal without a manual activation step.
+- New recurring missions: The Operator can run full agent tasks on a schedule, not just desktop notifications, with Neo's safety review on every run.
+- Recurring requests understand more phrasing: numeric intervals, `hourly`, `daily`, `weekly`, `every morning`, and `set up a recurring task to ...`.
+- Agents now work in an iterative tool loop, reacting to tool results with more tool calls instead of a single fixed pass.
+- Agents gained `notify` and `schedule` tools, so they can send desktop notifications and set up recurring goals themselves mid-mission.
+- Recurring goals auto-pause after repeated failures, and the number of open recurring goals is capped for safety.
+- Recurring goal editing in the browser now covers recurring missions and intervals up to 7 days.
+- Set the `operator_auto_activate` preference to false to return to review-first goal activation.
+
+### Previously Added
+
+- Browser missions open a live status cockpit, and Ask the Oracle streams read-only answers.
+- Run Mission pauses for missing details and opens a clarification popup before launch.
+- The dashboard Needs You queue collects clarifications, approvals, and Operator activations.
 - Reusable agents can be run, edited in plain language, paused, resumed, and excluded from future reuse.
-- OpenAI Codex provider support for users signed in through the official Codex app or CLI.
-- OpenAI API remains API-key based, while Codex subscription access stays in the Codex client.
-- Onboarding and setup guides now explain OpenAI Codex, browser sign-in, API-key, and local model options more clearly.
-- Windows shortcuts now use a branded Matrix icon instead of the default command-window icon.
+- Provider support covers OpenRouter, OpenAI, Anthropic, Gemini, Mistral, local models, and OpenAI Codex sign-in.
 
 ### Easiest Windows Install
 

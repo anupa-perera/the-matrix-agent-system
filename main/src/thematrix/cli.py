@@ -36,7 +36,7 @@ from thematrix.schemas import (
     ReasoningEffort,
 )
 from thematrix.security import Keymaker, SecretStoreError
-from thematrix.tools import FileExecutor, ShellExecutor
+from thematrix.tools import DesktopNotifier, FileExecutor, NotificationResult, ShellExecutor
 from thematrix.ui import serve_app_ui, serve_setup_ui, write_dashboard
 
 app = typer.Typer(help="The Matrix Agent System CLI.")
@@ -447,10 +447,37 @@ def cancel_operator_goal(goal_id: Annotated[str, typer.Argument(help="Operator g
 @operator_app.command("run-now")
 def run_operator_goal_now(goal_id: Annotated[str, typer.Argument(help="Operator goal id.")]) -> None:
     """Run an Operator goal immediately."""
-    _, store = bootstrap(MatrixPaths())
-    goal = TheOperator(store).run_goal_now(goal_id)
+    paths = MatrixPaths()
+    vault, store = bootstrap(paths)
+    operator = TheOperator(store)
+    operator.attach_mission_launcher(
+        lambda goal: _cli_mission_launcher(paths, vault, store, goal)
+    )
+    goal = operator.run_goal_now(goal_id)
     typer.echo(f"Operator goal run recorded: {goal.goal_id}")
     typer.echo(goal.last_result)
+
+
+def _cli_mission_launcher(
+    paths: MatrixPaths,
+    vault: MemoryVault,
+    store: RuntimeStore,
+    goal,
+) -> NotificationResult:
+    """Run a recurring mission goal synchronously through the normal runtime."""
+    provider_config = store.get_default_provider_config()
+    _, runtime = _build_runtime(paths, vault, store, provider_config)
+    request = str(goal.payload.get("mission_request") or goal.original_request)
+    result = runtime.run(
+        request,
+        privacy_mode=_default_privacy_mode(store),
+        provider_config=provider_config,
+    )
+    execution_status = str(result.metadata.get("agent_execution_status", "unknown"))
+    return NotificationResult(
+        ok=execution_status != "error",
+        message=f"Recurring mission ran ({execution_status}): {result.run_id}",
+    )
 
 
 def _build_runtime(
@@ -494,6 +521,8 @@ def _build_runtime(
                     else FileChangeConsent.ASK_EACH_TIME
                 ),
             ),
+            notifier=DesktopNotifier(),
+            scheduler=TheOperator(store),
         ),
     )
     return oracle, runtime

@@ -109,6 +109,7 @@ class TaskStatus(StrEnum):
 class OperatorGoalKind(StrEnum):
     ONE_SHOT = "one_shot"
     RECURRING_NOTIFICATION = "recurring_notification"
+    RECURRING_MISSION = "recurring_mission"
 
 
 class OperatorGoalStatus(StrEnum):

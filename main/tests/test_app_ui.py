@@ -286,7 +286,7 @@ def test_operator_goal_detail_explains_pending_recurring_goal(tmp_path) -> None:
     _assert_matrix_background(html)
     assert "Operator Goal" in html
     assert "Nothing recurring will happen until you activate this goal." in html
-    assert "After activation" in html
+    assert "While active" in html
     assert "every 5 minute(s)" in html
     assert "It will not read files, run shell commands, control apps" in html
     assert "Alter Recurring Goal" in html
@@ -384,14 +384,14 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
     with urlopen(operator_request, timeout=5) as response:
         operator_body = response.read().decode("utf-8")
 
-    assert "The Operator drafted a recurring goal" in operator_body
-    assert "Open The Operator to review" in operator_body
+    assert "The Operator activated a recurring notification" in operator_body
+    assert "Open The Operator to pause, edit, or cancel it." in operator_body
     assert "The Operator" in operator_body
     assert requests == ["Build a tiny helper"]
     assert len(store.list_operator_goals()) == 2
-    pending_goals = [goal for goal in store.list_operator_goals() if goal.title == "stretching"]
-    assert pending_goals[0].status == OperatorGoalStatus.PENDING
-    assert pending_goals[0].next_run_at is None
+    recurring_goals = [goal for goal in store.list_operator_goals() if goal.title == "stretching"]
+    assert recurring_goals[0].status == OperatorGoalStatus.ACTIVE
+    assert recurring_goals[0].next_run_at is not None
 
     with urlopen(f"http://{parsed.netloc}/operator?{parsed.query}", timeout=5) as response:
         operator_page_body = response.read().decode("utf-8")
@@ -401,7 +401,7 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
         f"http://{parsed.netloc}/operator/update?{parsed.query}",
         data=urlencode(
             {
-                "goal_id": pending_goals[0].goal_id,
+                "goal_id": recurring_goals[0].goal_id,
                 "title": "Stretch reminder",
                 "message": "Stretch shoulders",
                 "interval_minutes": "15",
@@ -414,30 +414,30 @@ def test_app_ui_server_runs_browser_request(tmp_path) -> None:
         updated_goal_body = response.read().decode("utf-8")
 
     assert "Operator goal updated." in updated_goal_body
-    updated_pending = store.get_operator_goal(pending_goals[0].goal_id)
-    assert updated_pending.title == "Stretch reminder"
-    assert updated_pending.payload["message"] == "Stretch shoulders"
-    assert updated_pending.schedule.interval_minutes == 15
-    assert updated_pending.status == OperatorGoalStatus.PENDING
+    updated_goal = store.get_operator_goal(recurring_goals[0].goal_id)
+    assert updated_goal.title == "Stretch reminder"
+    assert updated_goal.payload["message"] == "Stretch shoulders"
+    assert updated_goal.schedule.interval_minutes == 15
+    assert updated_goal.status == OperatorGoalStatus.ACTIVE
 
-    activate_request = Request(
+    pause_request = Request(
         f"http://{parsed.netloc}/operator/action?{parsed.query}",
         data=urlencode(
             {
-                "goal_id": pending_goals[0].goal_id,
-                "action": "activate",
+                "goal_id": recurring_goals[0].goal_id,
+                "action": "pause",
                 "return_to": "dashboard",
             }
         ).encode("utf-8"),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urlopen(activate_request, timeout=5) as response:
-        activated_body = response.read().decode("utf-8")
+    with urlopen(pause_request, timeout=5) as response:
+        paused_body = response.read().decode("utf-8")
 
-    assert "The Matrix Dashboard" in activated_body
-    assert "Needs You" in activated_body
-    assert store.get_operator_goal(pending_goals[0].goal_id).status == OperatorGoalStatus.ACTIVE
+    assert "The Matrix Dashboard" in paused_body
+    assert "Needs You" in paused_body
+    assert store.get_operator_goal(recurring_goals[0].goal_id).status == OperatorGoalStatus.PAUSED
 
     with urlopen(f"http://{parsed.netloc}/settings?{parsed.query}", timeout=5) as response:
         settings_body = response.read().decode("utf-8")

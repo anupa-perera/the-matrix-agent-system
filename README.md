@@ -34,7 +34,7 @@ The Matrix gives you a local control center for agent work.
 - The system checks the request for safety.
 - It designs the right kind of agent for the job.
 - It asks before risky actions such as changing files.
-- It can hand recurring goals to The Operator after you review and activate them.
+- It hands recurring goals to The Operator, which schedules and runs them automatically while the app is open.
 - It writes readable memory notes to your own computer.
 - It keeps API keys out of notes, logs, and the database.
 
@@ -171,7 +171,7 @@ Plan a safe step-by-step workflow for organizing my notes.
 Send me a desktop notification every 5 minutes to check the build.
 ```
 
-Recurring requests are drafted by **The Operator** first. You can inspect the goal, then activate it from the same browser page. The Operator only runs scheduled goals while the local app is open.
+Recurring requests are scheduled by **The Operator** and start automatically. Recurring notifications fire on the interval you asked for, and recurring missions run the full agent flow on schedule, including Neo's safety review on every run. You can pause, edit, or cancel any goal from The Operator page. Agents can also schedule recurring goals themselves mid-mission when your request calls for follow-up work. The Operator only runs scheduled goals while the local app is open. To go back to review-first behavior, set the `operator_auto_activate` preference to false.
 
 If a request needs file changes, shell commands, or sensitive actions, The Matrix should ask before proceeding.
 

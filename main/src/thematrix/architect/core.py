@@ -406,16 +406,24 @@ class Architect:
         proposed: list[str] | None = None,
     ) -> list[str]:
         allowed = {
-            "builder": ["file_read", "file_write", "shell_guarded", "memory_read", "provider_call"],
-            "researcher": ["memory_read", "provider_call"],
-            "sentinel": ["memory_read", "security_policy_read", "provider_call"],
-            "operator": ["memory_read", "provider_call"],
+            "builder": [
+                "file_read",
+                "file_write",
+                "shell_guarded",
+                "memory_read",
+                "provider_call",
+                "notify_desktop",
+                "operator_schedule",
+            ],
+            "researcher": ["memory_read", "provider_call", "notify_desktop", "operator_schedule"],
+            "sentinel": ["memory_read", "security_policy_read", "provider_call", "notify_desktop"],
+            "operator": ["memory_read", "provider_call", "notify_desktop", "operator_schedule"],
         }
         defaults = {
             "builder": ["file_read", "file_write", "shell_guarded"],
             "researcher": ["memory_read", "provider_call"],
             "sentinel": ["memory_read", "security_policy_read"],
-            "operator": ["memory_read"],
+            "operator": ["memory_read", "notify_desktop", "operator_schedule"],
         }
         proposed_tools = [
             tool

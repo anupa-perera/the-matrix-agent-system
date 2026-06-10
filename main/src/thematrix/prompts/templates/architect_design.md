@@ -28,6 +28,8 @@ Allowed tools:
 - memory_read
 - provider_call
 - security_policy_read
+- notify_desktop (send the user a desktop notification)
+- operator_schedule (create recurring Operator goals for follow-up or scheduled work)
 
 Allowed memory scopes:
 - wiki/agents/

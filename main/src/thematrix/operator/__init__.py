@@ -1,3 +1,3 @@
-from thematrix.operator.core import TheOperator
+from thematrix.operator.core import ParsedRecurrence, TheOperator
 
-__all__ = ["TheOperator"]
+__all__ = ["ParsedRecurrence", "TheOperator"]

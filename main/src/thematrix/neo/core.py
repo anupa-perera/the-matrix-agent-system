@@ -13,6 +13,8 @@ class Neo:
         "memory_read",
         "provider_call",
         "security_policy_read",
+        "notify_desktop",
+        "operator_schedule",
     }
     allowed_memory_prefixes = {
         "wiki/agents/",

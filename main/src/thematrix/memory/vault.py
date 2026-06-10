@@ -180,7 +180,9 @@ class MemoryVault:
         sections = [f"# Tool Outputs: {run_id}\n"]
         for index, result in enumerate(results, start=1):
             payload = result.model_dump()
-            command_or_path = payload.get("command") or payload.get("path", "unknown")
+            command_or_path = (
+                payload.get("command") or payload.get("path") or payload.get("target") or "unknown"
+            )
             exit_code = payload.get("exit_code", "none")
             stdout = payload.get("stdout") or payload.get("content", "")
             stderr = payload.get("stderr", "")

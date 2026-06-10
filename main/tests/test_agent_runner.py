@@ -3,11 +3,21 @@ from __future__ import annotations
 from thematrix.architect import Architect
 from thematrix.memory import MemoryVault, RuntimeStore
 from thematrix.neo import Neo
+from thematrix.operator import TheOperator
 from thematrix.oracle import Oracle
 from thematrix.prompts import PromptLibrary
 from thematrix.runtime import AgentRunner, Nebuchadnezzar
-from thematrix.schemas import AuthMode, ModelRequest, ModelResponse, PrivacyMode, ProviderConfig
-from thematrix.tools import FileExecutor, ShellExecutor
+from thematrix.schemas import (
+    AgentSpec,
+    AuthMode,
+    ModelRequest,
+    ModelResponse,
+    OperatorGoalKind,
+    OperatorGoalStatus,
+    PrivacyMode,
+    ProviderConfig,
+)
+from thematrix.tools import FileExecutor, NotificationResult, ShellExecutor
 
 
 class FakeGateway:
@@ -374,6 +384,177 @@ def test_runtime_blocks_when_agent_needs_user_input(tmp_path) -> None:
     # The mission stops after the blocked task instead of cascading.
     assert tasks[1].status.value == "pending"
     assert len(gateway.requests) == 1
+
+
+def test_agent_runner_loops_through_multiple_tool_rounds(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    (tmp_path / "notes.md").write_text("local note", encoding="utf-8")
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent"),
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+    gateway = FakeGateway(
+        [
+            '{"response":"Check Python first.","tool_requests":'
+            '[{"kind":"shell","command":"python --version","purpose":"Check Python"}]}',
+            '{"response":"Now read the note.","tool_requests":'
+            '[{"kind":"file_read","path":"notes.md","purpose":"Read the note"}]}',
+            '{"status":"completed","summary":"Checked Python and read the note.",'
+            '"open_questions":[]}',
+        ]
+    )
+
+    execution = AgentRunner(
+        gateway,
+        prompt_library,
+        shell_executor=ShellExecutor(cwd=tmp_path),
+        file_executor=FileExecutor(tmp_path),
+    ).run(
+        spec,
+        Oracle().assess("Build a planning agent"),
+        "Build a planning agent",
+    )
+
+    assert execution.executed
+    assert execution.response == "Checked Python and read the note."
+    assert execution.tool_results is not None
+    assert len(execution.tool_results) == 2
+    assert len(gateway.requests) == 3
+    assert "Tool round 1" in gateway.requests[1].messages[0].content
+    assert "Tool round 2" in gateway.requests[2].messages[0].content
+
+
+def test_agent_runner_stops_when_tool_batch_repeats(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent"),
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+    # The gateway keeps returning the same tool request forever.
+    gateway = FakeGateway(
+        '{"response":"Check Python.","tool_requests":'
+        '[{"kind":"shell","command":"python --version","purpose":"Check Python"}]}'
+    )
+
+    execution = AgentRunner(
+        gateway,
+        prompt_library,
+        shell_executor=ShellExecutor(cwd=tmp_path),
+    ).run(
+        spec,
+        Oracle().assess("Build a planning agent"),
+        "Build a planning agent",
+    )
+
+    assert execution.executed
+    assert execution.tool_results is not None
+    assert len(execution.tool_results) == 1
+    # One planning round, one repeated round, one forced final answer.
+    assert len(gateway.requests) == 3
+
+
+def test_agent_runner_schedules_recurring_goal_through_operator(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    spec = AgentSpec(
+        agent_id="operator-scheduler-test",
+        agent_type="operator",
+        purpose="Coordinate recurring follow-up work.",
+        tools_allowed=["memory_read", "notify_desktop", "operator_schedule"],
+        prompt_block_refs=["agent-blueprint-operator-scheduler-test"],
+    )
+    gateway = FakeGateway(
+        [
+            '{"response":"The user wants an hourly check.","tool_requests":'
+            '[{"kind":"schedule","mission":"Check disk space and tidy temp files",'
+            '"interval_minutes":60,"purpose":"User asked for hourly cleanup"}]}',
+            '{"status":"completed","summary":"Scheduled the hourly disk check.",'
+            '"open_questions":[]}',
+        ]
+    )
+
+    class FakeNotifier:
+        def send(self, title: str, message: str) -> NotificationResult:
+            return NotificationResult(ok=True, message="sent")
+
+    execution = AgentRunner(
+        gateway,
+        prompt_library,
+        notifier=FakeNotifier(),
+        scheduler=TheOperator(store, notifier=FakeNotifier()),
+    ).run(
+        spec,
+        Oracle().assess("Check disk space every hour"),
+        "Check disk space every hour",
+    )
+
+    assert execution.executed
+    assert execution.response == "Scheduled the hourly disk check."
+    assert execution.tool_results is not None
+    assert execution.tool_results[0].executed
+    assert execution.tool_results[0].operation == "schedule"
+    goals = store.list_operator_goals()
+    assert len(goals) == 1
+    assert goals[0].kind == OperatorGoalKind.RECURRING_MISSION
+    assert goals[0].status == OperatorGoalStatus.ACTIVE
+    assert goals[0].schedule is not None
+    assert goals[0].schedule.interval_minutes == 60
+    assert goals[0].payload["mission_request"] == "Check disk space and tidy temp files"
+
+
+def test_agent_runner_blocks_schedule_tool_without_permission(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    spec = AgentSpec(
+        agent_id="operator-no-schedule-test",
+        agent_type="operator",
+        purpose="Coordinate a simple request.",
+        tools_allowed=["memory_read"],
+        prompt_block_refs=["agent-blueprint-operator-no-schedule-test"],
+    )
+    gateway = FakeGateway(
+        [
+            '{"response":"Trying to schedule.","tool_requests":'
+            '[{"kind":"schedule","mission":"Check disk","interval_minutes":60,'
+            '"purpose":"test"}]}',
+            '{"status":"blocked","summary":"Scheduling is not allowed for this agent.",'
+            '"open_questions":[]}',
+        ]
+    )
+
+    execution = AgentRunner(
+        gateway,
+        prompt_library,
+        scheduler=TheOperator(store),
+    ).run(
+        spec,
+        Oracle().assess("Check disk space every hour"),
+        "Check disk space every hour",
+    )
+
+    assert execution.executed
+    assert execution.tool_results is not None
+    assert not execution.tool_results[0].executed
+    assert "does not allow operator_schedule" in execution.tool_results[0].reason
+    assert store.list_operator_goals() == []
 
 
 def test_agent_runner_returns_error_result_when_gateway_fails(tmp_path) -> None:

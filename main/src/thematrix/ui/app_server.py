@@ -36,10 +36,12 @@ from thematrix.schemas import (
     ClarifyingQuestion,
     MatrixRunResult,
     MissionTask,
+    OperatorGoal,
     OperatorGoalKind,
     OperatorGoalStatus,
 )
 from thematrix.security import Keymaker
+from thematrix.tools import NotificationResult
 from thematrix.ui.dashboard import render_dashboard_html, write_dashboard
 from thematrix.ui.matrix_background import (
     matrix_background_canvas,
@@ -490,6 +492,39 @@ def serve_app_ui(
     approval_registry = ApprovalRegistry()
     active_operator = operator or TheOperator(store)
     active_clarifier = clarifier or ClarificationService(store, default_model_gateway(store))
+
+    def _operator_mission_launcher(goal: OperatorGoal) -> NotificationResult:
+        request = str(goal.payload.get("mission_request") or goal.original_request)
+        if not run_lock.acquire(blocking=False):
+            return NotificationResult(
+                ok=False,
+                message="Skipped this run because another mission is already running.",
+            )
+        try:
+            job = mission_registry.create("mission", request)
+            Thread(
+                target=_run_background_mission,
+                args=(
+                    job,
+                    request_runner,
+                    request,
+                    run_lock,
+                    approval_registry,
+                    active_operator,
+                    goal.goal_id,
+                ),
+                kwargs={"recurring": True},
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            run_lock.release()
+            return NotificationResult(
+                ok=False,
+                message=f"Recurring mission failed to start: {exc}",
+            )
+        return NotificationResult(ok=True, message=f"Recurring mission started: {request[:120]}")
+
+    active_operator.attach_mission_launcher(_operator_mission_launcher)
     active_operator.start()
     server = _AppServer(
         ("127.0.0.1", port),
@@ -1215,7 +1250,7 @@ def _handler_factory(
                 goal_id = form.get("goal_id", "").strip()
                 try:
                     interval_minutes = int(form.get("interval_minutes", "0"))
-                    updated = operator.update_recurring_notification_goal(
+                    updated = operator.update_recurring_goal(
                         goal_id,
                         title=form.get("title", ""),
                         message=form.get("message", ""),
@@ -1611,18 +1646,34 @@ def _handler_factory(
             operator_goal = operator.create_from_request(launch_request)
             if operator_goal is not None:
                 clarification_registry.reset("mission")
+                kind_text = (
+                    "recurring mission"
+                    if operator_goal.kind == OperatorGoalKind.RECURRING_MISSION
+                    else "recurring notification"
+                )
+                if operator_goal.status == OperatorGoalStatus.ACTIVE:
+                    interval = (
+                        operator_goal.schedule.interval_minutes
+                        if operator_goal.schedule is not None
+                        else 0
+                    )
+                    message = (
+                        f"The Operator activated a {kind_text} that runs every "
+                        f"{interval} minute(s) while The Matrix is open. "
+                        "Open The Operator to pause, edit, or cancel it."
+                    )
+                else:
+                    message = (
+                        f"The Operator drafted a {kind_text}. "
+                        "Open The Operator to review and activate it if it should keep running."
+                    )
                 self._send_html(
                     HTTPStatus.OK,
                     render_app_page(
                         paths,
                         store,
                         token,
-                        AppUiResponse(
-                            message=(
-                                "The Operator drafted a recurring goal. "
-                                "Open The Operator to review and activate it if it should keep running."
-                            ),
-                        ),
+                        AppUiResponse(message=message),
                     ),
                 )
                 return
@@ -1749,6 +1800,7 @@ def _run_background_mission(
     approval_registry: ApprovalRegistry,
     operator: TheOperator | None = None,
     goal_id: str | None = None,
+    recurring: bool = False,
 ) -> None:
     job.start()
     try:
@@ -1766,15 +1818,26 @@ def _run_background_mission(
     except Exception as exc:
         job.fail(f"Mission failed: {exc}")
         if operator is not None and goal_id:
-            operator.fail_goal(goal_id, f"Mission failed: {exc}")
+            if recurring:
+                operator.note_goal_run(goal_id, ok=False, message=f"Recurring mission failed: {exc}")
+            else:
+                operator.fail_goal(goal_id, f"Mission failed: {exc}")
     else:
         job.complete(result)
         if operator is not None and goal_id:
-            operator.complete_goal(
-                goal_id,
-                "Mission completed.",
-                {"run_id": result.run_id, "kind": job.kind},
-            )
+            if recurring:
+                operator.note_goal_run(
+                    goal_id,
+                    ok=True,
+                    message="Recurring mission completed.",
+                    details={"run_id": result.run_id, "kind": job.kind},
+                )
+            else:
+                operator.complete_goal(
+                    goal_id,
+                    "Mission completed.",
+                    {"run_id": result.run_id, "kind": job.kind},
+                )
     finally:
         run_lock.release()
 
@@ -3964,7 +4027,7 @@ def _help_panel() -> str:
         </div>
         <div class="item">
           <p><strong>The Operator</strong></p>
-          <p class="muted">Recurring goals are drafted first. Review and activate them before they run, and keep this app open while they are scheduled.</p>
+          <p class="muted">Recurring goals start automatically when you ask for them. Pause, edit, or cancel them from The Operator page, and keep this app open while they are scheduled.</p>
         </div>
         <div class="item">
           <p><strong>Change provider</strong></p>
@@ -4531,10 +4594,18 @@ def _operator_goal_page(
 
 
 def _operator_goal_edit_form(goal, token: str) -> str:
-    if goal.kind != OperatorGoalKind.RECURRING_NOTIFICATION:
+    if goal.kind not in {
+        OperatorGoalKind.RECURRING_NOTIFICATION,
+        OperatorGoalKind.RECURRING_MISSION,
+    }:
         return ""
     interval = goal.schedule.interval_minutes if goal.schedule else 5
-    message = str(goal.payload.get("message", ""))
+    if goal.kind == OperatorGoalKind.RECURRING_NOTIFICATION:
+        message_label = "Notification message"
+        message = str(goal.payload.get("message", ""))
+    else:
+        message_label = "Mission request"
+        message = str(goal.payload.get("mission_request", ""))
     return f"""
       <div class="notice">
         <strong>Alter Recurring Goal</strong>
@@ -4543,11 +4614,11 @@ def _operator_goal_edit_form(goal, token: str) -> str:
           <label>Goal name
             <input name="title" value="{escape(goal.title, quote=True)}" maxlength="80" required>
           </label>
-          <label>Notification message
+          <label>{message_label}
             <textarea name="message" required>{escape(message)}</textarea>
           </label>
           <label>Repeat every minutes
-            <input name="interval_minutes" type="number" min="1" max="1440" value="{interval}" required>
+            <input name="interval_minutes" type="number" min="1" max="10080" value="{interval}" required>
           </label>
           <div class="actions">
             <button type="submit">Save Changes</button>
@@ -4577,7 +4648,7 @@ def _operator_capability_note(capability: str) -> str:
     if capability == "notify_desktop":
         return "Allows a local desktop notification only."
     if capability == "mission_run":
-        return "Tracks a one-time mission through the normal runtime."
+        return "Runs the saved mission request through the normal mission safety flow."
     return "No external action capability is recorded."
 
 
@@ -4585,8 +4656,15 @@ def _operator_goal_plain_english(goal) -> str:
     if goal.kind.value == "recurring_notification" and goal.schedule is not None:
         message = str(goal.payload.get("message", "the reminder")).strip() or "the reminder"
         return (
-            f"After activation, it will send a local desktop notification saying "
+            f"While active, it sends a local desktop notification saying "
             f"`{message}` every {goal.schedule.interval_minutes} minute(s) while The Matrix app is running."
+        )
+    if goal.kind.value == "recurring_mission" and goal.schedule is not None:
+        request = str(goal.payload.get("mission_request", "the saved request")).strip()
+        return (
+            f"While active, it runs the mission `{request}` every "
+            f"{goal.schedule.interval_minutes} minute(s) while The Matrix app is running. "
+            "Each run still goes through Neo's safety review and the normal approval flow."
         )
     return "It tracks this delegated mission and records whether it completed or failed."
 
