@@ -10,6 +10,9 @@ from thematrix.schemas import (
     ClarificationTurn,
     ModelRequest,
     ModelResponse,
+    OperatorGoal,
+    OperatorGoalKind,
+    OperatorSchedule,
 )
 
 
@@ -113,6 +116,89 @@ def test_clarification_service_agent_target_includes_agent_contract(tmp_path) ->
     assert "Use plain English" in system
     assert "memory_read" in system
     assert "cannot use those tools" in system
+
+
+def test_clarification_answer_includes_system_snapshot_for_oracle(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.upsert_agent(
+        AgentSpec(
+            agent_id="researcher-news",
+            agent_type="researcher",
+            purpose="Compare AI news sources.",
+            tools_allowed=["memory_read"],
+        )
+    )
+    store.upsert_operator_goal(
+        OperatorGoal(
+            goal_id="goal-news",
+            original_request="watch tech news every weekday at 9am",
+            title="Tech news digest",
+            kind=OperatorGoalKind.RECURRING_MISSION,
+            schedule=OperatorSchedule(cron="0 9 * * 1-5"),
+            payload={"mission_request": "Summarize tech news"},
+        )
+    )
+    gateway = FakeGateway("You have one researcher agent and one scheduled goal.")
+    service = ClarificationService(store, gateway)
+
+    service.answer(draft="", question="What agents and goals do I have?", target="oracle")
+
+    user_prompt = gateway.requests[-1].messages[-1].content
+    assert "Current system state" in user_prompt
+    assert "researcher-news" in user_prompt
+    assert "Compare AI news sources." in user_prompt
+    assert "Tech news digest" in user_prompt
+    assert "cron `0 9 * * 1-5`" in user_prompt
+
+
+def test_clarification_answer_omits_snapshot_for_agent_target(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.upsert_agent(
+        AgentSpec(
+            agent_id="researcher-news",
+            agent_type="researcher",
+            purpose="Compare AI news sources.",
+            tools_allowed=["memory_read"],
+        )
+    )
+    gateway = FakeGateway()
+    service = ClarificationService(store, gateway)
+
+    service.answer(
+        draft="compare tools",
+        question="What should this agent ask?",
+        target="agent:researcher-news",
+    )
+
+    user_prompt = gateway.requests[-1].messages[-1].content
+    assert "Current system state" not in user_prompt
+
+
+def test_clarification_snapshot_degrades_when_store_unavailable(tmp_path) -> None:
+    class BrokenStore(RuntimeStore):
+        def list_agent_records(self, limit: int = 20):
+            raise RuntimeError("db locked")
+
+        def list_operator_goals(self, status=None, limit: int = 20):
+            raise RuntimeError("db locked")
+
+        def get_default_provider_config(self):
+            raise RuntimeError("db locked")
+
+        def list_run_records(self, limit: int = 20):
+            raise RuntimeError("db locked")
+
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = BrokenStore(paths.runtime_db)
+    store.initialize()
+    gateway = FakeGateway("still answered")
+    service = ClarificationService(store, gateway)
+
+    response = service.answer(draft="", question="What do I have?", target="oracle")
+
+    assert response.answer == "still answered"
+    user_prompt = gateway.requests[-1].messages[-1].content
+    assert "No agents, goals, or missions are recorded yet." in user_prompt
 
 
 def test_clarification_service_unknown_agent_returns_clear_error(tmp_path) -> None:

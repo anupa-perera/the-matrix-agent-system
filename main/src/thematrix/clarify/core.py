@@ -17,6 +17,11 @@ class ClarificationError(ValueError):
     """Raised when a clarification target cannot be resolved."""
 
 
+# Targets that answer questions about the system as a whole, so they benefit from
+# a live system snapshot. Per-agent targets stay focused on their own contract.
+_SYSTEM_AWARE_TARGETS = {"auto", "matrix", "oracle", "architect", "neo"}
+
+
 class ClarificationModelGateway(Protocol):
     def generate(self, request: ModelRequest) -> ModelResponse: ...
 
@@ -44,6 +49,7 @@ class ClarificationService:
             draft=draft,
             question=question,
             transcript=transcript or [],
+            snapshot=self._system_snapshot() if target in _SYSTEM_AWARE_TARGETS else "",
         )
         response = self.model_gateway.generate(
             ModelRequest(
@@ -185,14 +191,97 @@ class ClarificationService:
         draft: str,
         question: str,
         transcript: list[ClarificationTurn],
+        snapshot: str = "",
     ) -> str:
+        snapshot_block = (
+            f"Current system state (read-only, do not act on it):\n{snapshot}\n\n"
+            if snapshot
+            else ""
+        )
         return (
+            f"{snapshot_block}"
             f"Mission draft:\n{draft.strip() or '(empty)'}\n\n"
             f"Transcript so far:\n{_format_transcript(transcript) or '(none)'}\n\n"
             f"User clarification question:\n{question.strip()}\n\n"
-            "Answer clearly and briefly. If the request is too vague or risky, say "
-            "what must be clarified before running. Do not claim you performed any action."
+            "Answer clearly and briefly, using the system state above when the question "
+            "is about existing agents, scheduled goals, the active model, or past missions. "
+            "If the request is too vague or risky, say what must be clarified before "
+            "running. Do not claim you performed any action."
         )
+
+    def _system_snapshot(self, *, agent_limit: int = 12, goal_limit: int = 10) -> str:
+        """Read a compact, bounded view of system state for the model to reason over.
+
+        Defensive by design: any store hiccup degrades to an empty section rather
+        than breaking the clarification turn.
+        """
+        sections: list[str] = []
+
+        sections.append(self._snapshot_provider())
+        sections.append(self._snapshot_agents(agent_limit))
+        sections.append(self._snapshot_goals(goal_limit))
+        sections.append(self._snapshot_recent_runs())
+
+        body = "\n".join(section for section in sections if section)
+        return body or "No agents, goals, or missions are recorded yet."
+
+    def _snapshot_provider(self) -> str:
+        try:
+            config = self.store.get_default_provider_config()
+        except Exception:
+            return ""
+        if config is None:
+            return "Active model: none configured yet."
+        return f"Active model: `{config.selected_model}` via `{config.provider_id}`."
+
+    def _snapshot_agents(self, limit: int) -> str:
+        try:
+            records = self.store.list_agent_records(limit=limit)
+        except Exception:
+            return ""
+        if not records:
+            return "Reusable agents: none recorded yet."
+        lines = ["Reusable agents:"]
+        for record in records:
+            state = "enabled" if record.get("enabled", True) else "paused"
+            purpose = " ".join(str(record.get("purpose", "")).split())[:100]
+            lines.append(
+                f"- `{record.get('agent_id')}` ({record.get('agent_type')}, {state}): {purpose}"
+            )
+        return "\n".join(lines)
+
+    def _snapshot_goals(self, limit: int) -> str:
+        try:
+            goals = self.store.list_operator_goals(limit=limit)
+        except Exception:
+            return ""
+        if not goals:
+            return "Operator goals: none recorded yet."
+        lines = ["Operator goals:"]
+        for goal in goals:
+            if goal.schedule is None:
+                cadence = "one-shot"
+            elif goal.schedule.cron:
+                cadence = f"cron `{goal.schedule.cron}`"
+            else:
+                cadence = f"every {goal.schedule.interval_minutes} min"
+            lines.append(
+                f"- {goal.title} ({goal.kind.value}, {goal.status.value}, {cadence})"
+            )
+        return "\n".join(lines)
+
+    def _snapshot_recent_runs(self, limit: int = 5) -> str:
+        try:
+            runs = self.store.list_run_records(limit=limit)
+        except Exception:
+            return ""
+        if not runs:
+            return ""
+        lines = ["Recent missions:"]
+        for run in runs:
+            request = " ".join(str(run.get("request", "")).split())[:80]
+            lines.append(f"- {request}")
+        return "\n".join(lines)
 
     def _next_question_prompt(
         self,

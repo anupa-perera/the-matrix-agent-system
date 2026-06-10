@@ -145,18 +145,16 @@ This release packages The Matrix Agent System, a local-first crew of AI agents, 
 
 ### What's New
 
-- Native tool calling: agents now use each provider's real tool API (OpenAI, Anthropic, Gemini), with a graceful fallback for local models that do not support it.
-- Live mission streaming: the mission status page now shows each tool round, tool call, and decision as it happens, not just start and finish.
-- Time-of-day schedules: requests like "every weekday at 9am" or "daily at 8:30pm" become cron schedules you can inspect and edit.
-- Headless scheduling: run `the-matrix operator serve` to keep recurring goals running without the browser app, or register `operator serve --once` with Task Scheduler, cron, or launchd.
-- Fixed the mission intake popup so its action buttons always stay above the page, with a clearer primary action and keyboard focus states.
+- Ask the Oracle now knows your system: it answers questions about your reusable agents, scheduled Operator goals, active model, and recent missions from live local state instead of guessing.
+- The system snapshot is read-only and bounded, and Oracle answers degrade gracefully if local records are unavailable.
 
 ### Previously Added
 
+- Native tool calling: agents use each provider's real tool API (OpenAI, Anthropic, Gemini), with a graceful fallback for local models.
+- Live mission streaming: the mission status page shows each tool round, tool call, and decision as it happens.
+- Time-of-day schedules: requests like "every weekday at 9am" become cron schedules, and `the-matrix operator serve` runs goals headless.
 - Recurring requests start automatically and can run full missions on a schedule, with Neo's safety review on every run.
 - Agents work in an iterative tool loop and can send notifications or schedule recurring goals themselves mid-mission.
-- Recurring goals auto-pause after repeated failures, and open recurring goals are capped for safety.
-- Browser missions open a live status cockpit, and Ask the Oracle streams read-only answers.
 - Provider support covers OpenRouter, OpenAI, Anthropic, Gemini, Mistral, local models, and OpenAI Codex sign-in.
 
 ### Easiest Windows Install
