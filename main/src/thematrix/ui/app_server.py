@@ -1255,6 +1255,7 @@ def _handler_factory(
                         title=form.get("title", ""),
                         message=form.get("message", ""),
                         interval_minutes=interval_minutes,
+                        cron=form.get("cron"),
                     )
                 except ValueError as exc:
                     self._send_html(
@@ -1652,14 +1653,9 @@ def _handler_factory(
                     else "recurring notification"
                 )
                 if operator_goal.status == OperatorGoalStatus.ACTIVE:
-                    interval = (
-                        operator_goal.schedule.interval_minutes
-                        if operator_goal.schedule is not None
-                        else 0
-                    )
                     message = (
-                        f"The Operator activated a {kind_text} that runs every "
-                        f"{interval} minute(s) while The Matrix is open. "
+                        f"The Operator activated a {kind_text} that runs "
+                        f"{_schedule_phrase(operator_goal.schedule)} while The Matrix is open. "
                         "Open The Operator to pause, edit, or cancel it."
                     )
                 else:
@@ -3083,15 +3079,31 @@ def render_app_page(
     }}
     .intent-actions button {{ margin-top: 0; }}
     .intent-answer {{ display: grid; gap: 12px; }}
+    /* The panel wake animation leaves transform/filter applied, which would turn the
+       panel into the containing block for fixed-position popups and trap their
+       z-index inside the panel's stacking context. */
+    .panel:has(.clarification-popup) {{
+      animation: none;
+      transform: none;
+      filter: none;
+    }}
     .clarification-popup {{
       position: fixed;
       inset: 0;
-      z-index: 1200;
+      /* Above all page panels, below the body::after scanline overlay (999)
+         so the CRT effect stays uniform across the dialog. */
+      z-index: 500;
       display: grid;
       place-items: center;
       padding: 24px;
       background: rgba(0, 0, 0, 0.88);
       backdrop-filter: blur(3px);
+      overflow: auto;
+      overscroll-behavior: contain;
+    }}
+    @keyframes dialogIn {{
+      from {{ opacity: 0; transform: translateY(12px); }}
+      to {{ opacity: 1; transform: translateY(0); }}
     }}
     .clarification-dialog {{
       width: min(720px, 100%);
@@ -3102,6 +3114,9 @@ def render_app_page(
       background: rgba(0, 14, 4, 0.96);
       box-shadow: 0 0 0 1px rgba(0,255,65,0.18), 0 0 34px rgba(0,255,65,0.22);
       padding: 22px;
+      animation: dialogIn 300ms ease-out;
+      scrollbar-width: thin;
+      scrollbar-color: var(--phosphor-dim) transparent;
     }}
     .clarification-dialog h3 {{
       margin: 0 0 12px;
@@ -3126,7 +3141,9 @@ def render_app_page(
       flex-direction: column;
       gap: 14px;
       overflow: hidden;
+      isolation: isolate;
       max-height: calc(100vh - 48px);
+      padding-bottom: 0;
     }}
     .intake-header {{
       display: flex;
@@ -3153,7 +3170,16 @@ def render_app_page(
       overflow: auto;
       flex: 1;
       min-height: 0;
-      padding-right: 6px;
+      padding-right: 10px;
+      scrollbar-gutter: stable;
+      scrollbar-width: thin;
+      scrollbar-color: var(--phosphor-dim) transparent;
+    }}
+    .intake-body::-webkit-scrollbar {{ width: 8px; }}
+    .intake-body::-webkit-scrollbar-track {{ background: rgba(0,255,65,0.06); }}
+    .intake-body::-webkit-scrollbar-thumb {{
+      background: var(--phosphor-dim);
+      border: 1px solid rgba(0,255,65,0.32);
     }}
     .intake-question {{
       border: 0;
@@ -3176,12 +3202,23 @@ def render_app_page(
       padding: 6px 12px;
       cursor: pointer;
       user-select: none;
+      transition: border-color 140ms ease-out, background 140ms ease-out;
+    }}
+    .option-chip:hover {{
+      border-color: var(--phosphor);
+      background: rgba(0,255,65,0.06);
     }}
     .option-chip input {{ accent-color: var(--phosphor-bright); margin: 0; }}
     .option-chip:has(input:checked) {{
       border-color: var(--phosphor-bright);
       background: rgba(0,255,65,0.12);
       box-shadow: 0 0 14px rgba(0,255,65,0.18);
+    }}
+    .option-chip:has(input:focus-visible),
+    .intake-footer button:focus-visible,
+    .intake-text:focus-visible {{
+      outline: 1px solid var(--phosphor-bright);
+      outline-offset: 2px;
     }}
     .chip-rec {{
       color: var(--phosphor-title);
@@ -3202,18 +3239,38 @@ def render_app_page(
     .intake-footer {{
       display: flex;
       flex-wrap: wrap;
+      flex: 0 0 auto;
       gap: 10px;
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
       border-top: 1px solid rgba(0,255,65,0.26);
-      padding-top: 12px;
+      margin: 0 -22px;
+      padding: 12px 22px 22px;
+      background: rgba(0, 14, 4, 0.98);
+      box-shadow: 0 -14px 20px rgba(0,0,0,0.76);
     }}
     .intake-footer button {{ margin: 0; cursor: pointer; }}
-    .intake-start[disabled] {{ opacity: 0.45; cursor: not-allowed; }}
+    .intake-start {{
+      background: rgba(0,255,65,0.16);
+      border-color: var(--phosphor-bright);
+      color: var(--phosphor-bright);
+      box-shadow: 0 0 18px rgba(0,255,65,0.2);
+      letter-spacing: 1px;
+    }}
+    .intake-start:hover:not([disabled]) {{ background: rgba(0,255,65,0.28); }}
+    .intake-start[disabled] {{ opacity: 0.45; cursor: not-allowed; box-shadow: none; }}
     .intake-defaults, .intake-edit {{
       background: transparent;
       border: 1px solid rgba(0,255,65,0.32);
       color: var(--phosphor);
     }}
-    .intake-edit {{ margin-left: auto; }}
+    .intake-edit {{
+      margin-left: auto;
+      border-color: transparent;
+      color: var(--phosphor-title);
+    }}
+    .intake-edit:hover {{ border-color: rgba(0,255,65,0.32); }}
     .transcript {{ display: grid; gap: 10px; }}
     .turn {{
       border-top: 1px dashed var(--line);
@@ -4336,6 +4393,12 @@ def _submit_feedback_script() -> str:
           status.hidden = false;
         });
       });
+      // Re-parent popups to <body> so no animated/transformed ancestor can become
+      // their containing block. Keeps position: fixed anchored to the viewport
+      // even in browsers without :has() support.
+      document.querySelectorAll('.clarification-popup').forEach((popup) => {
+        document.body.appendChild(popup);
+      });
       const popupInput = document.querySelector('[data-clarification-popup] input[name="answer"]');
       if (popupInput) popupInput.focus();
 
@@ -4473,9 +4536,7 @@ def _operator_page(
     runs = store.list_operator_goal_runs(limit=8)
     goal_items = []
     for goal in goals:
-        schedule = (
-            f"every {goal.schedule.interval_minutes} minute(s)" if goal.schedule else "no schedule"
-        )
+        schedule = _schedule_phrase(goal.schedule) if goal.schedule else "no schedule"
         next_run = goal.next_run_at.isoformat(timespec="seconds") if goal.next_run_at else "none"
         last_run = goal.last_run_at.isoformat(timespec="seconds") if goal.last_run_at else "none"
         message = str(goal.payload.get("message", ""))
@@ -4538,7 +4599,9 @@ def _operator_goal_page(
             primary_action_url=_token_url("/operator", token),
         )
     runs = store.list_operator_goal_runs(goal_id=goal.goal_id, limit=12)
-    schedule = f"Every {goal.schedule.interval_minutes} minute(s)" if goal.schedule else "Not scheduled"
+    schedule = (
+        _schedule_phrase(goal.schedule).capitalize() if goal.schedule else "Not scheduled"
+    )
     next_run = goal.next_run_at.isoformat(timespec="seconds") if goal.next_run_at else "Not scheduled"
     last_run = goal.last_run_at.isoformat(timespec="seconds") if goal.last_run_at else "No run yet"
     capability = goal.capability or "none"
@@ -4606,6 +4669,7 @@ def _operator_goal_edit_form(goal, token: str) -> str:
     else:
         message_label = "Mission request"
         message = str(goal.payload.get("mission_request", ""))
+    cron_value = goal.schedule.cron if goal.schedule and goal.schedule.cron else ""
     return f"""
       <div class="notice">
         <strong>Alter Recurring Goal</strong>
@@ -4618,7 +4682,10 @@ def _operator_goal_edit_form(goal, token: str) -> str:
             <textarea name="message" required>{escape(message)}</textarea>
           </label>
           <label>Repeat every minutes
-            <input name="interval_minutes" type="number" min="1" max="10080" value="{interval}" required>
+            <input name="interval_minutes" type="number" min="1" max="10080" value="{max(1, interval)}" required>
+          </label>
+          <label>Cron schedule (optional, overrides the interval)
+            <input name="cron" value="{escape(cron_value, quote=True)}" placeholder="0 9 * * 1-5">
           </label>
           <div class="actions">
             <button type="submit">Save Changes</button>
@@ -4652,18 +4719,26 @@ def _operator_capability_note(capability: str) -> str:
     return "No external action capability is recorded."
 
 
+def _schedule_phrase(schedule) -> str:
+    if schedule is None:
+        return "on its saved schedule"
+    if schedule.cron:
+        return f"on the cron schedule `{schedule.cron}`"
+    return f"every {schedule.interval_minutes} minute(s)"
+
+
 def _operator_goal_plain_english(goal) -> str:
     if goal.kind.value == "recurring_notification" and goal.schedule is not None:
         message = str(goal.payload.get("message", "the reminder")).strip() or "the reminder"
         return (
             f"While active, it sends a local desktop notification saying "
-            f"`{message}` every {goal.schedule.interval_minutes} minute(s) while The Matrix app is running."
+            f"`{message}` {_schedule_phrase(goal.schedule)} while The Matrix app is running."
         )
     if goal.kind.value == "recurring_mission" and goal.schedule is not None:
         request = str(goal.payload.get("mission_request", "the saved request")).strip()
         return (
-            f"While active, it runs the mission `{request}` every "
-            f"{goal.schedule.interval_minutes} minute(s) while The Matrix app is running. "
+            f"While active, it runs the mission `{request}` "
+            f"{_schedule_phrase(goal.schedule)} while The Matrix app is running. "
             "Each run still goes through Neo's safety review and the normal approval flow."
         )
     return "It tracks this delegated mission and records whether it completed or failed."

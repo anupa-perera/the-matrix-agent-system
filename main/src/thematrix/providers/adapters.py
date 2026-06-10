@@ -21,6 +21,8 @@ from thematrix.schemas import (
     ProviderAdapterKind,
     ProviderConfig,
     ProviderProfile,
+    ToolCall,
+    ToolSpec,
 )
 
 
@@ -155,6 +157,8 @@ class OpenAICompatibleAdapter:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
         }
+        if request.tools:
+            payload["tools"] = [_openai_tool(tool) for tool in request.tools]
         raw = _post_json_with_retries(
             self.transport,
             url=f"{base_url}/chat/completions",
@@ -164,11 +168,13 @@ class OpenAICompatibleAdapter:
             attempts=self.retry_attempts,
             delay_seconds=self.retry_delay_seconds,
         )
-        text = _extract_openai_compatible_text(raw)
+        tool_calls = _extract_openai_tool_calls(raw)
+        text = _extract_openai_compatible_text(raw, allow_empty=bool(tool_calls))
         return ModelResponse(
             provider_id=profile.provider_id,
             model=config.selected_model,
             text=text,
+            tool_calls=tool_calls,
             raw=raw,
             usage=raw.get("usage", {}),
         )
@@ -339,6 +345,8 @@ class AnthropicMessagesAdapter:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
         }
+        if request.tools:
+            payload["tools"] = [_anthropic_tool(tool) for tool in request.tools]
         raw = _post_json_with_retries(
             self.transport,
             url=f"{base_url}/messages",
@@ -348,12 +356,14 @@ class AnthropicMessagesAdapter:
             attempts=self.retry_attempts,
             delay_seconds=self.retry_delay_seconds,
         )
-        text = _extract_anthropic_text(raw)
+        tool_calls = _extract_anthropic_tool_calls(raw)
+        text = _extract_anthropic_text(raw, allow_empty=bool(tool_calls))
         usage = raw.get("usage", {})
         return ModelResponse(
             provider_id=profile.provider_id,
             model=config.selected_model,
             text=text,
+            tool_calls=tool_calls,
             raw=raw,
             usage=usage,
         )
@@ -390,6 +400,10 @@ class GeminiGenerateContentAdapter:
                 "maxOutputTokens": request.max_tokens,
             },
         }
+        if request.tools:
+            payload["tools"] = [
+                {"functionDeclarations": [_gemini_tool(tool) for tool in request.tools]}
+            ]
         raw = _post_json_with_retries(
             self.transport,
             url=url,
@@ -399,11 +413,13 @@ class GeminiGenerateContentAdapter:
             attempts=self.retry_attempts,
             delay_seconds=self.retry_delay_seconds,
         )
-        text = _extract_gemini_text(raw)
+        tool_calls = _extract_gemini_tool_calls(raw)
+        text = _extract_gemini_text(raw, allow_empty=bool(tool_calls))
         return ModelResponse(
             provider_id=profile.provider_id,
             model=config.selected_model,
             text=text,
+            tool_calls=tool_calls,
             raw=raw,
             usage=raw.get("usageMetadata", {}),
         )
@@ -482,21 +498,126 @@ def _is_retryable_provider_error(exc: ProviderAdapterError) -> bool:
     return any(fragment in message for fragment in retryable_fragments)
 
 
-def _extract_openai_compatible_text(raw: dict[str, Any]) -> str:
+def _openai_tool(tool: ToolSpec) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters or {"type": "object", "properties": {}},
+        },
+    }
+
+
+def _anthropic_tool(tool: ToolSpec) -> dict[str, Any]:
+    return {
+        "name": tool.name,
+        "description": tool.description,
+        "input_schema": tool.parameters or {"type": "object", "properties": {}},
+    }
+
+
+def _gemini_tool(tool: ToolSpec) -> dict[str, Any]:
+    declaration: dict[str, Any] = {"name": tool.name, "description": tool.description}
+    if tool.parameters:
+        declaration["parameters"] = tool.parameters
+    return declaration
+
+
+def _tool_arguments(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _extract_openai_tool_calls(raw: dict[str, Any]) -> list[ToolCall]:
     try:
-        return str(raw["choices"][0]["message"]["content"])
+        calls = raw["choices"][0]["message"].get("tool_calls") or []
+    except (KeyError, IndexError, TypeError):
+        return []
+    extracted: list[ToolCall] = []
+    for call in calls:
+        function = call.get("function", {}) if isinstance(call, dict) else {}
+        name = str(function.get("name", "")).strip()
+        if not name:
+            continue
+        extracted.append(
+            ToolCall(
+                name=name,
+                arguments=_tool_arguments(function.get("arguments")),
+                call_id=str(call.get("id", "")),
+            )
+        )
+    return extracted
+
+
+def _extract_anthropic_tool_calls(raw: dict[str, Any]) -> list[ToolCall]:
+    parts = raw.get("content")
+    if not isinstance(parts, list):
+        return []
+    extracted: list[ToolCall] = []
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") != "tool_use":
+            continue
+        name = str(part.get("name", "")).strip()
+        if not name:
+            continue
+        extracted.append(
+            ToolCall(
+                name=name,
+                arguments=_tool_arguments(part.get("input")),
+                call_id=str(part.get("id", "")),
+            )
+        )
+    return extracted
+
+
+def _extract_gemini_tool_calls(raw: dict[str, Any]) -> list[ToolCall]:
+    try:
+        parts = raw["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        return []
+    extracted: list[ToolCall] = []
+    for part in parts:
+        call = part.get("functionCall") if isinstance(part, dict) else None
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name", "")).strip()
+        if not name:
+            continue
+        extracted.append(ToolCall(name=name, arguments=_tool_arguments(call.get("args"))))
+    return extracted
+
+
+def _extract_openai_compatible_text(raw: dict[str, Any], allow_empty: bool = False) -> str:
+    try:
+        content = raw["choices"][0]["message"].get("content")
     except (KeyError, IndexError, TypeError) as exc:
+        if allow_empty:
+            return ""
         raise ProviderAdapterError("OpenAI-compatible response did not contain message text.") from exc
+    text = str(content) if content is not None else ""
+    if not text and not allow_empty:
+        raise ProviderAdapterError("OpenAI-compatible response did not contain message text.")
+    return text
 
 
-def _extract_anthropic_text(raw: dict[str, Any]) -> str:
+def _extract_anthropic_text(raw: dict[str, Any], allow_empty: bool = False) -> str:
     try:
         parts = raw["content"]
         texts = [part.get("text", "") for part in parts if part.get("type") == "text"]
     except (KeyError, TypeError) as exc:
+        if allow_empty:
+            return ""
         raise ProviderAdapterError("Anthropic response did not contain text content.") from exc
     text = "".join(texts).strip()
-    if not text:
+    if not text and not allow_empty:
         stop_reason = raw.get("stop_reason")
         if stop_reason:
             raise ProviderAdapterError(f"Anthropic response was empty: {stop_reason}.")
@@ -504,19 +625,21 @@ def _extract_anthropic_text(raw: dict[str, Any]) -> str:
     return text
 
 
-def _extract_gemini_text(raw: dict[str, Any]) -> str:
+def _extract_gemini_text(raw: dict[str, Any], allow_empty: bool = False) -> str:
     finish_reason = _gemini_finish_reason(raw)
     try:
         parts = raw["candidates"][0]["content"]["parts"]
         texts = [part.get("text", "") for part in parts]
     except (KeyError, IndexError, TypeError) as exc:
+        if allow_empty:
+            return ""
         if finish_reason:
             raise ProviderAdapterError(
                 f"Gemini response stopped before text: {finish_reason}."
             ) from exc
         raise ProviderAdapterError("Gemini response did not contain text content.") from exc
     text = "".join(texts).strip()
-    if not text:
+    if not text and not allow_empty:
         if finish_reason:
             raise ProviderAdapterError(f"Gemini response was empty: {finish_reason}.")
         raise ProviderAdapterError("Gemini response text was empty.")

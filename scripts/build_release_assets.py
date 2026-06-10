@@ -141,25 +141,22 @@ def _release_notes(tag: str, repo: str, windows_zip: str, posix_tgz: str) -> str
     )
     return f"""## {tag}
 
-This release packages the local-first Matrix-inspired agent framework for normal users and developers.
+This release packages The Matrix Agent System, a local-first crew of AI agents, for normal users and developers.
 
 ### What's New
 
-- Recurring requests now start automatically: ask once and The Operator schedules and runs the goal without a manual activation step.
-- New recurring missions: The Operator can run full agent tasks on a schedule, not just desktop notifications, with Neo's safety review on every run.
-- Recurring requests understand more phrasing: numeric intervals, `hourly`, `daily`, `weekly`, `every morning`, and `set up a recurring task to ...`.
-- Agents now work in an iterative tool loop, reacting to tool results with more tool calls instead of a single fixed pass.
-- Agents gained `notify` and `schedule` tools, so they can send desktop notifications and set up recurring goals themselves mid-mission.
-- Recurring goals auto-pause after repeated failures, and the number of open recurring goals is capped for safety.
-- Recurring goal editing in the browser now covers recurring missions and intervals up to 7 days.
-- Set the `operator_auto_activate` preference to false to return to review-first goal activation.
+- Native tool calling: agents now use each provider's real tool API (OpenAI, Anthropic, Gemini), with a graceful fallback for local models that do not support it.
+- Live mission streaming: the mission status page now shows each tool round, tool call, and decision as it happens, not just start and finish.
+- Time-of-day schedules: requests like "every weekday at 9am" or "daily at 8:30pm" become cron schedules you can inspect and edit.
+- Headless scheduling: run `the-matrix operator serve` to keep recurring goals running without the browser app, or register `operator serve --once` with Task Scheduler, cron, or launchd.
+- Fixed the mission intake popup so its action buttons always stay above the page, with a clearer primary action and keyboard focus states.
 
 ### Previously Added
 
+- Recurring requests start automatically and can run full missions on a schedule, with Neo's safety review on every run.
+- Agents work in an iterative tool loop and can send notifications or schedule recurring goals themselves mid-mission.
+- Recurring goals auto-pause after repeated failures, and open recurring goals are capped for safety.
 - Browser missions open a live status cockpit, and Ask the Oracle streams read-only answers.
-- Run Mission pauses for missing details and opens a clarification popup before launch.
-- The dashboard Needs You queue collects clarifications, approvals, and Operator activations.
-- Reusable agents can be run, edited in plain language, paused, resumed, and excluded from future reuse.
 - Provider support covers OpenRouter, OpenAI, Anthropic, Gemini, Mistral, local models, and OpenAI Codex sign-in.
 
 ### Easiest Windows Install

@@ -127,7 +127,8 @@ class OperatorRunStatus(StrEnum):
 
 
 class OperatorSchedule(BaseModel):
-    interval_minutes: int
+    interval_minutes: int = 0
+    cron: str | None = None
 
 
 class OperatorGoal(BaseModel):
@@ -278,10 +279,27 @@ class ModelMessage(BaseModel):
     content: str
 
 
+class ToolSpec(BaseModel):
+    """Provider-neutral tool definition for native tool calling."""
+
+    name: str
+    description: str = ""
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolCall(BaseModel):
+    """A native tool invocation returned by the model."""
+
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    call_id: str = ""
+
+
 class ModelRequest(BaseModel):
     messages: list[ModelMessage]
     temperature: float = 0.2
     max_tokens: int = 256
+    tools: list[ToolSpec] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
@@ -293,6 +311,7 @@ class ModelResponse(BaseModel):
     provider_id: str
     model: str
     text: str
+    tool_calls: list[ToolCall] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
     usage: dict[str, Any] = Field(default_factory=dict)
 

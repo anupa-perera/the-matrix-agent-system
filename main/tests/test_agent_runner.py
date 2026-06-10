@@ -16,6 +16,7 @@ from thematrix.schemas import (
     OperatorGoalStatus,
     PrivacyMode,
     ProviderConfig,
+    ToolCall,
 )
 from thematrix.tools import FileExecutor, NotificationResult, ShellExecutor
 
@@ -384,6 +385,209 @@ def test_runtime_blocks_when_agent_needs_user_input(tmp_path) -> None:
     # The mission stops after the blocked task instead of cascading.
     assert tasks[1].status.value == "pending"
     assert len(gateway.requests) == 1
+
+
+class NativeToolFakeGateway:
+    """Returns scripted ModelResponse objects, mimicking native tool calling."""
+
+    def __init__(self, responses: list[ModelResponse]):
+        self.responses = responses
+        self.requests: list[ModelRequest] = []
+
+    def generate(
+        self,
+        request: ModelRequest,
+        config: ProviderConfig | None = None,
+    ) -> ModelResponse:
+        self.requests.append(request)
+        index = min(len(self.requests) - 1, len(self.responses) - 1)
+        return self.responses[index]
+
+
+def test_agent_runner_prefers_native_tool_calls(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent"),
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+    gateway = NativeToolFakeGateway(
+        [
+            ModelResponse(
+                provider_id="ollama",
+                model="local-test",
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        name="shell",
+                        arguments={"command": "python --version", "purpose": "Check Python"},
+                    )
+                ],
+            ),
+            ModelResponse(
+                provider_id="ollama",
+                model="local-test",
+                text='{"status":"completed","summary":"Python is ready.","open_questions":[]}',
+            ),
+        ]
+    )
+
+    execution = AgentRunner(
+        gateway,
+        prompt_library,
+        shell_executor=ShellExecutor(cwd=tmp_path),
+    ).run(
+        spec,
+        Oracle().assess("Build a planning agent"),
+        "Build a planning agent",
+    )
+
+    assert execution.executed
+    assert execution.response == "Python is ready."
+    assert execution.tool_results is not None
+    assert execution.tool_results[0].command == "python --version"
+    # The runner advertised native tool schemas for the allowed tools.
+    sent_tools = {tool.name for tool in gateway.requests[0].tools}
+    assert "shell" in sent_tools
+    assert "file_read" in sent_tools
+    assert "schedule" not in sent_tools
+
+
+def test_agent_runner_reports_unknown_native_tool_back_to_model(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent"),
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+    gateway = NativeToolFakeGateway(
+        [
+            ModelResponse(
+                provider_id="ollama",
+                model="local-test",
+                text="",
+                tool_calls=[ToolCall(name="launch_rocket", arguments={})],
+            ),
+            ModelResponse(
+                provider_id="ollama",
+                model="local-test",
+                text='{"status":"blocked","summary":"That tool is unavailable.",'
+                '"open_questions":[]}',
+            ),
+        ]
+    )
+
+    execution = AgentRunner(gateway, prompt_library).run(
+        spec,
+        Oracle().assess("Build a planning agent"),
+        "Build a planning agent",
+    )
+
+    assert execution.executed
+    assert execution.tool_results is not None
+    assert not execution.tool_results[0].executed
+    assert "launch_rocket" in execution.tool_results[0].reason
+
+
+def test_agent_runner_emits_live_progress_events(tmp_path) -> None:
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    prompt_library.install_defaults()
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    spec = Architect(store, prompt_library=prompt_library).design_agent(
+        Oracle().assess("Build a planning agent"),
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+    gateway = FakeGateway(
+        [
+            '{"response":"Check Python.","tool_requests":'
+            '[{"kind":"shell","command":"python --version","purpose":"Check Python"}]}',
+            '{"status":"completed","summary":"Done.","open_questions":[]}',
+        ]
+    )
+    events: list[tuple[str, str]] = []
+
+    AgentRunner(
+        gateway,
+        prompt_library,
+        shell_executor=ShellExecutor(cwd=tmp_path),
+    ).run(
+        spec,
+        Oracle().assess("Build a planning agent"),
+        "Build a planning agent",
+        progress_callback=lambda stage, message, details: events.append((stage, message)),
+    )
+
+    stages = [stage for stage, _ in events]
+    assert "agent_thinking" in stages
+    assert "agent_tools" in stages
+    assert "agent_tool_result" in stages
+    tool_result_messages = [message for stage, message in events if stage == "agent_tool_result"]
+    assert any("python --version" in message for message in tool_result_messages)
+
+
+def test_mission_timeline_receives_agent_tool_events(tmp_path) -> None:
+    vault = MemoryVault(tmp_path / "vault")
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    prompt_library = PromptLibrary(tmp_path / "prompts")
+    vault.initialize()
+    store.initialize()
+    prompt_library.install_defaults()
+    gateway = FakeGateway(
+        [
+            '{"response":"Check Python.","tool_requests":'
+            '[{"kind":"shell","command":"python --version","purpose":"Check Python"}]}',
+            '{"status":"completed","summary":"Done.","open_questions":[]}',
+        ]
+    )
+    progress: list[tuple[str, str, dict]] = []
+    runtime = Nebuchadnezzar(
+        oracle=Oracle(),
+        architect=Architect(store, prompt_library=prompt_library),
+        neo=Neo(),
+        vault=vault,
+        store=store,
+        agent_runner=AgentRunner(
+            gateway,
+            prompt_library,
+            shell_executor=ShellExecutor(cwd=tmp_path),
+        ),
+        progress_callback=lambda stage, message, details: progress.append(
+            (stage, message, details)
+        ),
+    )
+
+    runtime.run(
+        "Build a planning agent",
+        privacy_mode=PrivacyMode.ASK_EACH_TIME,
+        provider_config=ProviderConfig(
+            provider_id="ollama",
+            selected_model="local-test",
+            auth_mode=AuthMode.NONE,
+        ),
+    )
+
+    stages = [stage for stage, _, _ in progress]
+    assert "agent_tools" in stages
+    assert "agent_tool_result" in stages
+    tool_events = [details for stage, _, details in progress if stage == "agent_tool_result"]
+    assert all("task_id" in details and "agent_id" in details for details in tool_events)
 
 
 def test_agent_runner_loops_through_multiple_tool_rounds(tmp_path) -> None:

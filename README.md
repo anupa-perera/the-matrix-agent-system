@@ -171,7 +171,15 @@ Plan a safe step-by-step workflow for organizing my notes.
 Send me a desktop notification every 5 minutes to check the build.
 ```
 
-Recurring requests are scheduled by **The Operator** and start automatically. Recurring notifications fire on the interval you asked for, and recurring missions run the full agent flow on schedule, including Neo's safety review on every run. You can pause, edit, or cancel any goal from The Operator page. Agents can also schedule recurring goals themselves mid-mission when your request calls for follow-up work. The Operator only runs scheduled goals while the local app is open. To go back to review-first behavior, set the `operator_auto_activate` preference to false.
+Recurring requests are scheduled by **The Operator** and start automatically. Recurring notifications fire on the interval you asked for, and recurring missions run the full agent flow on schedule, including Neo's safety review on every run. Time-of-day phrasing works too: "every weekday at 9am", "daily at 8:30pm", or "every monday" become cron schedules you can inspect and edit. You can pause, edit, or cancel any goal from The Operator page. Agents can also schedule recurring goals themselves mid-mission when your request calls for follow-up work. To go back to review-first behavior, set the `operator_auto_activate` preference to false.
+
+Scheduled goals run while the app is open, or headless without the browser:
+
+```sh
+the-matrix operator serve
+```
+
+Register `the-matrix operator serve --once` with Windows Task Scheduler, cron, or launchd to keep schedules running even when The Matrix is closed.
 
 If a request needs file changes, shell commands, or sensitive actions, The Matrix should ask before proceeding.
 
@@ -270,6 +278,7 @@ the-matrix providers test
 the-matrix ask "Create a reusable research agent"
 the-matrix agents list
 the-matrix operator list
+the-matrix operator serve
 the-matrix memory summary
 the-matrix missions list
 the-matrix doctor

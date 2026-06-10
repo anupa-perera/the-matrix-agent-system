@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "the-matrix-agent-system"
-version = "0.2.14"
-description = "A local-first Matrix-inspired agent operating layer."
+version = "0.2.15"
+description = "A local-first crew of AI agents that designs, safety-checks, and runs missions on your computer with any model you choose."
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
@@ -36,3 +36,4 @@ pythonpath = ["main/src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+

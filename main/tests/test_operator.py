@@ -70,10 +70,90 @@ def test_operator_parses_word_intervals_and_prefixes(tmp_path) -> None:
     morning = operator.parse_recurring_request("Remind me every morning to review my plan")
     assert morning is not None
     assert morning.kind == OperatorGoalKind.RECURRING_NOTIFICATION
-    assert morning.interval_minutes == 24 * 60
+    assert morning.cron == "0 9 * * *"
 
     assert operator.parse_recurring_request("Review every file in this folder") is None
     assert operator.parse_recurring_request("Build a planning agent") is None
+
+
+def test_operator_parses_time_of_day_requests_into_cron(tmp_path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    operator = TheOperator(store, notifier=FakeNotifier())
+
+    weekday = operator.parse_recurring_request("Check my email every weekday at 9am")
+    assert weekday is not None
+    assert weekday.kind == OperatorGoalKind.RECURRING_MISSION
+    assert weekday.cron == "0 9 * * 1-5"
+    assert weekday.action == "Check my email"
+
+    evening = operator.parse_recurring_request("Remind me to stretch daily at 8:30pm")
+    assert evening is not None
+    assert evening.kind == OperatorGoalKind.RECURRING_NOTIFICATION
+    assert evening.cron == "30 20 * * *"
+
+    monday = operator.parse_recurring_request("Summarize my notes every monday")
+    assert monday is not None
+    assert monday.cron == "0 9 * * 1"
+
+
+def test_operator_creates_cron_goal_with_future_next_run(tmp_path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    operator = TheOperator(store, notifier=FakeNotifier())
+
+    goal = operator.create_from_request("Back up my vault every weekday at 9am")
+
+    assert goal is not None
+    assert goal.kind == OperatorGoalKind.RECURRING_MISSION
+    assert goal.status == OperatorGoalStatus.ACTIVE
+    assert goal.schedule is not None
+    assert goal.schedule.cron == "0 9 * * 1-5"
+    assert goal.next_run_at is not None
+    assert goal.next_run_at > datetime.now(UTC)
+    local_next = goal.next_run_at.astimezone()
+    assert (local_next.hour, local_next.minute) == (9, 0)
+    assert local_next.weekday() < 5
+
+
+def test_operator_cron_goal_reschedules_on_cron_after_run(tmp_path) -> None:
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    notifier = FakeNotifier()
+    operator = TheOperator(store, notifier=notifier)
+    goal = operator.create_recurring_notification_goal(
+        original_request="remind me daily at 9am",
+        message="stand up",
+        interval_minutes=0,
+        cron="0 9 * * *",
+    )
+    due = goal.model_copy(update={"next_run_at": datetime.now(UTC) - timedelta(seconds=1)})
+    store.upsert_operator_goal(due)
+
+    assert operator.run_due_goals() == 1
+
+    updated = store.get_operator_goal(goal.goal_id)
+    assert updated is not None
+    assert updated.next_run_at is not None
+    local_next = updated.next_run_at.astimezone()
+    assert (local_next.hour, local_next.minute) == (9, 0)
+    assert updated.next_run_at > datetime.now(UTC)
+
+
+def test_operator_rejects_invalid_cron_on_creation(tmp_path) -> None:
+    import pytest
+
+    store = RuntimeStore(tmp_path / "runtime.sqlite")
+    store.initialize()
+    operator = TheOperator(store, notifier=FakeNotifier())
+
+    with pytest.raises(ValueError):
+        operator.create_recurring_notification_goal(
+            original_request="bad cron",
+            message="stand up",
+            interval_minutes=0,
+            cron="61 * * * *",
+        )
 
 
 def test_operator_auto_activation_respects_preference(tmp_path) -> None:

@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from threading import Event, Thread
 
 from thematrix.memory import RuntimeStore
+from thematrix.operator.cron import next_run as cron_next_run
+from thematrix.operator.cron import parse_cron
 from thematrix.schemas import (
     OperatorGoal,
     OperatorGoalKind,
@@ -47,19 +49,39 @@ _WORD_INTERVALS = (
     ("every hour", 60),
     ("each hour", 60),
     ("hourly", 60),
-    ("every morning", 24 * 60),
-    ("every evening", 24 * 60),
-    ("every night", 24 * 60),
     ("every day", 24 * 60),
     ("each day", 24 * 60),
     ("daily", 24 * 60),
-    ("nightly", 24 * 60),
     ("every week", 7 * 24 * 60),
     ("each week", 7 * 24 * 60),
     ("weekly", 7 * 24 * 60),
 )
 _NUMERIC_INTERVAL_PATTERN = re.compile(
     r"\b(\d+)\s*(minute|minutes|min|mins|hour|hours|hr|hrs|day|days|week|weeks)\b"
+)
+_TIME_OF_DAY_PATTERN = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b")
+_DAY_OF_WEEK_PATTERN = re.compile(
+    r"\b(?:every|each)\s+(weekday|weekdays|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b"
+)
+_DAY_TOKENS = {
+    "sunday": "0",
+    "monday": "1",
+    "tuesday": "2",
+    "wednesday": "3",
+    "thursday": "4",
+    "friday": "5",
+    "saturday": "6",
+    "weekday": "1-5",
+    "weekdays": "1-5",
+}
+_DAILY_PHRASES = (
+    "every day",
+    "each day",
+    "daily",
+    "every morning",
+    "every evening",
+    "every night",
+    "nightly",
 )
 
 
@@ -68,6 +90,7 @@ class ParsedRecurrence:
     kind: OperatorGoalKind
     interval_minutes: int
     action: str
+    cron: str | None = None
 
 
 class TheOperator:
@@ -122,12 +145,14 @@ class TheOperator:
                 original_request=request,
                 message=parsed.action,
                 interval_minutes=parsed.interval_minutes,
+                cron=parsed.cron,
                 activate=activate,
             )
         return self.create_recurring_mission_goal(
             original_request=request,
             mission_request=parsed.action,
             interval_minutes=parsed.interval_minutes,
+            cron=parsed.cron,
             activate=activate,
         )
 
@@ -156,11 +181,12 @@ class TheOperator:
         original_request: str,
         message: str,
         interval_minutes: int,
+        cron: str | None = None,
         activate: bool = True,
     ) -> OperatorGoal:
         self._ensure_recurring_capacity()
         now = datetime.now(UTC)
-        safe_interval = max(1, min(interval_minutes, MAX_INTERVAL_MINUTES))
+        schedule = self._build_schedule(interval_minutes, cron)
         clean_message = " ".join(message.split())[:240] or "The Matrix reminder is due."
         status = OperatorGoalStatus.ACTIVE if activate else OperatorGoalStatus.PENDING
         goal = OperatorGoal(
@@ -168,8 +194,8 @@ class TheOperator:
             title=self._title_for(clean_message),
             kind=OperatorGoalKind.RECURRING_NOTIFICATION,
             status=status,
-            schedule=OperatorSchedule(interval_minutes=safe_interval),
-            next_run_at=now + timedelta(minutes=safe_interval) if activate else None,
+            schedule=schedule,
+            next_run_at=self._next_run_at(schedule, now) if activate else None,
             capability="notify_desktop",
             payload={"message": clean_message},
             created_at=now,
@@ -183,11 +209,12 @@ class TheOperator:
         original_request: str,
         mission_request: str,
         interval_minutes: int,
+        cron: str | None = None,
         activate: bool = True,
     ) -> OperatorGoal:
         self._ensure_recurring_capacity()
         now = datetime.now(UTC)
-        safe_interval = max(1, min(interval_minutes, MAX_INTERVAL_MINUTES))
+        schedule = self._build_schedule(interval_minutes, cron)
         clean_request = " ".join(mission_request.split())[:600] or original_request
         status = OperatorGoalStatus.ACTIVE if activate else OperatorGoalStatus.PENDING
         goal = OperatorGoal(
@@ -195,8 +222,8 @@ class TheOperator:
             title=self._title_for(clean_request),
             kind=OperatorGoalKind.RECURRING_MISSION,
             status=status,
-            schedule=OperatorSchedule(interval_minutes=safe_interval),
-            next_run_at=now + timedelta(minutes=safe_interval) if activate else None,
+            schedule=schedule,
+            next_run_at=self._next_run_at(schedule, now) if activate else None,
             capability="mission_run",
             payload={"mission_request": clean_request},
             created_at=now,
@@ -209,19 +236,25 @@ class TheOperator:
         lowered = " ".join(request.lower().split())
         if not any(cue in lowered for cue in _RECURRENCE_CUES):
             return None
-        interval = self._interval_minutes(lowered)
-        if interval is None:
-            return None
+        cron = self._cron_from_text(lowered)
+        interval = 0
+        if cron is None:
+            parsed_interval = self._interval_minutes(lowered)
+            if parsed_interval is None:
+                return None
+            interval = parsed_interval
         if any(term in lowered for term in _NOTIFY_TERMS):
             return ParsedRecurrence(
                 kind=OperatorGoalKind.RECURRING_NOTIFICATION,
                 interval_minutes=interval,
                 action=self._notification_message(request),
+                cron=cron,
             )
         return ParsedRecurrence(
             kind=OperatorGoalKind.RECURRING_MISSION,
             interval_minutes=interval,
             action=self._mission_request(request),
+            cron=cron,
         )
 
     def run_due_goals(self, now: datetime | None = None) -> int:
@@ -285,16 +318,14 @@ class TheOperator:
     def resume_goal(self, goal_id: str) -> OperatorGoal:
         goal = self._require_goal(goal_id)
         if goal.schedule is not None and goal.next_run_at is None:
-            goal.next_run_at = datetime.now(UTC) + timedelta(minutes=goal.schedule.interval_minutes)
+            goal.next_run_at = self._next_run_at(goal.schedule, datetime.now(UTC))
         return self._set_status(goal, OperatorGoalStatus.ACTIVE)
 
     def activate_goal(self, goal_id: str) -> OperatorGoal:
         goal = self._require_goal(goal_id)
         if goal.status != OperatorGoalStatus.PENDING:
             raise ValueError(f"Only pending goals can be activated: {goal.status.value}")
-        next_run_at = None
-        if goal.schedule is not None:
-            next_run_at = datetime.now(UTC) + timedelta(minutes=goal.schedule.interval_minutes)
+        next_run_at = self._next_run_at(goal.schedule, datetime.now(UTC))
         updated = goal.model_copy(
             update={
                 "status": OperatorGoalStatus.ACTIVE,
@@ -312,6 +343,7 @@ class TheOperator:
         title: str,
         message: str,
         interval_minutes: int,
+        cron: str | None = None,
     ) -> OperatorGoal:
         goal = self._require_goal(goal_id)
         if goal.kind not in {
@@ -319,7 +351,10 @@ class TheOperator:
             OperatorGoalKind.RECURRING_MISSION,
         }:
             raise ValueError("Only recurring goals can be edited here.")
-        if interval_minutes < 1 or interval_minutes > MAX_INTERVAL_MINUTES:
+        new_cron = goal.schedule.cron if goal.schedule is not None else None
+        if cron is not None:
+            new_cron = cron.strip() or None
+        if not new_cron and (interval_minutes < 1 or interval_minutes > MAX_INTERVAL_MINUTES):
             raise ValueError(
                 f"Interval must be between 1 and {MAX_INTERVAL_MINUTES} minutes (7 days)."
             )
@@ -332,14 +367,15 @@ class TheOperator:
             if goal.kind == OperatorGoalKind.RECURRING_NOTIFICATION
             else "mission_request"
         )
+        schedule = self._build_schedule(interval_minutes, new_cron)
         now = datetime.now(UTC)
         next_run_at = goal.next_run_at
-        if goal.status == OperatorGoalStatus.ACTIVE and goal.schedule is not None:
-            next_run_at = now + timedelta(minutes=interval_minutes)
+        if goal.status == OperatorGoalStatus.ACTIVE:
+            next_run_at = self._next_run_at(schedule, now)
         updated = goal.model_copy(
             update={
                 "title": clean_title,
-                "schedule": OperatorSchedule(interval_minutes=interval_minutes),
+                "schedule": schedule,
                 "next_run_at": next_run_at,
                 "payload": {**goal.payload, payload_key: clean_message},
                 "updated_at": now,
@@ -421,6 +457,54 @@ class TheOperator:
         except Exception:
             return True
 
+    def _build_schedule(self, interval_minutes: int, cron: str | None) -> OperatorSchedule:
+        clean_cron = (cron or "").strip() or None
+        if clean_cron is not None:
+            parse_cron(clean_cron)
+        safe_interval = max(1, min(interval_minutes, MAX_INTERVAL_MINUTES)) if not clean_cron else 0
+        return OperatorSchedule(interval_minutes=safe_interval, cron=clean_cron)
+
+    def _next_run_at(self, schedule: OperatorSchedule | None, now: datetime) -> datetime | None:
+        if schedule is None:
+            return None
+        if schedule.cron:
+            local_next = cron_next_run(schedule.cron, now.astimezone())
+            return local_next.astimezone(UTC)
+        return now + timedelta(minutes=max(1, schedule.interval_minutes))
+
+    def _cron_from_text(self, lowered: str) -> str | None:
+        hour, minute = self._time_of_day(lowered)
+        day_match = _DAY_OF_WEEK_PATTERN.search(lowered)
+        if day_match:
+            day_part = _DAY_TOKENS[day_match.group(1)]
+            if hour is None:
+                hour, minute = 9, 0
+            return f"{minute} {hour} * * {day_part}"
+        if hour is not None and any(phrase in lowered for phrase in _DAILY_PHRASES):
+            return f"{minute} {hour} * * *"
+        if "every morning" in lowered:
+            return "0 9 * * *"
+        if "every evening" in lowered:
+            return "0 18 * * *"
+        if "every night" in lowered or "nightly" in lowered:
+            return "0 21 * * *"
+        return None
+
+    def _time_of_day(self, lowered: str) -> tuple[int, int] | tuple[None, None]:
+        match = _TIME_OF_DAY_PATTERN.search(lowered)
+        if not match:
+            return None, None
+        hour = int(match.group(1))
+        minute = int(match.group(2) or 0)
+        meridiem = match.group(3)
+        if meridiem == "pm" and hour != 12:
+            hour += 12
+        if meridiem == "am" and hour == 12:
+            hour = 0
+        if hour > 23 or minute > 59:
+            return None, None
+        return hour, minute
+
     def _ensure_recurring_capacity(self) -> None:
         open_statuses = {
             OperatorGoalStatus.PENDING,
@@ -469,7 +553,7 @@ class TheOperator:
                 f"{result.message} (paused after {MAX_CONSECUTIVE_FAILURES} consecutive failures)"
             )
         elif goal.status == OperatorGoalStatus.ACTIVE and goal.schedule is not None:
-            updates["next_run_at"] = now + timedelta(minutes=goal.schedule.interval_minutes)
+            updates["next_run_at"] = self._next_run_at(goal.schedule, now)
         updated = goal.model_copy(update=updates)
         self.store.upsert_operator_goal(updated)
         return updated
@@ -557,6 +641,18 @@ class TheOperator:
         )
         cleaned = re.sub(
             r"\b(every|each)\s+(minute|hour|day|week|morning|evening|night)\b",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\b(every|each)\s+(weekday|weekdays|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b",
             "",
             cleaned,
             flags=re.IGNORECASE,

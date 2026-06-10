@@ -22,6 +22,7 @@ from thematrix.schemas import (
     ProviderAdapterKind,
     ProviderConfig,
     ReasoningEffort,
+    ToolSpec,
 )
 from thematrix.security import InMemorySecretStore, Keymaker, SecretStoreError
 
@@ -582,6 +583,118 @@ def test_gateway_uses_adapter_specific_health_check_for_codex(tmp_path) -> None:
     with store.connect() as conn:
         rows = conn.execute("SELECT * FROM model_calls").fetchall()
     assert rows == []
+
+
+def test_openai_compatible_adapter_sends_tools_and_parses_tool_calls() -> None:
+    transport = FakeTransport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "function": {
+                                    "name": "shell",
+                                    "arguments": '{"command": "git status", "purpose": "check"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    profile = _profile("openrouter")
+    config = ProviderConfig(
+        provider_id="openrouter",
+        selected_model="openai/gpt-5-mini",
+        auth_mode=AuthMode.API_KEY,
+    )
+    request = ModelRequest.from_prompt("test").model_copy(
+        update={"tools": [ToolSpec(name="shell", description="Run a command")]}
+    )
+
+    response = OpenAICompatibleAdapter(transport).generate(request, profile, config, "secret")
+
+    sent_tools = transport.calls[0]["payload"]["tools"]
+    assert sent_tools[0]["type"] == "function"
+    assert sent_tools[0]["function"]["name"] == "shell"
+    assert response.text == ""
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "shell"
+    assert response.tool_calls[0].arguments == {"command": "git status", "purpose": "check"}
+    assert response.tool_calls[0].call_id == "call-1"
+
+
+def test_anthropic_adapter_sends_tools_and_parses_tool_use() -> None:
+    transport = FakeTransport(
+        {
+            "content": [
+                {"type": "text", "text": "Using the tool now."},
+                {
+                    "type": "tool_use",
+                    "id": "toolu-1",
+                    "name": "file_read",
+                    "input": {"path": "notes.md"},
+                },
+            ]
+        }
+    )
+    profile = _profile("anthropic")
+    config = ProviderConfig(
+        provider_id="anthropic",
+        selected_model="claude-haiku-4-5-20251001",
+        auth_mode=AuthMode.API_KEY,
+    )
+    request = ModelRequest.from_prompt("test").model_copy(
+        update={"tools": [ToolSpec(name="file_read", description="Read a file")]}
+    )
+
+    response = AnthropicMessagesAdapter(transport).generate(request, profile, config, "secret")
+
+    sent_tools = transport.calls[0]["payload"]["tools"]
+    assert sent_tools[0]["name"] == "file_read"
+    assert "input_schema" in sent_tools[0]
+    assert response.text == "Using the tool now."
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "file_read"
+    assert response.tool_calls[0].arguments == {"path": "notes.md"}
+
+
+def test_gemini_adapter_sends_tools_and_parses_function_calls() -> None:
+    transport = FakeTransport(
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"functionCall": {"name": "notify", "args": {"message": "done"}}}
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    profile = _profile("gemini")
+    config = ProviderConfig(
+        provider_id="gemini",
+        selected_model="gemini-2.5-flash",
+        auth_mode=AuthMode.API_KEY,
+    )
+    request = ModelRequest.from_prompt("test").model_copy(
+        update={"tools": [ToolSpec(name="notify", description="Notify the user")]}
+    )
+
+    response = GeminiGenerateContentAdapter(transport).generate(request, profile, config, "secret")
+
+    declarations = transport.calls[0]["payload"]["tools"][0]["functionDeclarations"]
+    assert declarations[0]["name"] == "notify"
+    assert response.text == ""
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "notify"
+    assert response.tool_calls[0].arguments == {"message": "done"}
 
 
 def _profile(provider_id: str):

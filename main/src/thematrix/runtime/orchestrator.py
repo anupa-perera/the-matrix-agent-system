@@ -421,6 +421,7 @@ class Nebuchadnezzar:
                 brief,
                 self._task_request(user_request, task, previous_results),
                 provider_config=provider_config,
+                progress_callback=self._agent_progress_for(plan, task),
             )
             execution_status = "executed" if execution.executed else "error"
             execution_error = execution.error
@@ -651,6 +652,24 @@ class Nebuchadnezzar:
         if execution_status == "error":
             return False
         return output_approved
+
+    def _agent_progress_for(self, plan: MissionPlan, task: MissionTask):
+        """Relay live tool-loop events from the agent runner into the mission timeline."""
+        if self.progress_callback is None:
+            return None
+
+        def relay(stage: str, message: str, details: dict[str, object]) -> None:
+            self._emit_progress(
+                stage,
+                f"Task {task.sequence}: {message}",
+                mission_id=plan.mission_id,
+                task_id=task.task_id,
+                task_sequence=task.sequence,
+                agent_id=task.agent_spec.agent_id,
+                **details,
+            )
+
+        return relay
 
     def _emit_progress(self, stage: str, message: str, **details: object) -> None:
         if self.progress_callback is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -14,6 +15,8 @@ from thematrix.schemas import (
     ModelResponse,
     OracleBrief,
     ProviderConfig,
+    ToolCall,
+    ToolSpec,
 )
 from thematrix.tools import (
     FileDecision,
@@ -58,6 +61,79 @@ class GoalScheduler(Protocol):
 
 
 AgentToolResult = ShellCommandResult | FileToolResult | OperatorToolResult
+AgentProgressCallback = Callable[[str, str, dict[str, object]], None]
+
+AGENT_TOOL_SPECS = [
+    ToolSpec(
+        name="shell",
+        description="Run one guarded shell command in the local workspace.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The shell command to run."},
+                "purpose": {"type": "string", "description": "Why this command is needed."},
+            },
+            "required": ["command"],
+        },
+    ),
+    ToolSpec(
+        name="file_read",
+        description="Read a local file inside the approved workspace.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path of the file."},
+                "purpose": {"type": "string", "description": "Why this file is needed."},
+            },
+            "required": ["path"],
+        },
+    ),
+    ToolSpec(
+        name="file_write",
+        description="Write a local file inside the approved workspace. May require user approval.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path of the file."},
+                "content": {"type": "string", "description": "Full file content to write."},
+                "purpose": {"type": "string", "description": "Why this write is needed."},
+            },
+            "required": ["path", "content"],
+        },
+    ),
+    ToolSpec(
+        name="notify",
+        description="Send the user a desktop notification right now.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "The notification text."},
+                "purpose": {"type": "string", "description": "Why the user should be notified."},
+            },
+            "required": ["message"],
+        },
+    ),
+    ToolSpec(
+        name="schedule",
+        description=(
+            "Create a recurring Operator goal. Provide `mission` for a recurring agent "
+            "task or `message` for a recurring desktop notification, plus `interval_minutes`."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "mission": {"type": "string", "description": "Recurring agent task request."},
+                "message": {"type": "string", "description": "Recurring notification text."},
+                "interval_minutes": {
+                    "type": "integer",
+                    "description": "Minutes between runs (1 to 10080).",
+                },
+                "purpose": {"type": "string", "description": "Why this schedule is needed."},
+            },
+            "required": ["interval_minutes"],
+        },
+    ),
+]
 
 
 @dataclass
@@ -121,6 +197,7 @@ class AgentRunner:
         brief: OracleBrief,
         user_request: str,
         provider_config: ProviderConfig | None = None,
+        progress_callback: AgentProgressCallback | None = None,
     ) -> AgentExecutionResult:
         try:
             blueprint = self.prompt_library.read_agent_blueprint(spec.agent_id)
@@ -135,11 +212,18 @@ class AgentRunner:
         prompt = self._execution_prompt(blueprint, brief, user_request)
 
         for round_index in range(self.max_tool_rounds):
+            self._emit(
+                progress_callback,
+                "agent_thinking",
+                f"Tool round {round_index + 1}: the agent is planning its next step.",
+                round=round_index + 1,
+            )
             try:
                 response = self.model_gateway.generate(
                     ModelRequest.from_prompt(prompt).model_copy(
                         update={
                             "max_tokens": 768,
+                            "tools": self._tool_specs_for(spec),
                             "metadata": {
                                 "agent_id": spec.agent_id,
                                 "agent_type": spec.agent_type,
@@ -167,8 +251,8 @@ class AgentRunner:
             provider_id = response.provider_id
             model_id = response.model
 
-            plan = self._parse_tool_plan(response.text)
-            if not plan.tool_requests:
+            plan, invalid_results = self._plan_from_response(response)
+            if not plan.tool_requests and not invalid_results:
                 final = self._parse_final_answer(plan.response or response.text)
                 return AgentExecutionResult(
                     executed=True,
@@ -181,12 +265,34 @@ class AgentRunner:
                 )
 
             batch = [request.model_dump() for request in plan.tool_requests]
-            if batch == previous_batch:
+            if plan.tool_requests and batch == previous_batch:
                 # The agent repeated the exact same tool batch; stop looping.
                 break
             previous_batch = batch
 
-            tool_results = self._run_tool_requests(spec, plan.tool_requests, user_request)
+            self._emit(
+                progress_callback,
+                "agent_tools",
+                f"Tool round {round_index + 1}: running "
+                f"{len(plan.tool_requests) + len(invalid_results)} tool request(s).",
+                round=round_index + 1,
+                tools=[
+                    f"{request.kind}: {self._request_target(request)}"
+                    for request in plan.tool_requests
+                ],
+            )
+            tool_results = list(invalid_results)
+            tool_results.extend(self._run_tool_requests(spec, plan.tool_requests, user_request))
+            for result in tool_results:
+                target, decision = self._result_event_fields(result)
+                self._emit(
+                    progress_callback,
+                    "agent_tool_result",
+                    f"{decision}: {target}",
+                    round=round_index + 1,
+                    decision=decision,
+                    target=target,
+                )
             all_tool_results.extend(tool_results)
             transcript.append((plan, tool_results))
             rounds_left = self.max_tool_rounds - round_index - 1
@@ -235,6 +341,87 @@ class AgentRunner:
             outcome=final.status,
             open_questions=final.open_questions,
         )
+
+    def _emit(
+        self,
+        callback: AgentProgressCallback | None,
+        stage: str,
+        message: str,
+        **details: object,
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(stage, message, details)
+        except Exception:
+            return
+
+    def _tool_specs_for(self, spec: AgentSpec) -> list[ToolSpec]:
+        permissions = {
+            "shell": "shell_guarded",
+            "file_read": "file_read",
+            "file_write": "file_write",
+            "notify": "notify_desktop",
+            "schedule": "operator_schedule",
+        }
+        return [
+            tool
+            for tool in AGENT_TOOL_SPECS
+            if permissions[tool.name] in spec.tools_allowed
+        ]
+
+    def _plan_from_response(
+        self,
+        response: ModelResponse,
+    ) -> tuple[AgentToolPlan, list[OperatorToolResult]]:
+        """Prefer native tool calls; fall back to parsing JSON out of the text."""
+        if not response.tool_calls:
+            return self._parse_tool_plan(response.text), []
+        requests: list[AgentToolRequest] = []
+        invalid: list[OperatorToolResult] = []
+        for call in self._validated_tool_calls(response.tool_calls):
+            if isinstance(call, AgentToolRequest):
+                requests.append(call)
+            else:
+                invalid.append(call)
+        return AgentToolPlan(response=response.text, tool_requests=requests), invalid
+
+    def _validated_tool_calls(
+        self,
+        calls: list[ToolCall],
+    ) -> list[AgentToolRequest | OperatorToolResult]:
+        validated: list[AgentToolRequest | OperatorToolResult] = []
+        for call in calls:
+            try:
+                validated.append(
+                    AgentToolRequest.model_validate({**call.arguments, "kind": call.name})
+                )
+            except Exception:
+                validated.append(
+                    OperatorToolResult(
+                        operation=call.name or "unknown",
+                        decision="blocked",
+                        reason=f"Unknown tool or invalid arguments for `{call.name}`.",
+                    )
+                )
+        return validated
+
+    def _request_target(self, request: AgentToolRequest) -> str:
+        target = (
+            request.command
+            or request.path
+            or request.mission
+            or request.message
+            or "unspecified"
+        )
+        return " ".join(target.split())[:160]
+
+    def _result_event_fields(self, result: AgentToolResult) -> tuple[str, str]:
+        payload = result.model_dump()
+        target = str(
+            payload.get("command") or payload.get("path") or payload.get("target") or "unknown"
+        )
+        return " ".join(target.split())[:160], str(payload.get("decision", "unknown"))
 
     def _tool_instructions(self) -> str:
         return (

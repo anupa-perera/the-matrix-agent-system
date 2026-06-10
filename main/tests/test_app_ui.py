@@ -22,6 +22,7 @@ from thematrix.schemas import (
     OperatorGoal,
 )
 from thematrix.ui.app_server import (
+    AppUiResponse,
     _agent_page,
     _diagnostics_page,
     _memory_page,
@@ -1013,6 +1014,38 @@ def test_app_ui_intake_gate_collects_answers_before_launch(tmp_path) -> None:
         pass
     thread.join(timeout=5)
     assert not thread.is_alive()
+
+
+def test_app_ui_intake_footer_stays_clickable_above_system_message(tmp_path) -> None:
+    paths = MatrixPaths(home=tmp_path / "home", vault=tmp_path / "vault")
+    store = RuntimeStore(paths.runtime_db)
+    store.initialize()
+
+    html = render_app_page(
+        paths,
+        store,
+        "token-123",
+        AppUiResponse(
+            message="The Matrix needs a few details before spawning agents for this mission."
+        ),
+        intake_questions=[
+            ClarifyingQuestion(
+                id="coverage",
+                question="All listed stocks or a watchlist?",
+                why="Sets the agent's coverage.",
+                options=["All", "Watchlist"],
+                recommended="Watchlist",
+            )
+        ],
+    )
+
+    assert "System Message" in html
+    assert "data-intake-form" in html
+    assert "overscroll-behavior: contain;" in html
+    assert "position: sticky;" in html
+    assert "bottom: 0;" in html
+    assert "z-index: 2;" in html
+    assert "background: rgba(0, 14, 4, 0.98);" in html
 
 
 def test_app_ui_surfaces_runtime_approval_and_resumes_after_response(tmp_path) -> None:

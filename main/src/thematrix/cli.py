@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from time import sleep
 from typing import Annotated
 import webbrowser
 
@@ -456,6 +457,48 @@ def run_operator_goal_now(goal_id: Annotated[str, typer.Argument(help="Operator 
     goal = operator.run_goal_now(goal_id)
     typer.echo(f"Operator goal run recorded: {goal.goal_id}")
     typer.echo(goal.last_result)
+
+
+@operator_app.command("serve")
+def serve_operator(
+    once: Annotated[
+        bool,
+        typer.Option("--once", help="Run all currently due goals once, then exit."),
+    ] = False,
+    tick_seconds: Annotated[
+        float,
+        typer.Option(help="Seconds between scheduler checks."),
+    ] = 30.0,
+) -> None:
+    """Run The Operator scheduler headless, without the browser app.
+
+    Register `the-matrix operator serve --once` with Task Scheduler, cron, or
+    launchd to run scheduled goals even when The Matrix app is closed.
+    """
+    paths = MatrixPaths()
+    vault, store = bootstrap(paths)
+    operator = TheOperator(store)
+    operator.attach_mission_launcher(
+        lambda goal: _cli_mission_launcher(paths, vault, store, goal)
+    )
+    if once:
+        count = operator.run_due_goals()
+        typer.echo(f"Ran {count} due Operator goal(s).")
+        return
+    typer.echo("The Operator is running headless. Press Ctrl+C to stop.")
+    typer.echo("Recurring missions run synchronously in this process.")
+    try:
+        while True:
+            try:
+                count = operator.run_due_goals()
+            except Exception as exc:
+                typer.echo(f"Scheduler check failed: {exc}")
+            else:
+                if count:
+                    typer.echo(f"Ran {count} due Operator goal(s).")
+            sleep(max(1.0, tick_seconds))
+    except KeyboardInterrupt:
+        typer.echo("Operator stopped.")
 
 
 def _cli_mission_launcher(
